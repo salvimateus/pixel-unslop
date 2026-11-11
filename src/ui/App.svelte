@@ -3,7 +3,8 @@
   import logoUrl from '../../app-icon.svg';
   import { app, isImageFile } from '../app/state.svelte.ts';
   import { t } from '../app/i18n.ts';
-  import { launchFile } from '../app/platform.ts';
+  import { isDesktop, launchFile } from '../app/platform.ts';
+  import { zoomMoveOf } from '../app/zoom.ts';
   import AboutDialog from './AboutDialog.svelte';
   import CleanScreen from './CleanScreen.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
@@ -15,6 +16,7 @@
   import Icon from './Icon.svelte';
   import Stepper from './Stepper.svelte';
   import Toasts from './Toasts.svelte';
+  import ZoomIndicator from './ZoomIndicator.svelte';
 
   const DEV = import.meta.env.DEV;
   let dragDepth = 0;
@@ -76,6 +78,16 @@
   }
 
   /** Browser shortcuts that break the feel of a desktop app. Dev mode keeps them for debugging. */
+  /** Capture phase: the interface zoom keys never reach a focused field or a screen shortcut. Desktop only. */
+  function onZoomKey(event: KeyboardEvent): void {
+    if (!isDesktop) return;
+    const move = zoomMoveOf(event);
+    if (!move) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!event.repeat || move !== 'reset') void app.changeZoom(move);
+  }
+
   function onKeyDown(event: KeyboardEvent): void {
     const mod = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
@@ -114,6 +126,7 @@
   ondrop={onDrop}
   onpaste={onPaste}
   onkeydown={onKeyDown}
+  onkeydowncapture={onZoomKey}
   oncontextmenu={onContextMenu}
 />
 
@@ -125,6 +138,11 @@
     </div>
     <Stepper />
     <div class="header-actions">
+      {#if app.zoomAvailable && app.zoomPercent !== app.zoomDefault}
+        <button type="button" class="zoom-chip" aria-label={t('zoom.chip', { value: app.zoomPercent })} title={t('zoom.chip', { value: app.zoomPercent })} onclick={() => app.showZoom()}>
+          {app.zoomPercent}%
+        </button>
+      {/if}
       <button
         type="button"
         class="icon-btn"
@@ -168,6 +186,7 @@
 </div>
 
 <Toasts />
+{#if app.zoomAvailable}<ZoomIndicator />{/if}
 <ConfirmDialog />
 <AboutDialog />
 <ExportDialog />
@@ -182,8 +201,6 @@
       width: 100%;
       height: 100dvh;
       overflow: clip;
-      min-width: 960px;
-      min-height: 640px;
     }
 
     .app-header {
@@ -213,8 +230,29 @@
 
     .header-actions {
       display: flex;
+      align-items: center;
       justify-content: flex-end;
       gap: var(--space-1);
+    }
+
+    .zoom-chip {
+      min-height: 28px;
+      margin-right: var(--space-1);
+      padding: 0 var(--space-2);
+      color: var(--text-muted);
+      background: var(--surface-2);
+      border: 2px solid var(--line);
+      border-radius: 999px;
+      font: 700 0.8125rem/1 var(--font-body);
+      font-variant-numeric: tabular-nums;
+      transition:
+        color var(--dur-hover) var(--ease-sym),
+        border-color var(--dur-hover) var(--ease-sym);
+
+      &:hover {
+        color: var(--text);
+        border-color: var(--line-strong);
+      }
     }
 
     .header-actions :global(.icon-btn[aria-pressed='true']) {

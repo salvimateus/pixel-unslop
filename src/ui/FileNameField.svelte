@@ -16,9 +16,14 @@
     onrename: (base: string) => void;
     /** True while the field is open with a name that cannot be saved. */
     oninvalid?: (invalid: boolean) => void;
+    /** `end` puts the name and the pencil at the right edge, as the values of the rows above it. */
+    align?: 'start' | 'end';
   }
 
-  let { base, id, conflict = null, disabled = false, onrename, oninvalid }: Props = $props();
+  let { base, id, conflict = null, disabled = false, onrename, oninvalid, align = 'start' }: Props = $props();
+
+  /** Letters at the end of a name with no size part that always show. */
+  const TAIL_CHARS = 12;
 
   const PROBLEMS: Record<FileNameProblem, TextKey> = {
     empty: 'fileName.empty',
@@ -33,6 +38,16 @@
   let input: HTMLInputElement | undefined = $state();
   let button: HTMLButtonElement | undefined = $state();
 
+  /**
+   * The name in two parts: the end (the size and ".png") always shows, and the start loses its last letters to an
+   * ellipsis when the row is short.
+   */
+  const nameParts = $derived.by(() => {
+    const full = `${base}.png`;
+    const marker = full.lastIndexOf('-pixel-');
+    const cut = marker > 0 ? marker : Math.max(0, full.length - TAIL_CHARS);
+    return { head: full.slice(0, cut), tail: full.slice(cut) };
+  });
   const problem = $derived(editing ? fileNameProblem(cleanBaseName(draft)) : null);
 
   $effect(() => {
@@ -81,7 +96,7 @@
   }
 </script>
 
-<span class="file-field">
+<span class="file-field" class:is-editing={editing} class:is-end={align === 'end'}>
   {#if editing}
     <span class="name-edit">
       <input
@@ -103,10 +118,14 @@
       <code class="ext">.png</code>
     </span>
   {:else}
-    <code class="file-name" class:is-conflict={conflict !== null}>{base}.png</code>
-    <button type="button" class="rename" bind:this={button} {disabled} aria-label="{t('fileName.rename')}: {base}.png" title={t('fileName.rename')} onclick={open}>
-      <Icon name="pencil" size={14} />
-    </button>
+    <span class="name-row">
+      <code class="file-name" class:is-conflict={conflict !== null} title="{base}.png" aria-label="{base}.png">
+        <span class="name-head" aria-hidden="true">{nameParts.head}</span><span class="name-tail" aria-hidden="true">{nameParts.tail}</span>
+      </code>
+      <button type="button" class="rename" bind:this={button} {disabled} aria-label="{t('fileName.rename')}: {base}.png" title={t('fileName.rename')} onclick={open}>
+        <Icon name="pencil" size={14} />
+      </button>
+    </span>
   {/if}
   {#if (editing && problem) || conflict}
     <span class="problem" id="{id}-problem" role="alert"><Icon name="alert" size={14} />{editing && problem ? t(PROBLEMS[problem], { max: MAX_BASE_NAME }) : conflict}</span>
@@ -117,22 +136,49 @@
   @layer components {
     .file-field {
       display: inline-flex;
+      flex: 1 1 auto;
       flex-wrap: wrap;
       align-items: center;
       gap: 4px var(--space-2);
       min-width: 0;
     }
 
+    /* The name and the pencil never wrap: a long name loses the middle of its text, and its end stays visible. */
+    .name-row {
+      display: flex;
+      flex: 1 1 100%;
+      align-items: center;
+      gap: var(--space-2);
+      min-width: 0;
+
+      .is-end & {
+        justify-content: flex-end;
+      }
+    }
+
     .file-name {
+      display: flex;
+      flex: 0 1 auto;
       min-width: 0;
       font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
       font-size: 0.8125rem;
-      overflow-wrap: anywhere;
+      line-height: 1.4;
+      white-space: pre;
       color: var(--text);
 
       &.is-conflict {
         color: var(--danger-text);
       }
+    }
+
+    .name-head {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .name-tail {
+      flex: none;
     }
 
     .rename {
@@ -166,11 +212,11 @@
     }
 
     .name-edit {
-      display: inline-flex;
+      display: flex;
       align-items: center;
       gap: 2px;
       min-width: 0;
-      flex: 1 1 200px;
+      flex: 1 1 100%;
     }
 
     .name-input {

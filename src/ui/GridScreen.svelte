@@ -921,6 +921,7 @@
 
     .grid-stage {
       position: relative;
+      container-type: inline-size;
       display: grid;
       grid-template: minmax(0, 1fr) / minmax(0, 1fr);
       min-width: 0;
@@ -972,6 +973,14 @@
 
       &:active {
         transform: translateY(2px);
+      }
+    }
+
+    /* A narrow stage (a small window or a large zoom): the hint goes above the zoom buttons. */
+    @container (width < 560px) {
+      .zoom-hint {
+        bottom: 68px;
+        white-space: nowrap;
       }
     }
 

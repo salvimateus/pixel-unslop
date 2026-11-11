@@ -3,7 +3,8 @@ import type { CellGrid, ElasticMode, GridFit, GridOptions, Selection, Sprite } f
 import { PARAMS } from '../core/params.ts';
 import { pack } from '../core/color.ts';
 import { exportSprite } from '../core/pipeline.ts';
-import { setDownloadFile, type PngFile } from './platform.ts';
+import { isDesktop, monitorWorkArea, setDownloadFile, setInterfaceZoom, type PngFile } from './platform.ts';
+import { defaultZoom, nextZoom, snapZoom, storeZoom, storedZoom, type ZoomMove } from './zoom.ts';
 import type { Camera } from '../ui/camera.ts';
 import type { PreviewBackground } from '../ui/clean-scene.ts';
 import { EditSession } from './edit-session.ts';
@@ -174,6 +175,14 @@ class AppState {
   confirmRequest = $state.raw<ConfirmRequest | null>(null);
 
   private toastId = 0;
+  /** The desktop window controls its interface zoom; in a browser, the browser does. */
+  zoomAvailable = $state(isDesktop);
+  /** The interface zoom in percent, and the zoom of Ctrl + 0. */
+  zoomPercent = $state(100);
+  zoomDefault = $state<number>(TUNING.ui.zoom.default);
+  /** Changes on each zoom change or chip click: the indicator shows again. */
+  zoomShownAt = $state(0);
+  private zoomErrorShown = false;
 
   constructor() {
     this.engine.onProgress((stage, ratio) => {
@@ -201,6 +210,45 @@ class AppState {
 
   private get strength(): number {
     return PARAMS.palette.presets[this.preset];
+  }
+
+  /** Desktop only, before the first paint: the zoom that the user kept, else the default that fits the monitor. */
+  async startZoom(): Promise<void> {
+    if (!isDesktop) return;
+    this.zoomDefault = defaultZoom(await monitorWorkArea());
+    this.zoomPercent = storedZoom(this.zoomDefault);
+    // A failure here keeps the zoom of the window; the first change tells the user.
+    await setInterfaceZoom(this.zoomPercent / 100, TUNING.ui.minViewport);
+  }
+
+  /** Ctrl + "+", "-" or "0", or a button of the zoom indicator: the next zoom step, kept for the next start. */
+  async changeZoom(move: ZoomMove): Promise<void> {
+    if (!this.zoomAvailable) return;
+    const before = this.zoomPercent;
+    const next = nextZoom(before, move, this.zoomDefault);
+    this.zoomPercent = next;
+    this.zoomShownAt = performance.now();
+    // The dev preview of the indicator has no window to zoom.
+    if (!isDesktop) return;
+    if (!(await setInterfaceZoom(next / 100, TUNING.ui.minViewport))) {
+      if (this.zoomPercent === next) this.zoomPercent = before;
+      if (!this.zoomErrorShown) this.toast(t('zoom.failed'), 'error');
+      this.zoomErrorShown = true;
+      return;
+    }
+    storeZoom(next);
+  }
+
+  /** Shows the zoom indicator with no change, from the chip of the header. */
+  showZoom(): void {
+    if (this.zoomAvailable) this.zoomShownAt = performance.now();
+  }
+
+  /** Dev only: shows the zoom indicator and the chip in a browser, at a zoom that changes nothing. */
+  previewZoom(percent: number): void {
+    this.zoomAvailable = true;
+    this.zoomPercent = snapZoom(percent);
+    this.zoomShownAt = performance.now();
   }
 
   toggleMute(): void {
@@ -1262,6 +1310,8 @@ interface DevHook {
   setObjectToScreen(id: number): { x: number; y: number } | null;
   /** The exact file of a browser download of the set: the open dialog's selection, else every file with its suggested name. */
   setExportBytes(): Promise<{ name: string; base64: string } | null>;
+  /** Shows the zoom indicator and the header chip at `percent`, with no zoom applied: the look of the desktop feature. */
+  showZoom(percent: number): void;
 }
 
 declare global {
@@ -1326,6 +1376,7 @@ export function installDevHook(): void {
       for (let i = 0; i < file.bytes.length; i += 0x8000) binary += String.fromCharCode(...file.bytes.subarray(i, i + 0x8000));
       return { name: file.name, base64: btoa(binary) };
     },
+    showZoom: (percent) => app.previewZoom(percent),
     setObjectToScreen: (id) => {
       const box = setBox(id);
       return box && app.screen === 'set' ? toClient(box.x + box.w / 2, box.y + box.h / 2) : null;

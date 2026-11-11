@@ -1,5 +1,6 @@
 <script lang="ts">
   import { t } from '../app/i18n.ts';
+  import { watchCanvasBox } from './canvas-box.ts';
   import type { GridScene } from './grid-scene.ts';
 
   interface Props {
@@ -9,25 +10,20 @@
   let { scene }: Props = $props();
 
   let canvas: HTMLCanvasElement;
-  let box: HTMLDivElement;
 
-  /** The scene draws the detail on each frame of the stage, at the CSS size that the box has now. */
+  /** The scene draws the detail on each frame of the stage, at the exact box that the canvas has now. */
   $effect(() => {
     const current = scene;
-    const observer = new ResizeObserver((entries) => {
-      const rect = entries[0].contentRect;
-      current.setDetail(canvas, rect.width, rect.height);
-    });
-    observer.observe(box);
+    const stop = watchCanvasBox(canvas, (size) => current.setDetail(canvas, size));
     return () => {
-      observer.disconnect();
+      stop();
       current.setDetail(null);
     };
   });
 </script>
 
 <figure class="detail">
-  <div class="detail-box" bind:this={box}>
+  <div class="detail-box">
     <canvas class="detail-canvas" bind:this={canvas} width="1" height="1" aria-hidden="true"></canvas>
   </div>
   <figcaption class="detail-caption">{t('grid.detailCaption')}</figcaption>

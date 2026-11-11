@@ -45,6 +45,37 @@ async function downloadNode() {
   renameSync(partial, cachedNode);
 }
 
+const CERTIFICATE_TABLE_INDEX = 4;
+
+/**
+ * Removes the Authenticode signature of a PE file in place, like "signtool remove /s": the injection of the SEA
+ * blob breaks the signature of node.exe, and an exe with a broken signature looks worse than an unsigned one.
+ */
+function stripAuthenticode(path) {
+  const bytes = readFileSync(path);
+  if (bytes.length < 0x40 || bytes.toString('latin1', 0, 2) !== 'MZ') fail(`${path} is not a PE file (no MZ header).`);
+  const peOffset = bytes.readUInt32LE(0x3c);
+  if (peOffset + 24 > bytes.length || bytes.toString('latin1', peOffset, peOffset + 4) !== 'PE\0\0') fail(`${path} has no PE header.`);
+  const optionalHeader = peOffset + 24;
+  const magic = bytes.readUInt16LE(optionalHeader);
+  if (magic !== 0x10b && magic !== 0x20b) fail(`${path} has an unknown optional header (magic 0x${magic.toString(16)}).`);
+  const isPe32Plus = magic === 0x20b;
+  const directoryCount = bytes.readUInt32LE(optionalHeader + (isPe32Plus ? 108 : 92));
+  if (directoryCount <= CERTIFICATE_TABLE_INDEX) return;
+  const entry = optionalHeader + (isPe32Plus ? 112 : 96) + CERTIFICATE_TABLE_INDEX * 8;
+  const certOffset = bytes.readUInt32LE(entry);
+  const certSize = bytes.readUInt32LE(entry + 4);
+  if (certSize === 0) return;
+  // The certificate table is not mapped into memory and always sits at the end of a signed file.
+  if (certOffset + certSize !== bytes.length) {
+    fail(`${path}: the certificate table (offset ${certOffset}, size ${certSize}) is not at the end of the file (${bytes.length} bytes).`);
+  }
+  const unsigned = Buffer.from(bytes.subarray(0, certOffset));
+  unsigned.writeUInt32LE(0, entry);
+  unsigned.writeUInt32LE(0, entry + 4);
+  writeFileSync(path, unsigned);
+}
+
 async function main() {
   if (process.version !== NODE_VERSION) {
     fail(`the local Node is ${process.version}, but the blob must come from ${NODE_VERSION} (the same version as the downloaded node.exe). Run this script with Node ${NODE_VERSION}.`);
@@ -68,6 +99,7 @@ async function main() {
   const staging = `${output}.part`;
   rmSync(staging, { force: true });
   copyFileSync(cachedNode, staging);
+  stripAuthenticode(staging);
   const require = createRequire(import.meta.url);
   const { inject } = require('postject');
   await inject(staging, 'NODE_SEA_BLOB', readFileSync(blob), { sentinelFuse: SENTINEL_FUSE, overwrite: true });

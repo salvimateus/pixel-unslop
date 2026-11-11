@@ -134,5 +134,14 @@ export const TUNING = {
     confettiCount: 56,
     engineDebounceMs: 60,
     maxSwatches: 240,
+    /**
+     * Interface zoom of the desktop window, in percent: the range, the step of one key press, and the zoom of
+     * the first start when the monitor holds the smallest layout at it (else 100).
+     */
+    zoom: { min: 50, max: 200, step: 5, default: 125 },
+    /** The zoom indicator hides after this time with no change and no pointer on it. */
+    zoomIndicatorMs: 2000,
+    /** The smallest layout viewport, in CSS pixels; the smallest window grows with the zoom to keep it. */
+    minViewport: { width: 960, height: 640 },
   },
 } as const;

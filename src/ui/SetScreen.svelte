@@ -252,6 +252,7 @@
       onhover={onHover}
       onviewchange={updateZoom}
     >
+      <div class="stage-top">
       <div class="stage-tip" class:is-add={app.set.objects.length < 2}>
         <Icon name={original ? 'compare' : app.set.objects.length < 2 ? 'plus' : 'arrows'} size={16} />
         <p class="stage-tip-text">
@@ -271,6 +272,7 @@
           {t('grid.zoomHint')}
         </button>
       {/if}
+      </div>
       <div class="stage-tools">
         <div class="stage-zoom">
         <button type="button" class="icon-btn" aria-label={t('clean.zoomOut')} title={t('clean.zoomOut')} onclick={() => stage?.zoomBy(1 / TUNING.zoom.buttonStep)}>
@@ -316,16 +318,18 @@
   </div>
 
   <aside class="set-panel">
-    <header class="set-head">
-      <h1 class="set-title">{t('set.title')}</h1>
-    </header>
+    <div class="set-panel-scroll">
+      <header class="set-head">
+        <h1 class="set-title">{t('set.title')}</h1>
+      </header>
 
-    <div class="set-list">
-      <SetPieceList view="result" />
-    </div>
+      <div class="set-list">
+        <SetPieceList view="result" />
+      </div>
 
-    <div class="set-piece">
-      <SetPieceControls onstep={stepHeight} />
+      <div class="set-piece">
+        <SetPieceControls onstep={stepHeight} />
+      </div>
     </div>
 
     <div class="set-footer">
@@ -371,15 +375,28 @@
       min-height: 0;
     }
 
-    .stage-tip {
+    /* The tip and the zoom hint in one column, so a tip of two or three lines never covers the hint. */
+    .stage-top {
       position: absolute;
       top: var(--space-3);
-      left: 50%;
+      left: var(--space-3);
+      right: var(--space-3);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--space-2);
+      pointer-events: none;
+
+      & > :global(*) {
+        pointer-events: auto;
+      }
+    }
+
+    .stage-tip {
       display: flex;
       align-items: center;
       gap: var(--space-2);
-      width: max-content;
-      max-width: calc(100% - 32px);
+      max-width: 100%;
       padding: var(--space-1) var(--space-3);
       color: var(--text-muted);
       font-size: 0.8125rem;
@@ -387,7 +404,6 @@
       background: var(--surface-1);
       border: 2px solid var(--line);
       border-radius: var(--radius-m);
-      translate: -50% 0;
       pointer-events: none;
       animation: tip-in var(--dur-pop) var(--ease-out);
 
@@ -410,9 +426,6 @@
     }
 
     .zoom-hint {
-      position: absolute;
-      left: 50%;
-      top: 72px;
       display: flex;
       align-items: center;
       gap: var(--space-2);
@@ -422,7 +435,7 @@
       background: var(--primary);
       border-radius: 999px;
       box-shadow: 0 4px 0 var(--primary-depth);
-      translate: -50% 0;
+      white-space: nowrap;
       transition: transform var(--dur-hover) var(--ease-sym);
 
       &:active {
@@ -468,11 +481,19 @@
 
     .set-panel {
       display: grid;
-      grid-template: auto minmax(0, 1fr) auto auto / minmax(0, 1fr);
+      grid-template: minmax(0, 1fr) auto / minmax(0, 1fr);
       min-width: 0;
       min-height: 0;
       background: var(--surface-1);
       border-left: 2px solid var(--line);
+    }
+
+    /* A short window: the list keeps two rows, and this part scrolls; the footer with the export stays in view. */
+    .set-panel-scroll {
+      display: grid;
+      grid-template: auto minmax(104px, 1fr) auto / minmax(0, 1fr);
+      min-height: 0;
+      overflow: hidden auto;
     }
 
     .set-head {

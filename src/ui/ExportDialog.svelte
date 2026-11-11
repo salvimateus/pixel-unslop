@@ -118,7 +118,7 @@
   }
 </script>
 
-<Dialog open={app.exportOpen} labelledby="export-title" onclose={close}>
+<Dialog open={app.exportOpen} labelledby="export-title" onclose={close} wide>
   <div class="dialog-body export">
     {#if phase !== 'done'}
       <h2 id="export-title" class="export-title">{t('export.title')}</h2>
@@ -141,7 +141,7 @@
       </div>
       <div class="file-name">
         <span class="hint">{t('export.fileName')}</span>
-        <FileNameField id="export-file" base={baseName} disabled={phase === 'saving'} onrename={(next) => (customBase = next)} oninvalid={(invalid) => (nameInvalid = invalid)} />
+        <FileNameField align="end" id="export-file" base={baseName} disabled={phase === 'saving'} onrename={(next) => (customBase = next)} oninvalid={(invalid) => (nameInvalid = invalid)} />
       </div>
       <div class="dialog-actions">
         <button type="button" class="btn btn-quiet" onclick={close} disabled={phase === 'saving'}>{t('export.cancel')}</button>

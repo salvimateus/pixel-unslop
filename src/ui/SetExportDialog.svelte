@@ -291,6 +291,7 @@
 
     .file-list {
       display: grid;
+      grid-template-columns: minmax(0, 1fr);
       max-height: min(280px, 40dvh);
       overflow: hidden auto;
       background: var(--surface-sunken);

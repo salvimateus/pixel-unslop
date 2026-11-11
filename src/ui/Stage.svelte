@@ -5,6 +5,7 @@
   import { Camera, type Point } from './camera.ts';
   import { ParticleField } from './particles.ts';
   import type { Scene, StageHost, StagePointer } from './stage-renderer.ts';
+  import { watchCanvasBox, type CanvasBox } from './canvas-box.ts';
 
   interface Props {
     scene: Scene;
@@ -48,6 +49,7 @@
   let spaceHeld = $state(false);
   let panning = $state(false);
   let dpr = 1;
+  let dprY = 1;
   /** Until the user zooms or pans, a window resize frames the content again. */
   let userMoved = false;
   let reducedMotion = false;
@@ -124,10 +126,10 @@
 
   function render(now: number): boolean {
     if (!ctx || !fx || !sized) return false;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.setTransform(dpr, 0, 0, dprY, 0, 0);
     ctx.clearRect(0, 0, camera.viewW, camera.viewH);
     ctx.imageSmoothingEnabled = false;
-    fx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    fx.setTransform(dpr, 0, 0, dprY, 0, 0);
     fx.clearRect(0, 0, camera.viewW, camera.viewH);
     fx.imageSmoothingEnabled = false;
     const alive = scene.draw(ctx, fx, now);
@@ -135,12 +137,20 @@
     return alive;
   }
 
-  function resize(width: number, height: number): void {
-    dpr = Math.min(window.devicePixelRatio || 1, TUNING.stage.maxDpr);
+  /** The backing stores equal the canvas box in physical pixels, so the browser never resamples the frame. */
+  function resize(box: CanvasBox): void {
+    const { cssW: width, cssH: height } = box;
+    // The exact scale of this box: CSS pixels times this ratio is a whole physical pixel count.
+    dpr = box.pxW / width;
+    dprY = box.pxH / height;
     for (const target of [canvas, fxCanvas]) {
-      target.width = Math.max(1, Math.round(width * dpr));
-      target.height = Math.max(1, Math.round(height * dpr));
+      target.width = box.pxW;
+      target.height = box.pxH;
     }
+    // The effects canvas sits on the same whole physical pixels as the main canvas.
+    fxCanvas.style.translate = canvas.style.translate;
+    fxCanvas.style.width = canvas.style.width;
+    fxCanvas.style.height = canvas.style.height;
     camera.setViewport(width, height);
     if (!sized) {
       sized = true;
@@ -180,11 +190,7 @@
     applyMotion();
     motion.addEventListener('change', applyMotion);
 
-    const observer = new ResizeObserver((entries) => {
-      const box = entries[0].contentRect;
-      if (box.width > 0 && box.height > 0) resize(box.width, box.height);
-    });
-    observer.observe(wrap);
+    const stopBox = watchCanvasBox(canvas, resize, TUNING.stage.maxDpr);
 
     const probe = { camera, canvas };
     app.stage = probe;
@@ -192,7 +198,7 @@
     // Wheel needs passive: false, or preventDefault cannot stop the page from zooming or scrolling.
     wrap.addEventListener('wheel', onWheel, { passive: false });
     return () => {
-      observer.disconnect();
+      stopBox();
       motion.removeEventListener('change', applyMotion);
       wrap.removeEventListener('wheel', onWheel);
       if (raf) cancelAnimationFrame(raf);
@@ -287,6 +293,8 @@
   }
 
   function onStageKeyDown(event: KeyboardEvent): void {
+    // Ctrl with + - 0 is the interface zoom of the window, not the zoom of the image.
+    if (event.ctrlKey || event.metaKey) return;
     const step = TUNING.stage.keyPanPx;
     const moves: Record<string, [number, number]> = { ArrowLeft: [step, 0], ArrowRight: [-step, 0], ArrowUp: [0, step], ArrowDown: [0, -step] };
     const move = moves[event.key];

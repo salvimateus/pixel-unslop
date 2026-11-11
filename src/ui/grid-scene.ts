@@ -1,6 +1,7 @@
 import type { CellGrid, GridFit, Selection } from '../core/types.ts';
 import { TUNING } from '../app/tuning.ts';
 import { clamp, type Camera, type Point } from './camera.ts';
+import type { CanvasBox } from './canvas-box.ts';
 import {
   STAGE_COLORS,
   checkerPattern,
@@ -59,9 +60,8 @@ function movedBounds(bounds: Float64Array, period: number): Float64Array {
 interface DetailView {
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
-  /** CSS size of the canvas. */
-  w: number;
-  h: number;
+  /** The CSS size and the exact physical size of the canvas. */
+  box: CanvasBox;
 }
 
 interface BoxSettle {
@@ -165,12 +165,12 @@ export class GridScene implements Scene {
     this.host?.invalidate();
   }
 
-  /** Gives the scene the canvas of the zoomed detail, with its CSS size; null removes it. */
-  setDetail(canvas: HTMLCanvasElement | null, w = 0, h = 0): void {
+  /** Gives the scene the canvas of the zoomed detail, with its box; null removes it. */
+  setDetail(canvas: HTMLCanvasElement | null, box: CanvasBox | null = null): void {
     const ctx = canvas?.getContext('2d') ?? null;
-    this.detail = canvas && ctx ? { canvas, ctx, w, h } : null;
+    this.detail = canvas && ctx && box ? { canvas, ctx, box } : null;
     if (!this.detail || !this.host) return;
-    this.drawDetail(this.host.dpr);
+    this.drawDetail();
   }
 
   setMark(mark: Selection | null): void {
@@ -304,7 +304,7 @@ export class GridScene implements Scene {
     alive = this.drawBoxes(ctx, camera, now) || alive;
     if (this.dragBox && this.loupeAt) this.drawLoupe(fx, this.loupeAt, false);
     else if (this.pressing && this.cellScreenSize() < TUNING.grid.minCellPx) this.drawLoupe(fx, { x: camera.viewW / 2, y: camera.viewH / 2 }, true);
-    this.drawDetail(dpr);
+    this.drawDetail();
     return alive;
   }
 
@@ -315,19 +315,20 @@ export class GridScene implements Scene {
   }
 
   /** The art around the focus point at a zoom where one art pixel is large, with the grid on it. */
-  private drawDetail(dpr: number): void {
+  private drawDetail(): void {
     const detail = this.detail;
     const host = this.host;
-    if (!detail || !host || detail.w <= 0 || detail.h <= 0) return;
-    const { ctx, w, h } = detail;
+    if (!detail || !host) return;
+    const { ctx } = detail;
+    const { cssW: w, cssH: h, pxW, pxH } = detail.box;
     const { camera } = host;
-    const width = Math.round(w * dpr);
-    const height = Math.round(h * dpr);
-    if (detail.canvas.width !== width || detail.canvas.height !== height) {
-      detail.canvas.width = width;
-      detail.canvas.height = height;
+    // The backing store equals the box in physical pixels: the browser shows it with no resampling.
+    const dpr = pxW / w;
+    if (detail.canvas.width !== pxW || detail.canvas.height !== pxH) {
+      detail.canvas.width = pxW;
+      detail.canvas.height = pxH;
     }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.setTransform(dpr, 0, 0, pxH / h, 0, 0);
     ctx.clearRect(0, 0, w, h);
     const view = this.focus ?? camera.screenToImage(camera.viewW / 2, camera.viewH / 2);
     const center = { x: clamp(view.x, 0, this.contentW), y: clamp(view.y, 0, this.contentH) };

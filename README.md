@@ -16,8 +16,38 @@ Use it for sprites and game assets from AI image generators such as ChatGPT, DAL
 
 **What makes it different:** it is deterministic and uses no generative AI. Your image never leaves your computer. It is free and open source (MIT). You get a Windows desktop app and a command line tool for AI agents.
 
+## Download Pixel Unslop for Windows
+
+Download the free Windows app and the command line tool from the [latest release](https://github.com/salvimateus/pixel-unslop/releases/latest). There is no installer and no account.
+
+| File | For | Needs |
+|---|---|---|
+| `PixelUnslop.exe` | The Windows desktop app. One portable file, no installer. | Windows 10 or 11 with the WebView2 runtime (Windows 11 has it) |
+| `pixel-unslop-cli.exe` | The command line tool for Windows | Nothing more |
+| `pixel-unslop-cli-wsl.tar.gz` | The command line tool for WSL or Linux. It holds `pixel-unslop` and `pixel-unslop.cjs`. | Node.js 20 or newer |
+
+To start the desktop app, double-click `PixelUnslop.exe`. The Windows files have no code signature, so Windows SmartScreen can show a warning when you open a file for the first time. To continue:
+
+1. Click "More info".
+2. Click "Run anyway".
+
+To use the command line tool on WSL or Linux, extract the file:
+
+```sh
+tar -xzf pixel-unslop-cli-wsl.tar.gz
+```
+
+Then run the tool from the same folder:
+
+```sh
+./pixel-unslop --help
+```
+
+You can also [build Pixel Unslop from source](#how-to-build-pixel-unslop-from-source).
+
 ## Contents
 
+- [Download Pixel Unslop for Windows](#download-pixel-unslop-for-windows)
 - [Why AI pixel art is not real pixel art](#why-ai-pixel-art-is-not-real-pixel-art)
 - [Who it is for](#who-it-is-for)
 - [How to fix AI pixel art in 4 steps](#how-to-fix-ai-pixel-art-in-4-steps)
@@ -59,6 +89,14 @@ Open Pixel Unslop. Drag a PNG, JPG or WebP image into the window. The drop scree
 - To clean one image, click "One image" and select the file.
 - To paste an image, push Ctrl+V.
 - To make several sprites the same scale, click "A set", or drop two or more images. See [the set mode](#make-ai-sprites-the-same-scale-with-the-set-mode).
+
+In the desktop app, you can change the size of the interface. The app starts at 125%, or at 100% on a small screen, and keeps your zoom for the next start.
+
+- To make the interface larger, push Ctrl and +.
+- To make the interface smaller, push Ctrl and -.
+- To go back to the start zoom, push Ctrl and 0.
+
+Each step is 5%, from 50% to 200%. An indicator shows the zoom in percent, with "−", "+" and "Reset" buttons. In a browser, use the zoom of the browser.
 
 <img src="docs/images/pixel-unslop-drop-screen.png" width="900" alt="Pixel Unslop drop screen: the logo, the text Drag one or more images here, two cards named One image and A set, and the line Your image never leaves your computer">
 
@@ -159,12 +197,12 @@ The background removal works only for a flat background of one color or for a fa
 - The smallest PNG size: each export is cropped to its visible pixels, and no visible pixel is cut.
 - Lossless PNG optimization: smaller files with exactly the same pixels.
 - A set mode for several sprites in three steps: a Grid step for all the pieces, one pixel grid for all the pieces or one for each piece, a visual resize with a snap to clean sizes, a comparison with the originals, one shared palette, locked reference pieces, and an export of the selected files.
-- An interface in English and in Brazilian Portuguese.
+- An interface in English and in Brazilian Portuguese, with an interface zoom from 50% to 200% in the desktop app.
 - It works offline. There is no account, no upload and no telemetry.
 
 ## Clean AI pixel art from the command line (for AI agents)
 
-The same engine is also a command line tool. It is for AI agents, such as Claude Code, and for scripts. Use it to clean many sprites in one run, to read a JSON report, and to correct single tiles with exact commands.
+The same engine is also a command line tool. It is for AI agents, such as Claude Code, and for scripts. Use it to clean many sprites in one run, to read a JSON report, and to correct single tiles with exact commands. Get the files from the [latest release](https://github.com/salvimateus/pixel-unslop/releases/latest).
 
 | File | Platform | Requirement |
 |---|---|---|
@@ -248,7 +286,7 @@ For all the options and more examples, run `pixel-unslop help`, `help clean`, `h
 
 ## How to build Pixel Unslop from source
 
-There is no release yet. Build the program from source. The build operates on Linux or WSL. It makes the Windows programs with a cross-compiler.
+To get the programs with no build, use the [download](#download-pixel-unslop-for-windows). To build them yourself, use the steps below. The build operates on Linux or WSL. It makes the Windows programs with a cross-compiler.
 
 ### Requirements
 
@@ -296,8 +334,8 @@ To build only the CLI for Linux or WSL, run `npm run build:cli`. This command wr
 - A small, blurred image gives little edge evidence. Thus the automatic grid can be incorrect.
   - In the app, set the size of 1 pixel, or drag a square over one pixel of the art.
   - In the CLI, give `--pixel-size`. Or clean the parts of one sheet together with `--shared-pixel-size`.
-- The Windows exe has no signature. Windows SmartScreen shows a warning when you open it for the first time.
-- The desktop app needs the Microsoft Edge WebView2 runtime. Windows 11 has it.
+- The Windows files have no code signature. Windows SmartScreen can show a warning when you open a file for the first time. Click "More info", then "Run anyway".
+- The desktop app needs Windows 10 or 11 with the Microsoft Edge WebView2 runtime. Windows 11 has it.
 
 ## Frequently asked questions
 
@@ -328,6 +366,10 @@ Yes. In the desktop app, drop two or more images at the same time. The [set mode
 ### Can I export the sprite at a larger size?
 
 No. The output is always 1 image pixel for each art pixel, so all your assets stay on the same grid. Scale the sprites in your game engine, with nearest-neighbor filtering.
+
+### How do I download Pixel Unslop for Windows?
+
+Open the [latest release](https://github.com/salvimateus/pixel-unslop/releases/latest) and download `PixelUnslop.exe`. It is one portable file with no installer. See [Download Pixel Unslop for Windows](#download-pixel-unslop-for-windows) for the command line files.
 
 ### Is it free?
 

@@ -5,6 +5,9 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "core:webview:allow-set-webview-zoom",
+    "core:window:allow-set-min-size",
+    "core:window:allow-set-size",
     "dialog:allow-open",
     "dialog:allow-save",
     "fs:allow-exists",
