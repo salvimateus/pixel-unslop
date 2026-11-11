@@ -77,7 +77,6 @@
     }
   }
 
-  /** Browser shortcuts that break the feel of a desktop app. Dev mode keeps them for debugging. */
   /** Capture phase: the interface zoom keys never reach a focused field or a screen shortcut. Desktop only. */
   function onZoomKey(event: KeyboardEvent): void {
     if (!isDesktop) return;
@@ -88,6 +87,7 @@
     if (!event.repeat || move !== 'reset') void app.changeZoom(move);
   }
 
+  /** Browser shortcuts that break the feel of a desktop app. Dev mode keeps them for debugging. */
   function onKeyDown(event: KeyboardEvent): void {
     const mod = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
@@ -132,10 +132,20 @@
 
 <div class="app">
   <header class="app-header">
-    <div class="brand">
+    <!-- The logo goes back to the drop screen by the path of the "Soltar" step, with its questions. -->
+    <button
+      type="button"
+      class="brand"
+      aria-label={t('header.home')}
+      title={app.screen === 'drop' ? undefined : t('header.home')}
+      aria-disabled={app.screen === 'drop'}
+      onclick={() => {
+        if (app.screen !== 'drop') void app.goTo('drop');
+      }}
+    >
       <img class="brand-logo" src={logoUrl} alt="" width="30" height="30" />
       <span class="brand-name">{t('app.name')}</span>
-    </div>
+    </button>
     <Stepper />
     <div class="header-actions">
       {#if app.zoomAvailable && app.zoomPercent !== app.zoomDefault}
@@ -215,8 +225,29 @@
 
     .brand {
       display: flex;
+      justify-self: start;
       align-items: center;
       gap: var(--space-2);
+      padding: var(--space-1) var(--space-2) var(--space-1) var(--space-1);
+      margin-left: calc(-1 * var(--space-1));
+      color: var(--text);
+      border-radius: var(--radius-m);
+      transition:
+        background-color var(--dur-hover) var(--ease-sym),
+        transform var(--dur-hover) var(--ease-sym);
+
+      &:not([aria-disabled='true']):hover {
+        background: var(--surface-2);
+      }
+
+      &:not([aria-disabled='true']):active {
+        transform: translateY(1px);
+        transition-duration: 60ms;
+      }
+
+      &[aria-disabled='true'] {
+        cursor: default;
+      }
     }
 
     .brand-logo {

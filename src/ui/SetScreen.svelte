@@ -35,13 +35,27 @@
   let stage: Stage | undefined = $state();
   /** "Ver original": while it is held, each piece shows its original image in place. */
   let original = $state(false);
-  let cursor = $state('grab');
+  let cursor = $state('default');
   let zoom = $state(1);
   let drag: Drag | null = null;
-  let lastVersion = -1;
+  let lastVersion = '';
+  /** The last press on an object, for the double click that opens the pixel editor. */
+  let lastPress: { id: number | null; at: number } = { id: null, at: 0 };
+  /** A press on the body of an object: a move along the ground line once the pointer passes the threshold. */
+  let move: { id: number; startSx: number; startIx: number; startX: number; moving: boolean } | null = null;
 
   const scene = new SetScene(app.set, { height: (h) => t('set.pieceHeight', { h }), empty: t('set.pieceEmpty'), reference: t('set.reference') });
 
+  const allHidden = $derived.by(() => {
+    void app.set.placeVersion;
+    void app.set.version;
+    return app.set.allHidden;
+  });
+  const moved = $derived.by(() => {
+    void app.set.placeVersion;
+    void app.set.version;
+    return app.set.moved;
+  });
   const hasReferences = $derived.by(() => {
     void app.set.version;
     return app.set.hasReferences;
@@ -53,7 +67,7 @@
 
   /** A committed change of the set lays the scene out again; new objects frame the view again. */
   $effect(() => {
-    const version = app.set.version;
+    const version = `${app.set.version}:${app.set.placeVersion}`;
     untrack(() => {
       if (version === lastVersion) return;
       lastVersion = version;
@@ -103,15 +117,61 @@
       return true;
     }
     const hit = scene.hitObject(p.sx, p.sy);
-    if (hit !== null && hit !== app.set.selectedId) {
+    if (hit === null) return 'pan';
+    // A double click on a piece opens its pixel editor; a reference is locked and does nothing.
+    const now = performance.now();
+    const twice = lastPress.id === hit && now - lastPress.at < TUNING.grid.doubleClickMs;
+    lastPress = { id: twice ? null : hit, at: now };
+    if (twice) {
+      if (!app.set.find(hit)?.reference) void app.editObject(hit);
+      return false;
+    }
+    if (hit !== app.set.selectedId) {
       app.set.select(hit);
       sfx.play('tick');
     }
-    return 'pan';
+    const box = scene.boxOf(hit);
+    if (!box) return false;
+    move = { id: hit, startSx: p.sx, startIx: p.ix, startX: box.x, moving: false };
+    return true;
+  }
+
+  /** The object follows the pointer horizontally and stays on the ground line; its size never changes. */
+  function onMoveObject(p: StagePointer): void {
+    if (!move) return;
+    if (!move.moving) {
+      if (Math.abs(p.sx - move.startSx) < TUNING.set.moveThresholdPx) return;
+      move.moving = true;
+      scene.beginMove(move.id);
+      cursor = 'grabbing';
+    }
+    app.set.placeLive(move.id, move.startX + (p.ix - move.startIx));
+    scene.updateLive();
+  }
+
+  function endMoveObject(): void {
+    const done = move;
+    move = null;
+    if (!done?.moving) return;
+    scene.endMove();
+    const object = app.set.find(done.id);
+    if (object?.place !== null && object?.place !== undefined) app.set.moveTo(done.id, object.place);
+    cursor = 'grab';
+  }
+
+  /** "Arrumar": every object back to its automatic place. */
+  function tidy(): void {
+    if (!app.set.moved) return;
+    app.set.tidy();
+    sfx.play('tick');
   }
 
   /** The handle follows the axis that moved more, so a drag to the right also grows the object. */
   function onMove(p: StagePointer): void {
+    if (move) {
+      onMoveObject(p);
+      return;
+    }
     if (!drag) return;
     const object = app.set.find(drag.id);
     const prepared = object?.prepared;
@@ -144,6 +204,10 @@
   }
 
   function onUp(): void {
+    if (move) {
+      endMoveObject();
+      return;
+    }
     if (!drag) return;
     scene.endDrag();
     app.set.commit();
@@ -153,14 +217,15 @@
   function onHover(p: StagePointer | null): void {
     if (!p) {
       scene.setHover(null, false);
-      cursor = 'grab';
+      cursor = 'default';
       return;
     }
     const handle = scene.hitHandle(p.sx, p.sy);
     const warn = handle === null ? (scene.hitWarning(p.sx, p.sy) ?? scene.hitBackground(p.sx, p.sy)) : null;
     const object = handle ?? warn ?? scene.hitObject(p.sx, p.sy);
     scene.setHover(object, handle !== null);
-    cursor = handle !== null ? 'nesw-resize' : object !== null ? 'pointer' : 'grab';
+    // A badge is a button; the body of an object moves it; the empty scene pans the view.
+    cursor = handle !== null ? 'nesw-resize' : warn !== null ? 'pointer' : object !== null ? 'grab' : 'default';
   }
 
   /** One pixel up or down, or the next whole size with Shift. */
@@ -215,9 +280,25 @@
       event.preventDefault();
       event.stopPropagation();
       stepHeight(event.key === 'ArrowUp' ? 1 : -1, event.shiftKey);
+    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      // Left and right move the selected object along the ground line: 1 scene pixel, 8 with Shift.
+      event.preventDefault();
+      event.stopPropagation();
+      const box = scene.boxOf(object.id);
+      if (!box) return;
+      app.set.moveTo(object.id, box.x + (event.key === 'ArrowRight' ? 1 : -1) * (event.shiftKey ? 8 : 1));
     } else if (event.key === 'Delete') {
       event.preventDefault();
       void app.removeObject(object.id);
+    } else if (event.key.toLowerCase() === 'h' && !event.shiftKey) {
+      // Hide is for the view only.
+      event.preventDefault();
+      app.set.setHidden(object.id, !object.hidden);
+      sfx.play('tick');
+    } else if (event.key === 'Enter' && !object.reference && !(event.target instanceof HTMLButtonElement)) {
+      // Enter opens the pixel editor of the selected piece; a focused button keeps its own Enter.
+      event.preventDefault();
+      void app.editObject(object.id);
     }
   }
 
@@ -262,11 +343,16 @@
             {t('set.addMoreTip')}
           {:else}
             <span class="stage-tip-main">{t('set.help')}</span>
-            <span>{t('set.snapHint')}</span>
           {/if}
         </p>
       </div>
-      {#if zoom < TUNING.set.gridMinCellPx}
+      {#if allHidden}
+        <p class="all-hidden" role="status">
+          <Icon name="eyeOff" size={16} />
+          <span>{t('set.allHidden')}</span>
+          <button type="button" class="mini-show" onclick={() => app.set.showAll()}>{t('set.showAll')}</button>
+        </p>
+      {:else if zoom < TUNING.set.gridMinCellPx}
         <button type="button" class="zoom-hint" onclick={zoomToGrid}>
           <Icon name="zoomIn" size={18} />
           {t('grid.zoomHint')}
@@ -285,6 +371,10 @@
           <Icon name="fit" />
         </button>
         </div>
+        <button type="button" class="original-btn" title={t('set.tidyHint')} disabled={!moved} onclick={tidy}>
+          <Icon name="pieces" size={18} />
+          {t('set.tidy')}
+        </button>
         <button
           type="button"
           class="original-btn"
@@ -417,6 +507,30 @@
       }
     }
 
+    .all-hidden {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-2);
+      max-width: 100%;
+      padding: var(--space-1) var(--space-3);
+      color: var(--text);
+      font-size: 0.875rem;
+      background: var(--surface-1);
+      border: 2px solid var(--yellow);
+      border-radius: var(--radius-m);
+    }
+
+    .mini-show {
+      min-height: 28px;
+      padding: 0 var(--space-2);
+      color: var(--on-primary);
+      background: var(--primary);
+      border-radius: var(--radius-s);
+      font: 600 0.8125rem/1 var(--font-display);
+    }
+
     .stage-tip-text {
       display: grid;
     }
@@ -491,7 +605,7 @@
     /* A short window: the list keeps two rows, and this part scrolls; the footer with the export stays in view. */
     .set-panel-scroll {
       display: grid;
-      grid-template: auto minmax(104px, 1fr) auto / minmax(0, 1fr);
+      grid-template: auto minmax(min-content, 1fr) auto / minmax(0, 1fr);
       min-height: 0;
       overflow: hidden auto;
     }
@@ -509,7 +623,6 @@
     .set-list {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
-      min-height: 0;
       padding: 0 var(--space-5) var(--space-3);
     }
 
@@ -569,8 +682,13 @@
         background-color var(--dur-hover) var(--ease-sym),
         transform var(--dur-hover) var(--ease-sym);
 
-      &:hover {
+      &:hover:not(:disabled) {
         background: var(--surface-2);
+      }
+
+      &:disabled {
+        cursor: not-allowed;
+        opacity: 0.45;
       }
 
       &[aria-pressed='true'] {

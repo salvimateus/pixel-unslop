@@ -40,6 +40,8 @@
     };
   });
 
+  const enlarged = $derived(piece !== null && piece.size.kind === 'whole' && piece.size.step < 1 - 1e-9);
+
   function isActive(size: SetSize, step: number): boolean {
     return size.kind === 'whole' && Math.abs(size.step - step) < 1e-9;
   }
@@ -127,7 +129,7 @@
             <button type="button" aria-pressed={isActive(piece.size, option.step)} onclick={() => quick(option.step)}>{option.label ? t(option.label) : `1/${option.step}`}</button>
           {/each}
         </div>
-        <span class="hint quick-label" id="set-enlarge-label">{t('set.enlarge')}</span>
+        <span class="hint quick-label" id="set-enlarge-label" title={t('set.enlargeHint')}>{t('set.enlarge')}</span>
         <div class="segmented quick is-enlarge" role="group" aria-labelledby="set-enlarge-label" aria-describedby="set-enlarge-hint">
           {#each ENLARGE as factor (factor)}
             {@const fits = piece.rows * factor <= piece.limit}
@@ -141,7 +143,8 @@
           {/each}
         </div>
       </div>
-      <p class="hint enlarge-hint" id="set-enlarge-hint">{t('set.enlargeHint')}</p>
+      <!-- The enlarge tip shows while an enlargement is active; otherwise it stays for screen readers and in the title. -->
+      <p class={enlarged ? 'hint enlarge-hint' : 'visually-hidden'} id="set-enlarge-hint">{t('set.enlargeHint')}</p>
       <p class="visually-hidden" id="set-height-hint">{t('set.heightHint')} {t('set.heightMax', { max: piece.limit })}</p>
     {/if}
 
@@ -150,18 +153,15 @@
     {/if}
 
     <div class="piece-actions is-three">
-      <button type="button" class="mini-btn" onclick={() => app.editObject(piece.id)} disabled={app.loading}>
+      <button type="button" class="mini-btn edit-btn" title="{t('set.editHint')} (Enter)" aria-keyshortcuts="Enter" onclick={() => app.editObject(piece.id)} disabled={app.loading}>
         <Icon name="pencil" size={16} />
         {t('set.edit')}
       </button>
-      <button type="button" class="mini-btn" title={t('set.useAsReference')} onclick={() => app.setReference(piece.id, true)} disabled={app.loading}>
+      <button type="button" class="mini-btn icon-only" aria-label={t('set.useAsReference')} title={t('set.useAsReference')} onclick={() => app.setReference(piece.id, true)} disabled={app.loading}>
         <Icon name="lock" size={16} />
-        <span class="visually-hidden">{t('set.useAsReference')}:</span>
-        {t('set.reference')}
       </button>
-      <button type="button" class="mini-btn remove" title="{t('set.remove')} (Delete)" onclick={() => app.removeObject(piece.id)} disabled={app.loading} aria-keyshortcuts="Delete">
+      <button type="button" class="mini-btn icon-only remove" aria-label={t('set.remove')} title="{t('set.remove')} (Delete)" onclick={() => app.removeObject(piece.id)} disabled={app.loading} aria-keyshortcuts="Delete">
         <Icon name="trash" size={16} />
-        {t('set.remove')}
       </button>
     </div>
   </section>
@@ -192,14 +192,22 @@
       grid-template-columns: 1fr 1fr;
       gap: var(--space-2);
 
+      /* "Editar pixels" takes the row; "Referência" and "Remover" are icon buttons beside it. */
       &.is-three {
-        grid-template-columns: repeat(3, auto);
-        justify-content: space-between;
+        grid-template-columns: minmax(0, 1fr) auto auto;
         gap: 4px;
 
-        & .mini-btn {
-          padding: 0 5px;
-          font-size: 0.75rem;
+        & .icon-only {
+          width: 34px;
+          padding: 0;
+        }
+
+        & .edit-btn {
+          min-height: 34px;
+          justify-content: center;
+          color: var(--text);
+          border-color: var(--primary);
+          font-size: 0.8125rem;
         }
       }
     }

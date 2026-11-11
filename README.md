@@ -26,10 +26,25 @@ Download the free Windows app and the command line tool from the [latest release
 | `pixel-unslop-cli.exe` | The command line tool for Windows | Nothing more |
 | `pixel-unslop-cli-wsl.tar.gz` | The command line tool for WSL or Linux. It holds `pixel-unslop` and `pixel-unslop.cjs`. | Node.js 20 or newer |
 
-To start the desktop app, double-click `PixelUnslop.exe`. The Windows files have no code signature, so Windows SmartScreen can show a warning when you open a file for the first time. To continue:
+> [!WARNING]
+> **Windows shows "Windows protected your PC" at the first start.** You see this blue screen when you open `PixelUnslop.exe` or `pixel-unslop-cli.exe` for the first time.
+>
+> The cause: the files have no paid code signing certificate. This is usual for small open source programs. It does not mean that the file has a virus.
+>
+> To continue:
+>
+> 1. Click "More info".
+> 2. Click "Run anyway".
+>
+> To make sure that the file is the original, compare its SHA-256 hash with the value in the release notes. In PowerShell, run this command in the folder of the file:
+>
+> ```powershell
+> Get-FileHash .\PixelUnslop.exe -Algorithm SHA256
+> ```
+>
+> The source code is public in this repository. You can also [build the files yourself](#how-to-build-pixel-unslop-from-source).
 
-1. Click "More info".
-2. Click "Run anyway".
+To start the desktop app, double-click `PixelUnslop.exe`.
 
 To use the command line tool on WSL or Linux, extract the file:
 
@@ -128,6 +143,7 @@ Then select the "Color cleanup" level (Off, Light, Normal or Strong) and click "
 The program shows the clean sprite. To compare it with the source, move the divider or the "Before / After" slider.
 
 - To correct small defects, use the Pencil (B), the Eraser (E), the Bucket (G) and the Dropper (I).
+- To paint or erase more pixels at a time, set the brush size of the Pencil or the Eraser, from 1 to 32 squares. Use the "Size" control in the toolbar, or push `[` and `]`. Each tool keeps its own size. The outline under the pointer shows the exact squares that a click changes.
 - To pick the color below the cursor, click the right mouse button. This works in all tools.
 - To replace a color in all the sprite, right-click it in the color list. You can also click the "..." button. You can also erase the color there.
 - To make the background transparent, click "Remove background". This changes the background that touches the border.
@@ -135,7 +151,7 @@ The program shows the clean sprite. To compare it with the source, move the divi
 - You can change the "Color cleanup" level at any time. Your manual corrections stay.
 - To undo, push Ctrl+Z. To redo, push Ctrl+Y.
 
-<img src="docs/images/pixel-unslop-clean-and-edit-screen.png" width="900" alt="Clean pixel art editor: the tools on the left, the sprite in the middle with a divider between the blurred AI source and the flat result and a dashed box around the part that the export writes, and the color palette on the right">
+<img src="docs/images/pixel-unslop-clean-and-edit-screen.png" width="900" alt="Clean pixel art editor: the tools on the left with the brush size of the pencil and the eraser, the Size control in the toolbar, a 3 by 3 brush outline on the sprite, the sprite in the middle with a divider between the blurred AI source and the flat result and a dashed box around the part that the export writes, and the color palette on the right">
 
 ### 4. Export the PNG
 
@@ -163,8 +179,10 @@ The set mode has the same three steps as one image: "Drop", "Grid" and "Set".
 6. Drag the small square at the top corner of a sprite to change its height. The preview is the exact result of the export. The corner snaps to the clean sizes: whole reductions (1/2 to 1/8) and whole enlargements (2x to 4x). Hold Shift to set a free height.
 7. Each sprite shows its height ("32 px") and its ratio ("1/2", "2x"). You can also type the height, use the arrow keys, or click a preset: "Reduce" has 1/2, 1/3 and 1/4, and "Enlarge" has 2x, 3x and 4x. A height above the largest permitted height becomes that height, and a message tells you the value.
 8. Hold "See original", or the O key, to see the original image of each piece in place. Release it to see the result again.
-9. Select "Edit" to correct the pixels of one sprite on the Clean screen. To change the grid of a piece, click "Back to the grid". Your edits and sizes stay when the grid does not change. A grid change that drops your edits asks first.
-10. Click "Export set" and select the files with the checkboxes. To change the name of a file, click the pencil next to it. Two files cannot have the same name. On the desktop app, you get one PNG for each sprite in a folder. In a browser, you get one PNG, or one ZIP file that holds all the selected PNG files. Each PNG has the true resolution, and all of them share one palette. A resize never adds a new color.
+9. To compare two pieces, drag a piece along the ground line, or push the left and right arrow keys. A reference stands on the ground line by its visible pixels, and you can move it too. "Tidy" puts each piece back in its automatic place. A move does not change the exported files.
+10. To hide a piece in the scene, click the eye in its row, or push H. A hidden piece is still exported.
+11. Click "Edit pixels", double-click the piece, or push Enter to correct the pixels of one sprite with the pencil, the eraser, the bucket and the dropper. Click "Back to the set" to go back with your edits. To change the grid of a piece, click "Back to the grid" in the Set step. If no grid changes, the Grid step shows "Back to the set" in place of "Clean all!", and your edits, sizes, places and hidden pieces stay. A grid change that drops the edits of a piece asks first, and the other pieces keep their edits.
+12. Click "Export set" and select the files with the checkboxes. To change the name of a file, click the pencil next to it. Two files cannot have the same name. On the desktop app, you get one PNG for each sprite in a folder. In a browser, you get one PNG, or one ZIP file that holds all the selected PNG files. Each PNG has the true resolution, and all of them share one palette. A resize never adds a new color.
 
 You can enlarge a small piece up to 4x. Each pixel then becomes a block of 2, 3 or 4 pixels. You can send this blocky PNG to a generative AI to get more detail, and then clean the new image here again. In the command line tool, give the height with `--height file.png=N`:
 
@@ -180,7 +198,7 @@ To clean a new sprite next to an asset that is already final in your game, add t
 
 The background removal works only for a flat background of one color or for a fake checkerboard. Thus, generate each object on a flat background of one color. When the app cannot remove the background of an image, the sprite and its row show a "background" badge, and a message tells you what to do.
 
-<img src="docs/images/pixel-unslop-set-screen.png" width="900" alt="Set step of the pixel art cleaner: three sprites and one locked reference side by side on one ground line, with a height and a ratio badge under each sprite, a See original button below, and on the right the list of pieces, the height field with the Reduce and Enlarge presets, and the Export set button">
+<img src="docs/images/pixel-unslop-set-screen.png" width="900" alt="Set step of the pixel art cleaner: three sprites and one locked reference side by side on one ground line, with a height and a ratio badge under each sprite, a short tip above, the Tidy and See original buttons below, and on the right the list of pieces with an eye button on each row, the height field with the Reduce and Enlarge presets, the Edit pixels button, and the Export set button">
 
 ## What Pixel Unslop can do
 
@@ -190,7 +208,7 @@ The background removal works only for a flat background of one color or for a fa
 - Advanced grid controls: a flexible grid for art that moves away from the grid, arrow buttons that move the full grid, and a pixel shape slider for stretched art, where the pixels are not square.
 - One flat color for each tile, with no blur.
 - Pixel art cleanup of the colors in four levels, in the OKLab color space. The merge agrees with what the eye sees.
-- Pencil, eraser, bucket fill and dropper, with undo and redo.
+- Pencil, eraser, bucket fill and dropper, with undo and redo. The pencil and the eraser have a brush size from 1 to 32 squares.
 - Replace a color in all the sprite, erase a color, or remove the background with one click.
 - A comparison of the source and the result, on a checker, dark or light background.
 - PNG export at the true resolution: always 1 image pixel for each art pixel.
@@ -334,7 +352,7 @@ To build only the CLI for Linux or WSL, run `npm run build:cli`. This command wr
 - A small, blurred image gives little edge evidence. Thus the automatic grid can be incorrect.
   - In the app, set the size of 1 pixel, or drag a square over one pixel of the art.
   - In the CLI, give `--pixel-size`. Or clean the parts of one sheet together with `--shared-pixel-size`.
-- The Windows files have no code signature. Windows SmartScreen can show a warning when you open a file for the first time. Click "More info", then "Run anyway".
+- The Windows files have no paid code signing certificate. Thus Windows shows "Windows protected your PC" at the first start. Click "More info", then "Run anyway". See [the warning in the download section](#download-pixel-unslop-for-windows).
 - The desktop app needs Windows 10 or 11 with the Microsoft Edge WebView2 runtime. Windows 11 has it.
 
 ## Frequently asked questions
@@ -366,6 +384,10 @@ Yes. In the desktop app, drop two or more images at the same time. The [set mode
 ### Can I export the sprite at a larger size?
 
 No. The output is always 1 image pixel for each art pixel, so all your assets stay on the same grid. Scale the sprites in your game engine, with nearest-neighbor filtering.
+
+### Why does Windows show "Windows protected your PC" for Pixel Unslop?
+
+The Windows files have no paid code signing certificate, so Windows SmartScreen does not know them yet. The warning does not mean that the file has a virus. Click "More info", then "Run anyway". To make sure that the file is the original, compare its SHA-256 hash with the release notes. See [the warning in the download section](#download-pixel-unslop-for-windows).
 
 ### How do I download Pixel Unslop for Windows?
 

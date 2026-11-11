@@ -3,13 +3,15 @@
   import { TRANSPARENT } from '../core/color.ts';
   import { borderBackground, floodRegion, indicesOfColor, lineTiles, listPalette } from '../core/sprite.ts';
   import { opaqueBox } from '../app/image-set.svelte.ts';
-  import { app, type Tool } from '../app/state.svelte.ts';
+  import { app, type BrushTool, type Tool } from '../app/state.svelte.ts';
   import { t, type TextKey } from '../app/i18n.ts';
   import * as sfx from '../app/sfx.ts';
   import { TUNING } from '../app/tuning.ts';
   import type { Tile } from './camera.ts';
   import { CleanScene, type HoverMark, type PreviewBackground } from './clean-scene.ts';
   import Icon, { type IconName } from './Icon.svelte';
+  import { brushBox, stampIndices } from './brush.ts';
+  import BrushSize from './BrushSize.svelte';
   import CleanupPresets from './CleanupPresets.svelte';
   import PalettePanel from './PalettePanel.svelte';
   import ProgressPill from './ProgressPill.svelte';
@@ -39,9 +41,12 @@
   interface Stroke {
     color: number;
     erase: boolean;
+    /** The brush size of the stroke, kept from the press. */
+    size: number;
     last: Tile;
     indices: number[];
-    seen: Set<number>;
+    /** One flag per square: a stroke changes a square one time only. */
+    seen: Uint8Array;
   }
 
   let stage: Stage | undefined = $state();
@@ -49,6 +54,8 @@
   let scene = $state.raw<CleanScene | null>(null);
   let sceneAligned: ImageBitmap | null = null;
   let stroke: Stroke | null = null;
+  /** The square under the pointer, for the hover outline and the footprint of a size change. */
+  let lastTile: Tile | null = null;
   let draggingSplit = false;
   let overSplit = $state(false);
   let splitPercent = $state(0);
@@ -144,22 +151,51 @@
     app.editVersion++;
   }
 
-  function paintTile(tile: Tile): void {
-    if (!stroke || !scene) return;
-    const index = tile.row * scene.contentW + tile.col;
-    if (stroke.seen.has(index)) return;
-    stroke.seen.add(index);
+  /** One stamp of the brush at `tile`: the squares of the footprint that are new to the stroke and change color. */
+  function stamp(tile: Tile): number {
+    if (!stroke || !scene) return 0;
     const pixels = app.session.composed().pixels;
-    if (pixels[index] === stroke.color) return;
-    stroke.indices.push(index);
-    scene.writeTile(index, stroke.color);
+    const color = stroke.color;
+    const changed = stampIndices(tile.col, tile.row, stroke.size, scene.contentW, scene.contentH, stroke.seen).filter((index) => pixels[index] !== color);
+    if (changed.length === 0) return 0;
+    for (const index of changed) stroke.indices.push(index);
+    scene.writeColor(changed, color);
     if (stroke.erase) {
-      scene.shatter([index], pixels);
-      sfx.play('erase');
+      scene.shatter(changed, pixels);
     } else {
-      scene.pop(tile);
-      sfx.play('paint');
+      const box = brushBox(tile.col, tile.row, stroke.size, scene.contentW, scene.contentH);
+      if (box) scene.pop({ col: box.col, row: box.row }, box.w, box.h);
     }
+    return changed.length;
+  }
+
+  /** One sound per pointer step, for any brush size. */
+  function strokeSound(changed: number): void {
+    if (changed > 0 && stroke) sfx.play(stroke.erase ? 'erase' : 'paint');
+  }
+
+  /** The tool with a brush size, or null. */
+  function brushTool(): BrushTool | null {
+    return app.tool === 'pencil' || app.tool === 'eraser' ? app.tool : null;
+  }
+
+  /** The brush size of the active tool. */
+  function brushSize(): number {
+    const tool = brushTool();
+    return tool ? app.brush[tool] : 1;
+  }
+
+  /** A new size of the active brush: the footprint shows at the pointer, or at the center of the view. */
+  function changeBrush(size: number): void {
+    const tool = brushTool();
+    if (!tool || !scene) return;
+    const before = app.brush[tool];
+    const next = app.setBrush(tool, size);
+    if (next === before) return;
+    sfx.play('tick');
+    const at = lastTile ?? scene.centerTile();
+    if (lastTile) scene.setHover(lastTile, hoverMark(), next);
+    if (at) scene.flashBrush(at, next);
   }
 
   function pickAt(tile: Tile | null): void {
@@ -185,14 +221,21 @@
     edited();
   }
 
+  /** "Ver" drags the divider from its line and its knob; a drawing tool only from the knob, so the border stays paintable. */
+  function splitHit(p: StagePointer): boolean {
+    if (!scene) return false;
+    return app.tool === 'view' ? scene.hitSplit(p.sx, p.sy) : scene.hitSplitKnob(p.sx, p.sy);
+  }
+
   function onDown(p: StagePointer): boolean | 'pan' {
     if (!scene) return false;
-    if (scene.hitSplit(p.sx, p.sy)) {
+    if (splitHit(p)) {
       draggingSplit = true;
       return true;
     }
     if (scene.sweeping) scene.setSplit(0);
     const tile = tileOf(p);
+    lastTile = tile;
     switch (app.tool) {
       case 'view':
         return 'pan';
@@ -207,8 +250,9 @@
       case 'eraser': {
         const erase = app.tool === 'eraser' || app.ink === TRANSPARENT;
         const start = { col: Math.floor(p.ix), row: Math.floor(p.iy) };
-        stroke = { color: app.tool === 'eraser' ? TRANSPARENT : app.ink, erase, last: start, indices: [], seen: new Set() };
-        if (tile) paintTile(tile);
+        stroke = { color: app.tool === 'eraser' ? TRANSPARENT : app.ink, erase, size: brushSize(), last: start, indices: [], seen: new Uint8Array(scene.contentW * scene.contentH) };
+        // A large brush reaches the sprite from outside it: the footprint is clipped, not the pointer.
+        strokeSound(stamp(start));
         return true;
       }
     }
@@ -224,14 +268,14 @@
     const col = Math.floor(p.ix);
     const row = Math.floor(p.iy);
     if (col === stroke.last.col && row === stroke.last.row) return;
+    // Every square of the line between two pointer events gets a stamp, so a fast drag leaves no hole.
     const line = lineTiles(stroke.last.col, stroke.last.row, col, row);
-    for (let i = 0; i < line.length; i += 2) {
-      const x = line[i];
-      const y = line[i + 1];
-      if (x >= 0 && y >= 0 && x < scene.contentW && y < scene.contentH) paintTile({ col: x, row: y });
-    }
+    let changed = 0;
+    for (let i = 0; i < line.length; i += 2) changed += stamp({ col: line[i], row: line[i + 1] });
+    strokeSound(changed);
     stroke.last = { col, row };
-    scene.setHover(tileOf(p), hoverMark());
+    lastTile = tileOf(p);
+    scene.setHover(lastTile, hoverMark(), brushSize());
   }
 
   function onUp(): void {
@@ -248,8 +292,9 @@
 
   function onHover(p: StagePointer | null): void {
     if (!scene) return;
-    overSplit = p !== null && scene.hitSplit(p.sx, p.sy);
-    scene.setHover(p && !overSplit ? tileOf(p) : null, hoverMark());
+    overSplit = p !== null && splitHit(p);
+    lastTile = p && !overSplit ? tileOf(p) : null;
+    scene.setHover(lastTile, hoverMark(), brushSize());
   }
 
   function selectTool(tool: Tool): void {
@@ -343,6 +388,10 @@
       if (app.editingId === null) app.exportOpen = true;
     } else if (event.key === 'Escape') {
       palettePanel?.cancelSwap();
+    } else if (!mod && !event.altKey && !isEditable(event.target) && (event.key === '[' || event.key === ']')) {
+      if (!brushTool()) return;
+      event.preventDefault();
+      changeBrush(brushSize() + (event.key === ']' ? 1 : -1));
     } else if (!mod && !event.altKey && !isEditable(event.target)) {
       const tool = TOOLS.find((entry) => entry.key.toLowerCase() === key);
       if (tool) {
@@ -363,15 +412,19 @@
         class="tool"
         aria-pressed={app.tool === tool.id}
         aria-keyshortcuts={tool.key}
-        title="{t(tool.label)} ({tool.key})"
+        title={tool.id === 'pencil' || tool.id === 'eraser' ? `${t(tool.label)} (${tool.key}) · ${t('brush.keys')}` : `${t(tool.label)} (${tool.key})`}
         onclick={() => selectTool(tool.id)}
       >
         <Icon name={tool.icon} size={22} />
         <span class="tool-label">{t(tool.label)}</span>
         <kbd class="tool-key">{tool.key}</kbd>
+        {#if (tool.id === 'pencil' || tool.id === 'eraser') && app.brush[tool.id] > 1}
+          <span class="tool-size" title={t('brush.value', { size: app.brush[tool.id] })}>{app.brush[tool.id]}</span>
+        {/if}
       </button>
     {/each}
     <p class="rail-hint">{t('clean.rightClickHint')}</p>
+    <p class="rail-hint">{t('brush.railHint')}</p>
   </nav>
 
   <div class="clean-main">
@@ -399,9 +452,13 @@
           <Icon name="grid" />
         </button>
       </div>
+      <span class="toolbar-sep" aria-hidden="true"></span>
+      <div class="toolbar-group toolbar-brush">
+        <BrushSize tool={app.tool === 'pencil' || app.tool === 'eraser' ? app.tool : null} onsize={changeBrush} />
+      </div>
       <div class="toolbar-group toolbar-end">
         <span class="toolbar-label" id="bg-label">{t('clean.background')}</span>
-        <div class="segmented bg-choice" role="group" aria-labelledby="bg-label" aria-describedby={hasTransparency ? undefined : 'bg-hint'}>
+        <div class="segmented bg-choice" role="group" aria-labelledby="bg-label" aria-describedby={hasTransparency ? undefined : 'bg-hint'} title={hasTransparency ? undefined : t('clean.bgOpaque')}>
           {#each BACKGROUNDS as bg (bg.id)}
             <button type="button" aria-pressed={app.previewBg === bg.id} disabled={!hasTransparency} onclick={() => app.setPreviewBackground(bg.id)}>{t(bg.label)}</button>
           {/each}
@@ -455,17 +512,18 @@
       <CleanupPresets hint={t('cleanup.hint')} />
     </div>
 
-    <div class="clean-actions">
-      <button type="button" class="btn btn-quiet" title={t('clean.backToGrid')} onclick={() => app.goTo(app.editingId !== null ? 'set-grid' : 'grid')}>
-        <Icon name="back" size={18} />
-        <span class="back-label">{t('clean.backToGrid')}</span>
-      </button>
+    <div class="clean-actions" class:is-set={app.editingId !== null}>
       {#if app.editingId !== null}
-        <button type="button" class="btn btn-primary btn-big" onclick={() => app.returnToSet()} disabled={app.loading}>
+        <p class="hint set-note">{t('clean.setNote')}</p>
+        <button type="button" class="btn btn-primary btn-big" title={t('clean.setNote')} onclick={() => app.returnToSet()} disabled={app.loading}>
           <Icon name="check" size={20} />
           {t('set.backToSet')}
         </button>
       {:else}
+        <button type="button" class="btn btn-quiet" title={t('clean.backToGrid')} onclick={() => app.goTo('grid')}>
+          <Icon name="back" size={18} />
+          <span class="back-label">{t('clean.backToGrid')}</span>
+        </button>
         <button type="button" class="btn btn-primary btn-big" aria-keyshortcuts="Control+S" title="{t('clean.export')} (Ctrl+S)" onclick={() => (app.exportOpen = true)}>
           <Icon name="download" size={20} />
           {t('clean.export')}
@@ -477,6 +535,11 @@
 
 <style>
   @layer components {
+    .set-note {
+      grid-column: 1 / -1;
+      grid-row: 1;
+    }
+
     .export-box-note {
       display: flex;
       align-items: center;
@@ -557,6 +620,21 @@
       opacity: 0.8;
     }
 
+    /* The brush size of the pencil or the eraser, when it is larger than 1. */
+    .tool-size {
+      position: absolute;
+      top: 3px;
+      left: 4px;
+      min-width: 18px;
+      padding: 1px 3px;
+      color: var(--on-primary);
+      background: var(--teal);
+      border-radius: var(--radius-s);
+      font: 700 0.6875rem/1.2 var(--font-body);
+      font-variant-numeric: tabular-nums;
+      text-align: center;
+    }
+
     .rail-hint {
       margin-top: var(--space-2);
       padding: 0 2px;
@@ -595,6 +673,11 @@
       margin-left: auto;
     }
 
+    .toolbar-brush {
+      flex: 0 1 260px;
+      min-width: 0;
+    }
+
     .toolbar-hint {
       flex-basis: 100%;
       margin-top: -2px;
@@ -617,6 +700,16 @@
     @container (width < 560px) {
       .toolbar-label {
         display: none;
+      }
+
+      /* A narrow toolbar keeps the reason of the disabled background buttons for screen readers and the tooltip. */
+      .toolbar-hint {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
       }
     }
 
@@ -725,6 +818,10 @@
       .clean-actions {
         grid-template-columns: auto minmax(0, 1fr);
         padding: var(--space-3) var(--space-4) var(--space-4);
+      }
+
+      .clean-actions.is-set {
+        grid-template-columns: minmax(0, 1fr);
       }
 
       .clean-actions :global(.btn-big) {

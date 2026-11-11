@@ -69,6 +69,10 @@ export interface SetObject {
   output: Sprite | null;
   /** The output does not match `step` yet: a drag of a large object calculates it on release. */
   stale: boolean;
+  /** The left edge in scene pixels that the user set by a drag, or null for the automatic place. Only for the view. */
+  place: number | null;
+  /** Hidden in the scene only: the export, the palette and the cleanup do not change. */
+  hidden: boolean;
   /**
    * The background erase is on, and after it the piece still looks like a full picture: its border is mostly
    * opaque, or the erase removed part of the border and opaque tiles still touch all four edges. The height of
@@ -141,19 +145,32 @@ export function setSpacing(dims: ReadonlyArray<Dims | null>): SetSpacing {
   return { gap, groundY: top + tallest, bottom: Math.max(gap, Math.round(tallest * 0.45)) };
 }
 
-/** Objects side by side on one ground line, left to right in list order. */
-export function layoutSet(dims: ReadonlyArray<Dims | null>, spacing: SetSpacing = setSpacing(dims)): SetLayout {
+/**
+ * Objects side by side on one ground line, left to right in list order. An object with a place in `places` (a
+ * left edge in scene pixels that the user set by a drag) stands there; the others keep their automatic place. The
+ * content width holds every box.
+ */
+export function layoutSet(
+  dims: ReadonlyArray<Dims | null>,
+  spacing: SetSpacing = setSpacing(dims),
+  places: ReadonlyArray<number | null> = [],
+  hidden: ReadonlyArray<boolean> = [],
+): SetLayout {
   const tallest = maxHeight(dims);
   const placeholder = Math.max(4, Math.round((tallest || 16) * 0.4));
   const boxes: SetBox[] = [];
   let x = spacing.gap;
-  for (const dim of dims) {
+  let right = spacing.gap * 2;
+  dims.forEach((dim, i) => {
     const w = dim ? dim.cols : placeholder;
     const h = dim ? dim.rows : placeholder;
-    boxes.push({ x, y: spacing.groundY - h, w, h });
+    const left = places[i] ?? x;
+    boxes.push({ x: left, y: spacing.groundY - h, w, h });
     x += w + spacing.gap;
-  }
-  return { ...spacing, contentW: Math.max(x, spacing.gap * 2), contentH: spacing.groundY + spacing.bottom, boxes };
+    // A hidden object keeps its place, but the content (and the fit view) holds only the shown ones.
+    if (!hidden[i]) right = Math.max(right, left + w + spacing.gap);
+  });
+  return { ...spacing, contentW: right, contentH: spacing.groundY + spacing.bottom, boxes };
 }
 
 /** The heights that the handle snaps to: native, the 1/k reductions and the enlargements up to the snap limit. */
@@ -297,6 +314,8 @@ export class ImageSet {
   /** Changes on every live resize step of a drag, before the drag commits. */
   liveVersion = $state(0);
   exportedVersion = $state(0);
+  /** Changes when the user moves an object or tidies the scene: the view lays out again, the export is the same. */
+  placeVersion = $state(0);
   layout = $state.raw<SetLayout>(layoutSet([]));
   grid = $state.raw<SetGridState>({ mode: 'own', period: null, typed: false });
   /** The joint pixel size of the last detection, for "Detectar". */
@@ -357,6 +376,8 @@ export class ImageSet {
         output: null,
         stale: false,
         backgroundKept: false,
+        place: null,
+        hidden: false,
       };
     });
     if (added.length === 0) return added;
@@ -414,11 +435,15 @@ export class ImageSet {
     const references = this.objects.filter((object) => object.reference);
     const referencePalette = this.referenceColors ? paletteOfSprites(references.map((object) => object.raw)) : null;
     for (const object of references) {
-      object.prepared = object.raw;
-      object.trim = { col: 0, row: 0, cols: object.raw.cols, rows: object.raw.rows };
-      object.output = object.raw;
+      // A reference shows by its visible box, so its lowest visible row stands on the ground line. Its pixels do not
+      // change; a reference with no opaque tile keeps its full box.
+      const box = opaqueBox(object.raw);
+      const visible = box ? (trimOrNull(object.raw) ?? object.raw) : object.raw;
+      object.prepared = visible;
+      object.trim = box ?? { col: 0, row: 0, cols: object.raw.cols, rows: object.raw.rows };
+      object.output = visible;
       object.size = { kind: 'whole', step: 1 };
-      object.height = object.raw.rows;
+      object.height = visible.rows;
       object.step = 1;
       object.stale = false;
       object.backgroundKept = false;
@@ -527,7 +552,65 @@ export class ImageSet {
     object.output = resampleSprite(prepared, object.step);
   }
 
+  /** True when the user moved at least one object. */
+  get moved(): boolean {
+    return this.objects.some((object) => object.place !== null);
+  }
+
+  /** True when every object is hidden in the scene. */
+  get allHidden(): boolean {
+    return this.active && this.objects.every((object) => object.hidden);
+  }
+
+  /** Hides or shows one object in the scene; nothing else changes. */
+  setHidden(id: number, hidden: boolean): void {
+    const object = this.find(id);
+    if (!object || object.hidden === hidden) return;
+    object.hidden = hidden;
+    this.relayout();
+    this.placeVersion++;
+  }
+
+  showAll(): void {
+    for (const object of this.objects) object.hidden = false;
+    this.relayout();
+    this.placeVersion++;
+  }
+
+  /** The hidden flag of each object, in list order. */
+  hiddenFlags(): boolean[] {
+    return this.objects.map((object) => object.hidden);
+  }
+
+  /** The manual left edge of each object, in list order. */
+  places(): Array<number | null> {
+    return this.objects.map((object) => object.place);
+  }
+
+  /** A new left edge for one object, in scene pixels; it never goes left of 0. Lays the scene out again. */
+  moveTo(id: number, x: number): void {
+    const object = this.find(id);
+    if (!object) return;
+    object.place = Math.max(0, Math.round(x));
+    this.relayout();
+    this.placeVersion++;
+  }
+
+  /** A place during a drag: the scene shows it at once; `moveTo` at the release lays the scene out. */
+  placeLive(id: number, x: number): void {
+    const object = this.find(id);
+    if (object) object.place = Math.max(0, Math.round(x));
+  }
+
+  /** Every object back to its automatic place. */
+  tidy(): void {
+    if (!this.moved) return;
+    for (const object of this.objects) object.place = null;
+    this.relayout();
+    this.placeVersion++;
+  }
+
   private relayout(): void {
-    this.layout = layoutSet(this.dims());
+    this.layout = layoutSet(this.dims(), setSpacing(this.dims()), this.places(), this.hiddenFlags());
   }
 }

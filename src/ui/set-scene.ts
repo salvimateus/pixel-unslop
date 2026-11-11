@@ -73,6 +73,8 @@ export class SetScene implements Scene {
   private hoverId: number | null = null;
   private hoverHandle = false;
   private dragId: number | null = null;
+  /** The object that a drag on its body moves along the ground line. */
+  private moveId: number | null = null;
   /** The decoded source file of each object, for "Ver original"; null while it decodes. */
   private readonly originals = new Map<number, ImageBitmap | null>();
   /** 0 shows the results, 1 the originals; it moves to `originalTarget`. */
@@ -188,8 +190,19 @@ export class SetScene implements Scene {
 
   /** Lays the objects out again during a drag, on the spacing of the frame. */
   updateLive(): void {
-    this.live = layoutSet(this.set.dims(), this.frame);
+    this.live = layoutSet(this.set.dims(), this.frame, this.set.places(), this.set.hiddenFlags());
     if (Math.ceil(this.live.contentW) + 1 > this.boundsX.length) this.updateBounds();
+    this.host?.invalidate();
+  }
+
+  /** A move of one object: it draws on top, and with less opacity while it overlaps another object. */
+  beginMove(id: number): void {
+    this.moveId = id;
+    this.host?.invalidate();
+  }
+
+  endMove(): void {
+    this.moveId = null;
     this.host?.invalidate();
   }
 
@@ -271,10 +284,11 @@ export class SetScene implements Scene {
 
     const objects = this.set.objects;
     const rects = this.screenRects(camera);
+    const order = this.drawOrder();
     if (this.dragId !== null) this.drawGuide(ctx, rect, rects[this.ids.indexOf(this.dragId)]);
     ctx.imageSmoothingEnabled = false;
     alive = this.stepOriginal(now) || alive;
-    for (let i = 0; i < objects.length; i++) alive = this.drawObject(ctx, objects[i], rects[i], groundY, now) || alive;
+    for (const i of order) if (!objects[i].hidden) alive = this.drawObject(ctx, objects[i], rects[i], groundY, now, this.overlapAlpha(i, rects)) || alive;
 
     if (zoom >= TUNING.set.gridMinCellPx) {
       const path = gridPath(this.boundsX, this.boundsY, camera, clip, dpr);
@@ -285,7 +299,7 @@ export class SetScene implements Scene {
     ctx.fillRect(rect.x, Math.round(groundY * dpr) / dpr - 1, rect.w, 2);
     ctx.restore();
 
-    for (let i = 0; i < objects.length; i++) this.drawMarks(ctx, objects[i], rects[i]);
+    for (const i of order) if (!objects[i].hidden) this.drawMarks(ctx, objects[i], rects[i]);
     this.drawLabels(ctx, objects, rects, groundY);
     alive = this.drawRing(fx, rects, now) || alive;
     return alive;
@@ -296,8 +310,34 @@ export class SetScene implements Scene {
     if (!host) return null;
     const objects = this.set.objects;
     const rects = this.screenRects(host.camera);
-    for (let i = objects.length - 1; i >= 0; i--) if (rects[i] && test(objects[i], rects[i])) return objects[i].id;
+    const order = this.drawOrder();
+    for (let k = order.length - 1; k >= 0; k--) {
+      const i = order[k];
+      if (rects[i] && !objects[i].hidden && test(objects[i], rects[i])) return objects[i].id;
+    }
     return null;
+  }
+
+  /** List order, with the selected object and then the moved one on top: hits follow the same order. */
+  private drawOrder(): number[] {
+    const order = this.set.objects.map((_, i) => i);
+    for (const id of [this.selectedId, this.moveId]) {
+      const index = id === null ? -1 : this.ids.indexOf(id);
+      if (index < 0) continue;
+      order.splice(order.indexOf(index), 1);
+      order.push(index);
+    }
+    return order;
+  }
+
+  /** The moved object shows the objects below it while it overlaps one of them. */
+  private overlapAlpha(index: number, rects: Rect[]): number {
+    if (this.moveId === null || this.ids[index] !== this.moveId) return 1;
+    const a = rects[index];
+    if (!a) return 1;
+    const objects = this.set.objects;
+    const overlaps = rects.some((b, i) => i !== index && b && !objects[i]?.hidden && a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h);
+    return overlaps ? TUNING.set.overlapAlpha : 1;
   }
 
   private screenRects(camera: Camera): Rect[] {
@@ -343,11 +383,12 @@ export class SetScene implements Scene {
     return entry.canvas;
   }
 
-  private drawObject(ctx: CanvasRenderingContext2D, object: SetObject, rect: Rect | undefined, groundY: number, now: number): boolean {
+  private drawObject(ctx: CanvasRenderingContext2D, object: SetObject, rect: Rect | undefined, groundY: number, now: number, alpha = 1): boolean {
     if (!rect) return false;
     const start = this.pops.get(object.id);
     let alive = false;
     ctx.save();
+    ctx.globalAlpha = alpha;
     if (start !== undefined) {
       const t = progress(now, start, TUNING.set.popMs);
       if (t >= 1) {
@@ -357,7 +398,7 @@ export class SetScene implements Scene {
         alive = true;
         const scale = Math.max(0.001, easeOutBack(t));
         const cx = rect.x + rect.w / 2;
-        ctx.globalAlpha = Math.min(1, t * 3);
+        ctx.globalAlpha = alpha * Math.min(1, t * 3);
         ctx.translate(cx, groundY);
         ctx.scale(scale, scale);
         ctx.translate(-cx, -groundY);
@@ -543,7 +584,7 @@ export class SetScene implements Scene {
     for (let i = 0; i < objects.length; i++) {
       const object = objects[i];
       const rect = rects[i];
-      if (!rect) continue;
+      if (!rect || object.hidden) continue;
       const prepared = object.prepared;
       const text = object.output ? this.labels.height(object.height) : this.labels.empty;
       const badge = object.reference ? this.labels.reference : prepared && object.output ? ratioLabel(object.step, prepared.rows, object.height) : null;

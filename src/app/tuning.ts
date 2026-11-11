@@ -90,6 +90,10 @@ export const TUNING = {
     rippleMs: 520,
     rippleRadiusTiles: 9,
     eyedropperReturnsToPencil: true,
+    /** The largest pencil and eraser size, in grid squares; the larger side of the sprite also limits it. */
+    brushMax: 32,
+    /** The footprint shows this long after a size change, with a short pop. */
+    brushFlashMs: 650,
     /** The dashed outline of the box that the export writes. */
     exportBoxAlpha: 0.75,
   },
@@ -108,6 +112,10 @@ export const TUNING = {
     warnBadgePx: 18,
     popMs: 360,
     snapRingMs: 320,
+    /** A moved object that overlaps another one draws with this opacity, so both show. */
+    overlapAlpha: 0.6,
+    /** A press on an object moves it only after this many screen pixels; a shorter press selects it. */
+    moveThresholdPx: 4,
     /** The cross fade of "Ver original". */
     originalFadeMs: 120,
   },

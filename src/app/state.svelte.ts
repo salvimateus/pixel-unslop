@@ -18,6 +18,12 @@ import { TUNING } from './tuning.ts';
 /** `set-grid` is the Grade step of a set: one piece of the set is open on the Grade screen. */
 export type Screen = 'drop' | 'set-grid' | 'set' | 'grid' | 'clean';
 export type Tool = 'view' | 'pencil' | 'eraser' | 'bucket' | 'picker';
+/** The tools with a brush size. */
+export type BrushTool = 'pencil' | 'eraser';
+export interface BrushSizes {
+  pencil: number;
+  eraser: number;
+}
 export type PresetName = 'off' | 'light' | 'normal' | 'strong';
 export type ToastKind = 'info' | 'success' | 'warn' | 'error';
 
@@ -64,6 +70,13 @@ export interface StageProbe {
 export interface DropSignal {
   kind: 'ok' | 'bad';
   at: number;
+}
+
+/** The brush sizes of the last session, "pencil,eraser"; a missing or broken value gives 1 and 1. */
+function storedBrush(): BrushSizes {
+  const [pencil, eraser] = (readStored('brush') ?? '').split(',').map(Number);
+  const valid = (value: number) => (Number.isInteger(value) && value >= 1 ? Math.min(value, TUNING.clean.brushMax) : 1);
+  return { pencil: valid(pencil), eraser: valid(eraser) };
 }
 
 function stored<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
@@ -148,6 +161,8 @@ class AppState {
   editVersion = $state(0);
   exportedEditVersion = $state(-1);
   tool = $state<Tool>('pencil');
+  /** The size of the pencil and of the eraser, in grid squares; each tool keeps its own. */
+  brush = $state<BrushSizes>(storedBrush());
   ink = $state<number>(pack(0, 0, 0));
   previewBg = $state<PreviewBackground>(stored('previewBg', BACKGROUNDS, 'checker'));
   showTileGrid = $state(false);
@@ -169,7 +184,9 @@ class AppState {
   /** The worker rejected the grid that the user placed by hand: the grid on screen is not the grid of the fit. */
   gridRejected = $state(false);
   private editEntryVersion = 0;
-  private editEntryFitVersion = 0;
+  private editEntryFitVersion = $state(0);
+  /** A grid of the set changed, or a piece came in, after the last "Limpar tudo!". */
+  private setGridChanged = $state(false);
   aboutOpen = $state(false);
   toasts = $state<ToastItem[]>([]);
   confirmRequest = $state.raw<ConfirmRequest | null>(null);
@@ -206,6 +223,17 @@ class AppState {
   /** Set changes, or edits of the open object, that no export has written yet. */
   get setUnexported(): boolean {
     return this.set.unexported || (this.editingId !== null && this.editVersion !== this.editEntryVersion);
+  }
+
+  /**
+   * The Grade step of a set needs "Limpar tudo!": no result yet, a grid changed, a new piece, or a typed shared
+   * size that some pieces do not have. Otherwise its primary button only goes back to the set.
+   */
+  get setGridPending(): boolean {
+    if (!this.setCleaned || this.setGridChanged) return true;
+    const open = this.editingObject;
+    if (this.screen === 'set-grid' && open && !open.reference && this.fitVersion !== this.editEntryFitVersion) return true;
+    return this.staleSharedPieces().length > 0;
   }
 
   private get strength(): number {
@@ -249,6 +277,22 @@ class AppState {
     this.zoomAvailable = true;
     this.zoomPercent = snapZoom(percent);
     this.zoomShownAt = performance.now();
+  }
+
+  /** The largest brush for the sprite on the Limpar screen: TUNING.clean.brushMax, or its larger side. */
+  get brushLimit(): number {
+    const sprite = this.result?.sprite;
+    return sprite ? Math.max(1, Math.min(TUNING.clean.brushMax, Math.max(sprite.cols, sprite.rows))) : TUNING.clean.brushMax;
+  }
+
+  /** The size of a brush tool, inside 1 and the limit of the sprite. Returns the size in use. */
+  setBrush(tool: BrushTool, size: number): number {
+    const next = Math.round(Math.min(this.brushLimit, Math.max(1, size)));
+    if (next !== this.brush[tool]) {
+      this.brush = { ...this.brush, [tool]: next };
+      writeStored('brush', `${this.brush.pencil},${this.brush.eraser}`);
+    }
+    return next;
   }
 
   toggleMute(): void {
@@ -730,6 +774,7 @@ class AppState {
         ownStrength: Number.NaN,
       }));
       const added = this.set.add(inits);
+      if (!asReference) this.setGridChanged = true;
       if (starting) this.set.markExported();
       sfx.play('drop');
       this.dropSignal = { kind: 'ok', at: performance.now() };
@@ -777,6 +822,7 @@ class AppState {
     if (pieces.length === 0) {
       this.set.grid = next;
       this.set.touch();
+      this.setGridChanged = true;
       return true;
     }
     let result: FitSetResult | null;
@@ -815,7 +861,10 @@ class AppState {
     });
     this.set.touch();
     // The Grade step shows no result: the merge and the set stage wait for "Limpar tudo!".
-    if (this.screen === 'set-grid') return true;
+    if (this.screen === 'set-grid') {
+      this.setGridChanged = true;
+      return true;
+    }
     if (!(await this.refreshSet())) this.set.rebuild(this.strength);
     return true;
   }
@@ -863,7 +912,7 @@ class AppState {
     const grid = this.set.grid;
     if (grid.mode !== 'shared' || !grid.typed || !grid.period) return true;
     const period = grid.period;
-    const stale = this.set.pieces.filter((piece) => !piece.inputs.grid && !samePeriod(piece.inputs.fixedPeriod ?? pixelSizeOf(piece.fit), period));
+    const stale = this.staleSharedPieces();
     if (stale.length === 0) return true;
     let result: FitSetResult;
     try {
@@ -894,10 +943,19 @@ class AppState {
       piece.session.setBase(item.raw);
     });
     this.set.touch();
+    this.setGridChanged = true;
     return true;
   }
 
-  /** "Limpar tudo!": stores the open piece, gives every piece its grid, cleans all pieces and opens the result. */
+  /** In "Uma grade para todas" with a typed size: the pieces with no hand grid whose pixel size is another one. */
+  private staleSharedPieces(): SetObject[] {
+    const grid = this.set.grid;
+    if (grid.mode !== 'shared' || !grid.typed || !grid.period) return [];
+    const period = grid.period;
+    return this.set.pieces.filter((piece) => !piece.inputs.grid && !samePeriod(piece.inputs.fixedPeriod ?? pixelSizeOf(piece.fit), period));
+  }
+
+  /** "Limpar tudo!", or "Voltar ao conjunto" when nothing is pending: stores the open piece, gives every piece its grid, cleans all pieces and opens the result. */
   async cleanSet(): Promise<void> {
     if (this.loading || this.cleaning || !this.set.active) return;
     if (!(await this.storeGridObject(false))) return;
@@ -910,6 +968,7 @@ class AppState {
     }
     if (this.editingId !== null) this.closeEditor();
     this.setCleaned = true;
+    this.setGridChanged = false;
     sfx.play('sweep');
     this.screen = 'set';
   }
@@ -1116,6 +1175,7 @@ class AppState {
       object.session.setBase(raw);
       this.editEntryFitVersion = this.fitVersion;
       this.set.touch();
+      this.setGridChanged = true;
     } catch (error) {
       this.fail(error);
       return false;
@@ -1291,11 +1351,15 @@ interface DevSetObject {
   backgroundKept: boolean;
   reference: boolean;
   pixelSize: { x: number; y: number };
+  /** The left edge of the object in the scene, in scene pixels; `place` is the manual one, or null. */
+  x: number;
+  place: number | null;
+  hidden: boolean;
   pixels: number[];
 }
 
 interface DevHook {
-  state(): { screen: string; busy: boolean; fit: GridFit | null; tool: string };
+  state(): { screen: string; busy: boolean; fit: GridFit | null; tool: string; brush: BrushSizes };
   sprite(): { cols: number; rows: number; pixels: number[] } | null;
   imageToScreen(x: number, y: number): { x: number; y: number };
   tileToScreen(col: number, row: number): { x: number; y: number };
@@ -1336,7 +1400,7 @@ function setBox(id: number): { x: number; y: number; w: number; h: number } | nu
 /** Dev mode only: lets the orchestrator place pointer events and read the result. */
 export function installDevHook(): void {
   window.__unslop = {
-    state: () => ({ screen: app.screen, busy: app.busy, fit: app.fit, tool: app.tool }),
+    state: () => ({ screen: app.screen, busy: app.busy, fit: app.fit, tool: app.tool, brush: { ...app.brush } }),
     sprite: () => {
       if (!app.result) return null;
       const sprite = app.session.composed();
@@ -1358,6 +1422,9 @@ export function installDevHook(): void {
         backgroundKept: object.backgroundKept,
         reference: object.reference,
         pixelSize: pixelSizeOf(object.fit),
+        x: app.set.layout.boxes[app.set.objects.indexOf(object)]?.x ?? 0,
+        place: object.place,
+        hidden: object.hidden,
         pixels: object.output ? Array.from(object.output.pixels) : [],
       }));
       const grid = app.set.grid;

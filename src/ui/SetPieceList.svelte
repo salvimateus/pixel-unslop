@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { tick } from 'svelte';
   import { isWholeStep, ratioLabel } from '../app/image-set.svelte.ts';
   import { app } from '../app/state.svelte.ts';
   import { formatDecimal, t } from '../app/i18n.ts';
@@ -18,13 +18,7 @@
   let fileInput: HTMLInputElement;
   let referenceInput: HTMLInputElement;
 
-  /** Row height and gap of the list, in CSS px: the list shows whole rows only, so no row is cut. */
-  const ROW_PX = 48;
-  const GAP_PX = 4;
-
-  let box: HTMLDivElement;
   let list: HTMLUListElement | undefined = $state();
-  let rows = $state(1);
 
   const items = $derived.by(() => {
     void app.set.version;
@@ -45,6 +39,7 @@
       quality: fit.quality,
       backgroundKept: object.backgroundKept,
       reference: object.reference,
+      hidden: object.hidden,
       // The mean of both axes, as the size control of the Grade step shows it.
       pixelSize: (fit.axes.x.period + fit.axes.y.period) / 2,
       };
@@ -53,7 +48,6 @@
   const selectedId = $derived(view === 'grid' ? app.editingId : app.set.selectedId);
   const ownGrid = $derived(app.set.grid.mode === 'own');
   const full = $derived(items.length >= TUNING.set.maxObjects);
-  const listHeight = $derived(Math.max(1, rows) * ROW_PX + Math.max(0, rows - 1) * GAP_PX);
 
   /** A piece selected on the stage scrolls into the list view. Only the list scrolls: scrollIntoView would move clipped layout boxes too. */
   $effect(() => {
@@ -65,15 +59,6 @@
       if (top < list.scrollTop) list.scrollTop = top;
       else if (top + row.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = top + row.offsetHeight - list.clientHeight;
     });
-  });
-
-  onMount(() => {
-    const observer = new ResizeObserver((entries) => {
-      const height = entries[0].contentRect.height;
-      rows = Math.max(1, Math.floor((height + GAP_PX) / (ROW_PX + GAP_PX)));
-    });
-    observer.observe(box);
-    return () => observer.disconnect();
   });
 
   function select(id: number): void {
@@ -110,10 +95,10 @@
       </button>
     </span>
   </div>
-  <div class="pieces-box" bind:this={box}>
-    <ul class="piece-list" bind:this={list} style:max-height="{listHeight}px">
+  <div class="pieces-box">
+    <ul class="piece-list" bind:this={list}>
       {#each items as item (item.id)}
-        <li class="piece" class:is-selected={selectedId === item.id} class:is-ref={item.reference} data-piece={item.id}>
+        <li class="piece" class:is-selected={selectedId === item.id} class:is-ref={item.reference} class:is-hidden={item.hidden} class:has-eye={view === 'result'} data-piece={item.id}>
           <button type="button" class="piece-main" aria-pressed={selectedId === item.id} onclick={() => select(item.id)} disabled={view === 'grid' && app.loading}>
             <span class="piece-thumb-box">
               {#if view === 'grid'}
@@ -159,6 +144,22 @@
             <button type="button" class="piece-warn" title={t('set.weakAction', { name: item.name })} aria-label={t('set.weakAction', { name: item.name })} onclick={() => app.openSetGrid(item.id)} disabled={app.loading}>
               <Icon name="alert" size={16} />
               <span class="piece-warn-label">{t('set.weak')}</span>
+            </button>
+          {/if}
+          {#if view === 'result'}
+            <!-- Hide is for the view only: the export, the palette and the cleanup stay as they are. -->
+            <button
+              type="button"
+              class="piece-eye"
+              aria-pressed={item.hidden}
+              aria-label={item.hidden ? t('set.showPiece', { name: item.name }) : t('set.hidePiece', { name: item.name })}
+              title="{item.hidden ? t('set.showHint') : t('set.hideHint')} (H)"
+              onclick={() => {
+                app.set.setHidden(item.id, !item.hidden);
+                sfx.play('tick');
+              }}
+            >
+              <Icon name={item.hidden ? 'eyeOff' : 'eye'} size={16} />
             </button>
           {/if}
         </li>
@@ -268,15 +269,30 @@
       }
     }
 
+    /* The list takes all the free height of the panel; a cut last row shows that the list scrolls. */
     .pieces-box {
+      display: grid;
       min-height: 0;
       overflow: hidden;
+    }
+
+    /* The result view always shows two rows: on a short window the panel scrolls instead. */
+    .pieces:not(.is-grid) {
+      grid-template-rows: auto minmax(auto, 1fr);
+
+      /* Size containment: the rows do not grow the panel; the box only takes the free height, two rows at least. */
+      & .pieces-box {
+        contain: size;
+        min-height: 100px;
+      }
     }
 
     .piece-list {
       display: grid;
       grid-auto-rows: 48px;
+      align-content: start;
       gap: 4px;
+      min-height: 0;
       overflow: hidden auto;
       overscroll-behavior: contain;
       scroll-snap-type: y mandatory;
@@ -425,6 +441,36 @@
 
     .piece.is-ref {
       border-style: dashed;
+    }
+
+    .piece.has-eye {
+      grid-template-columns: minmax(0, 1fr) auto auto;
+    }
+
+    .piece.is-hidden .piece-main {
+      opacity: 0.5;
+    }
+
+    .piece-eye {
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      margin-right: var(--space-1);
+      color: var(--text-muted);
+      border-radius: var(--radius-s);
+      transition:
+        color var(--dur-hover) var(--ease-sym),
+        background-color var(--dur-hover) var(--ease-sym);
+
+      &:hover {
+        color: var(--text);
+        background: var(--surface-3);
+      }
+
+      &[aria-pressed='true'] {
+        color: var(--yellow);
+      }
     }
 
     .piece-ref {

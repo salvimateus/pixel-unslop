@@ -888,7 +888,7 @@
       {#if app.gridRejected}
         <p class="footer-note is-error" role="alert"><Icon name="alert" size={16} />{t('grid.rejected')}</p>
       {:else if setMode}
-        <p class="footer-note">{t('setGrid.next', { count: pieceCount })}</p>
+        <p class="footer-note">{app.setGridPending ? t('setGrid.next', { count: pieceCount }) : t('setGrid.nextKeep')}</p>
       {/if}
       <div class="grid-actions">
         <button type="button" class="btn btn-quiet" title={setMode ? t('setGrid.back') : t('grid.back')} onclick={() => app.goTo('drop')}>
@@ -896,8 +896,13 @@
           {#if setMode}<span class="visually-hidden">{t('setGrid.back')}</span>{:else}{t('grid.back')}{/if}
         </button>
         <button type="button" class="btn btn-primary btn-big" onclick={primary} disabled={!fit || app.cleaning || app.loading || app.gridRejected}>
-          <Icon name="sparkle" size={20} />
-          {setMode ? t('setGrid.cleanAll') : t('grid.clean')}
+          {#if setMode && !app.setGridPending}
+            <Icon name="check" size={20} />
+            {t('set.backToSet')}
+          {:else}
+            <Icon name="sparkle" size={20} />
+            {setMode ? t('setGrid.cleanAll') : t('grid.clean')}
+          {/if}
         </button>
       </div>
     </div>

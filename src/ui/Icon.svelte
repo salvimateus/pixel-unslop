@@ -30,6 +30,8 @@
     close: 'M6 6l12 12M18 6L6 18',
     more: 'M5 12h1M11.5 12h1M18 12h1',
     compare: 'M12 2v20M4 6h5v12H4zM15 6h5v12h-5z',
+    eye: 'M2 12l4-5h12l4 5-4 5H6zM10 10h4v4h-4z',
+    eyeOff: 'M2 12l4-5h12l4 5-4 5H6zM10 10h4v4h-4zM3 3l18 18',
     star: 'M12 3l2.6 5.6 6.1.7-4.5 4.2 1.2 6L12 16.5l-5.4 3 1.2-6L3.3 9.3l6.1-.7z',
     arrows: 'M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3',
   } as const;
