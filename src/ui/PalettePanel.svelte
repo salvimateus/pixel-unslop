@@ -46,7 +46,7 @@
     menu.style.left = `${Math.min(rect.left, window.innerWidth - 260)}px`;
     menu.style.top = `${rect.bottom + 6}px`;
     menu.showPopover();
-    menu.querySelector('button')?.focus();
+    menu.querySelector('button')?.focus({ preventScroll: true });
   }
 
   function onSwatchMenu(event: MouseEvent, color: number): void {

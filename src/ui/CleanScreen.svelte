@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import { TRANSPARENT } from '../core/color.ts';
   import { borderBackground, floodRegion, indicesOfColor, lineTiles, listPalette } from '../core/sprite.ts';
+  import { opaqueBox } from '../app/image-set.svelte.ts';
   import { app, type Tool } from '../app/state.svelte.ts';
   import { t, type TextKey } from '../app/i18n.ts';
   import * as sfx from '../app/sfx.ts';
@@ -62,6 +63,12 @@
     void app.editVersion;
     return result ? app.session.composed().pixels.includes(TRANSPARENT) : false;
   });
+  /** The box that the export writes: the opaque tiles. The stage outlines it when it is smaller than the canvas. */
+  const exportBox = $derived.by(() => {
+    void app.editVersion;
+    return result ? opaqueBox(app.session.composed()) : null;
+  });
+  const trimmed = $derived(exportBox !== null && result !== null && (exportBox.cols !== result.sprite.cols || exportBox.rows !== result.sprite.rows));
   const canUndo = $derived.by(() => {
     void app.editVersion;
     return app.session.canUndo;
@@ -102,6 +109,13 @@
     if (!scene) return;
     scene.background = bg;
     scene.showGrid = grid;
+    stage?.invalidate();
+  });
+
+  $effect(() => {
+    const box = trimmed ? exportBox : null;
+    if (!scene) return;
+    scene.exportBox = box;
     stage?.invalidate();
   });
 
@@ -326,7 +340,7 @@
       redo();
     } else if (mod && key === 's') {
       event.preventDefault();
-      app.exportOpen = true;
+      if (app.editingId === null) app.exportOpen = true;
     } else if (event.key === 'Escape') {
       palettePanel?.cancelSwap();
     } else if (!mod && !event.altKey && !isEditable(event.target)) {
@@ -425,8 +439,10 @@
   <aside class="clean-panel">
     <div class="clean-panel-scroll">
       <header class="clean-head">
+        {#if app.editingId !== null && app.source}<p class="piece-tag">{t('clean.piece', { name: app.source.name })}</p>{/if}
         <h1 class="clean-title">{t('clean.title')}</h1>
-        {#if result}<p class="hint">{t('clean.size', { cols: result.sprite.cols, rows: result.sprite.rows })}</p>{/if}
+        {#if result}<p class="hint">{t('clean.size', { cols: result.sprite.cols, rows: result.sprite.rows })} · {t('rule.pixel')}</p>{/if}
+        {#if trimmed && exportBox}<p class="hint export-box-note"><span class="export-box-swatch" aria-hidden="true"></span>{t('clean.exportBox', { w: exportBox.cols, h: exportBox.rows })}</p>{/if}
       </header>
 
       <PalettePanel bind:this={palettePanel} colors={palette} ink={app.ink} onselect={selectColor} onswap={swapColor} ondelete={deleteColor} />
@@ -440,27 +456,48 @@
     </div>
 
     <div class="clean-actions">
-      <button type="button" class="btn btn-quiet" title={t('clean.backToGrid')} onclick={() => app.goTo('grid')}>
+      <button type="button" class="btn btn-quiet" title={t('clean.backToGrid')} onclick={() => app.goTo(app.editingId !== null ? 'set-grid' : 'grid')}>
         <Icon name="back" size={18} />
         <span class="back-label">{t('clean.backToGrid')}</span>
       </button>
-      <button type="button" class="btn btn-primary btn-big" aria-keyshortcuts="Control+S" title="{t('clean.export')} (Ctrl+S)" onclick={() => (app.exportOpen = true)}>
-        <Icon name="download" size={20} />
-        {t('clean.export')}
-      </button>
+      {#if app.editingId !== null}
+        <button type="button" class="btn btn-primary btn-big" onclick={() => app.returnToSet()} disabled={app.loading}>
+          <Icon name="check" size={20} />
+          {t('set.backToSet')}
+        </button>
+      {:else}
+        <button type="button" class="btn btn-primary btn-big" aria-keyshortcuts="Control+S" title="{t('clean.export')} (Ctrl+S)" onclick={() => (app.exportOpen = true)}>
+          <Icon name="download" size={20} />
+          {t('clean.export')}
+        </button>
+      {/if}
     </div>
   </aside>
 </section>
 
 <style>
   @layer components {
+    .export-box-note {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .export-box-swatch {
+      flex: none;
+      width: 14px;
+      height: 10px;
+      border: 1px dashed var(--teal);
+    }
+
     .clean-screen {
       display: grid;
       grid-template-columns: var(--rail-w) minmax(0, 1fr) var(--panel-w);
       height: 100%;
       min-width: 0;
       min-height: 0;
-      overflow: hidden;
+      overflow: clip;
     }
 
     .tool-rail {
@@ -649,6 +686,19 @@
     .clean-title {
       font-size: 1.5rem;
       text-wrap: balance;
+    }
+
+    .piece-tag {
+      justify-self: start;
+      max-width: 100%;
+      padding: 2px var(--space-2);
+      overflow: hidden;
+      color: var(--on-primary);
+      background: var(--teal);
+      border-radius: var(--radius-s);
+      font: 600 0.8125rem/1.3 var(--font-body);
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .remove-bg {

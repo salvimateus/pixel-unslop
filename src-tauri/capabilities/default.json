@@ -5,7 +5,9 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "dialog:allow-open",
     "dialog:allow-save",
+    "fs:allow-exists",
     "fs:allow-read-file",
     "fs:allow-write-file",
     "opener:allow-reveal-item-in-dir",

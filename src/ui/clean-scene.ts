@@ -14,6 +14,7 @@ import {
   gridPath,
   intersect,
   progress,
+  snap,
   strokeGrid,
   viewRect,
   type Rect,
@@ -59,6 +60,8 @@ export class CleanScene implements Scene {
   readonly maxZoom = TUNING.zoom.cleanMax;
   background: PreviewBackground = 'checker';
   showGrid = false;
+  /** The tiles that the export writes, when they are fewer than the canvas; drawn as a faint dashed outline. */
+  exportBox: { col: number; row: number; cols: number; rows: number } | null = null;
   /** Fraction of the width that shows "before", from the left edge. */
   split = 0;
   private host: StageHost | null = null;
@@ -308,12 +311,34 @@ export class CleanScene implements Scene {
       strokeGrid(ctx, path, dpr, STAGE_COLORS.gridSoft, camera.zoom >= TUNING.grid.haloMinCellPx);
     }
 
+    if (this.exportBox && this.sweepStart < 0) this.drawExportBox(ctx, camera, dpr);
     alive = this.drawWaves(fx, camera, now) || alive;
     if (this.sweepStart < 0) this.drawHover(ctx, camera, dpr);
     this.drawSplit(ctx, rect, clip, splitX);
     alive = this.drawPops(fx, camera, now) || alive;
     alive = this.drawRipples(fx, camera, now) || alive;
     return alive;
+  }
+
+  private drawExportBox(ctx: CanvasRenderingContext2D, camera: Camera, dpr: number): void {
+    const box = this.exportBox;
+    if (!box) return;
+    const p = camera.imageToScreen(box.col, box.row);
+    const x = snap(p.x, dpr);
+    const y = snap(p.y, dpr);
+    const w = Math.round(box.cols * camera.zoom * dpr) / dpr;
+    const h = Math.round(box.rows * camera.zoom * dpr) / dpr;
+    ctx.save();
+    ctx.globalAlpha = TUNING.clean.exportBoxAlpha;
+    ctx.lineWidth = 1 / dpr;
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = STAGE_COLORS.shadow;
+    ctx.lineDashOffset = 4;
+    ctx.strokeRect(x, y, w, h);
+    ctx.strokeStyle = STAGE_COLORS.teal;
+    ctx.lineDashOffset = 0;
+    ctx.strokeRect(x, y, w, h);
+    ctx.restore();
   }
 
   private putIndices(indices: ArrayLike<number>): void {

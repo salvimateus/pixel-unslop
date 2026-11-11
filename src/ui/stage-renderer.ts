@@ -31,6 +31,10 @@ export interface StagePointer {
   ix: number;
   iy: number;
   shift: boolean;
+  /** Alt (Option) is held: a single-line move in "Ajustar linhas". */
+  alt: boolean;
+  /** Ctrl (Cmd on a Mac) is held: a drag moves the full grid on the Grade screen. */
+  ctrl: boolean;
 }
 
 export interface Rect {
@@ -50,7 +54,10 @@ export interface ViewMap {
 const STAGE_TOKENS = {
   gridLine: '--stage-grid-line',
   gridSoft: '--stage-grid-soft',
+  gridFaint: '--stage-grid-faint',
   gridHalo: '--stage-grid-halo',
+  gridFit: '--stage-grid-fit',
+  gridFitHalo: '--stage-grid-fit-halo',
   gridFlash: '--stage-flash',
   accent: '--stage-accent',
   accentFill: '--stage-accent-fill',
@@ -167,9 +174,9 @@ export function gridPath(xs: ArrayLike<number>, ys: ArrayLike<number>, map: View
   return path;
 }
 
-export function strokeGrid(ctx: CanvasRenderingContext2D, path: Path2D, dpr: number, color: string, halo: boolean, width = 1): void {
+export function strokeGrid(ctx: CanvasRenderingContext2D, path: Path2D, dpr: number, color: string, halo: boolean, width = 1, haloColor = STAGE_COLORS.gridHalo): void {
   if (halo) {
-    ctx.strokeStyle = STAGE_COLORS.gridHalo;
+    ctx.strokeStyle = haloColor;
     ctx.lineWidth = (width + 2) / dpr;
     ctx.stroke(path);
   }

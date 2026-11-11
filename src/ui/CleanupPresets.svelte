@@ -6,9 +6,11 @@
   interface Props {
     /** The helper line under the buttons; each screen explains the effect in its own words. */
     hint: string;
+    /** A short reading next to the title, such as the color count of the result. */
+    aside?: string;
   }
 
-  let { hint }: Props = $props();
+  let { hint, aside }: Props = $props();
 
   const LABELS: Record<PresetName, TextKey> = { off: 'cleanup.off', light: 'cleanup.light', normal: 'cleanup.normal', strong: 'cleanup.strong' };
 
@@ -21,17 +23,38 @@
 </script>
 
 <section class="field cleanup" aria-labelledby="cleanup-title">
-  <h2 class="section-title" id="cleanup-title">{t('cleanup.title')}</h2>
+  {#if aside}
+    <div class="cleanup-head">
+      <h2 class="section-title" id="cleanup-title">{t('cleanup.title')}</h2>
+      <span class="cleanup-aside">{aside}</span>
+    </div>
+  {:else}
+    <h2 class="section-title" id="cleanup-title">{t('cleanup.title')}</h2>
+  {/if}
   <div class="segmented presets" role="group" aria-labelledby="cleanup-title">
     {#each PRESET_NAMES as name (name)}
       <button type="button" aria-pressed={app.preset === name} onclick={() => choose(name)}>{t(LABELS[name])}</button>
     {/each}
   </div>
-  <p class="hint">{hint}</p>
+  <p class="hint cleanup-hint">{hint}</p>
 </section>
 
 <style>
   @layer components {
+    .cleanup-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: var(--space-2);
+    }
+
+    .cleanup-aside {
+      color: var(--text-muted);
+      font-size: 0.875rem;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
     /* Four equal columns, so short labels never run together. */
     .presets {
       display: grid;

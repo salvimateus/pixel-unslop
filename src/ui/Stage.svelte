@@ -2,7 +2,7 @@
   import { onMount, type Snippet } from 'svelte';
   import { app } from '../app/state.svelte.ts';
   import { TUNING } from '../app/tuning.ts';
-  import { Camera } from './camera.ts';
+  import { Camera, type Point } from './camera.ts';
   import { ParticleField } from './particles.ts';
   import type { Scene, StageHost, StagePointer } from './stage-renderer.ts';
 
@@ -74,6 +74,29 @@
   export function fitView(): void {
     userMoved = false;
     camera.fit(scene.initialZoom(camera));
+    invalidate();
+    onviewchange?.();
+  }
+
+  /**
+   * Reads the content size of the scene again and keeps the zoom. With `keep`, the content point `from`
+   * (old units) stays at its screen position, now as the point `to` (new units). Until the user zooms or pans,
+   * content that grew past the view is framed again. Never call it during a drag.
+   */
+  export function syncContent(keep?: { from: Point; to: Point }): void {
+    const anchor = keep ? camera.imageToScreen(keep.from.x, keep.from.y) : null;
+    camera.setContent(scene.contentW, scene.contentH, scene.maxZoom);
+    if (!userMoved && camera.fitZoom() < camera.zoom) {
+      camera.fit(scene.initialZoom(camera));
+      invalidate();
+      onviewchange?.();
+      return;
+    }
+    if (anchor && keep) {
+      camera.panX = anchor.x - keep.to.x * camera.zoom;
+      camera.panY = anchor.y - keep.to.y * camera.zoom;
+    }
+    camera.panBy(0, 0);
     invalidate();
     onviewchange?.();
   }
@@ -183,7 +206,7 @@
     const sx = event.clientX - rect.left;
     const sy = event.clientY - rect.top;
     const p = camera.screenToImage(sx, sy);
-    return { sx, sy, ix: p.x, iy: p.y, shift: event.shiftKey };
+    return { sx, sy, ix: p.x, iy: p.y, shift: event.shiftKey, alt: event.altKey, ctrl: event.ctrlKey || event.metaKey };
   }
 
   function onWheel(event: WheelEvent): void {
@@ -324,7 +347,7 @@
       position: relative;
       min-width: 0;
       min-height: 0;
-      overflow: hidden;
+      overflow: clip;
       contain: strict;
       background:
         radial-gradient(circle at 50% 40%, var(--stage-glow) 0%, transparent 70%),

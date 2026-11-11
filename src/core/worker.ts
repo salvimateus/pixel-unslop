@@ -2,16 +2,22 @@ import { CoreError, errorCode, errorMessage } from './errors.ts';
 import {
   AUTO_OPTIONS,
   alignSource,
+  checkSetGrid,
   exportSprite,
+  fitSetSource,
   fitSource,
+  jointFit,
+  manualFitSource,
   mergeSprite,
   sampleSource,
+  sharedPeriodOf,
   sourceFromImage,
   sourceFromPng,
+  suggestedSetGrid,
   type Source,
 } from './pipeline.ts';
 import { isPng } from './png.ts';
-import type { EngineReply, EngineRequest, Stage, WorkerMessage } from './protocol.ts';
+import type { EngineReply, EngineRequest, SetFitItem, SetGrid, Stage, WorkerMessage } from './protocol.ts';
 import type { GridFit, RasterImage, Sprite } from './types.ts';
 
 /** The worker global, typed by hand because the DOM lib types `self` as Window. */
@@ -77,6 +83,55 @@ function toBitmap(image: RasterImage): Promise<ImageBitmap> {
   return createImageBitmap(data, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
 }
 
+function failedItem(error: unknown): SetFitItem {
+  return { ok: false, error: errorCode(error), detail: errorMessage(error) };
+}
+
+/** Decodes and fits each image of a set. One failed image fails alone. */
+async function fitSet(id: number, images: ArrayBuffer[], grid: SetGrid): Promise<{ reply: EngineReply; transfer: Transferable[] }> {
+  if (!Array.isArray(images)) throw new CoreError('internal', 'fit-set needs a list of images.');
+  checkSetGrid(grid);
+  progress(id, 'decode', 0);
+  const decoded: Array<Source | SetFitItem> = [];
+  for (const image of images) {
+    try {
+      decoded.push(await decode(new Uint8Array(image)));
+    } catch (error) {
+      decoded.push(failedItem(error));
+    }
+  }
+  const sources = decoded.filter((entry): entry is Source => !('ok' in entry));
+  const shared = sharedPeriodOf(sources);
+  const fits: Array<{ own: GridFit; joint: GridFit | null }> = [];
+  const items: SetFitItem[] = [];
+  const transfer = new Set<Transferable>();
+  progress(id, 'fit', 0);
+  for (const entry of decoded) {
+    if ('ok' in entry) {
+      items.push(entry);
+    } else {
+      try {
+        const own = fitSource(entry, null, AUTO_OPTIONS);
+        const joint = shared ? jointFit(entry, shared) : null;
+        fits.push({ own, joint });
+        const fit = fitSetSource(entry, grid, own, joint);
+        const raw = sampleSource(entry, fit);
+        items.push({ ok: true, fit, raw, own: { period: { x: own.axes.x.period, y: own.axes.y.period }, quality: own.quality } });
+        transfer.add(raw.pixels.buffer).add(fit.grid.x.buffer).add(fit.grid.y.buffer);
+      } catch (error) {
+        items.push(failedItem(error));
+      }
+    }
+    progress(id, 'fit', items.length / decoded.length);
+  }
+  const suggested = suggestedSetGrid(fits);
+  return { reply: { id, ok: true, type: 'fit-set', shared, suggested, items }, transfer: [...transfer] };
+}
+
+function isNumberList(value: unknown): value is ArrayLike<number> {
+  return value instanceof Float64Array || (Array.isArray(value) && value.every((entry) => typeof entry === 'number'));
+}
+
 function requireState(): State {
   if (!state) throw new CoreError('no-image', 'Load an image first.');
   return state;
@@ -92,14 +147,24 @@ async function handle(request: EngineRequest): Promise<void> {
       const fit = fitSource(source, null, AUTO_OPTIONS);
       state = { source, fit, raw: null };
       const bitmap = await toBitmap(source.image);
-      const reply: EngineReply = { id, ok: true, type: 'load', width: source.image.width, height: source.image.height, bitmap, fit };
-      post(reply, [bitmap]);
+      const profiles = { x: source.edges.x.profile.slice(), y: source.edges.y.profile.slice() };
+      const reply: EngineReply = { id, ok: true, type: 'load', width: source.image.width, height: source.image.height, bitmap, fit, profiles };
+      post(reply, [bitmap, profiles.x.buffer, profiles.y.buffer]);
       return;
     }
     case 'fit': {
       const current = requireState();
       progress(id, 'fit', 0);
       const fit = fitSource(current.source, request.selection, request.options);
+      state = { source: current.source, fit, raw: null };
+      post({ id, ok: true, type: 'fit', fit });
+      return;
+    }
+    case 'set-grid': {
+      const current = requireState();
+      const grid = request.grid;
+      if (!grid || !isNumberList(grid.x) || !isNumberList(grid.y)) throw new CoreError('internal', 'set-grid needs x and y lists of grid lines.');
+      const fit = manualFitSource(current.source, grid);
       state = { source: current.source, fit, raw: null };
       post({ id, ok: true, type: 'fit', fit });
       return;
@@ -122,10 +187,27 @@ async function handle(request: EngineRequest): Promise<void> {
       post({ id, ok: true, type: 'merge', sprite, palette }, [sprite.pixels.buffer, palette.buffer]);
       return;
     }
+    case 'merge-own': {
+      if (!Array.isArray(request.raws)) throw new CoreError('internal', 'merge-own needs a list of sprites.');
+      const total = request.raws.length;
+      const sprites: Sprite[] = [];
+      progress(id, 'merge', 0);
+      for (const raw of request.raws) {
+        sprites.push(mergeSprite(raw, { strength: request.merge.strength }).sprite);
+        progress(id, 'merge', sprites.length / total);
+      }
+      post({ id, ok: true, type: 'merge-own', sprites }, sprites.map((sprite) => sprite.pixels.buffer));
+      return;
+    }
+    case 'fit-set': {
+      const { reply, transfer } = await fitSet(id, request.images, request.grid);
+      post(reply, transfer);
+      return;
+    }
     case 'export': {
-      requireState();
+      // Stateless: it encodes only the sprite of the request.
       progress(id, 'encode', 0);
-      const bytes = exportSprite(request.sprite, request.scale);
+      const bytes = exportSprite(request.sprite, { optimize: request.optimize === true });
       const png = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
       post({ id, ok: true, type: 'export', png }, [png]);
       return;

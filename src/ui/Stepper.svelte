@@ -1,13 +1,24 @@
 <script lang="ts">
-  import { app, SCREENS, type Screen } from '../app/state.svelte.ts';
+  import { app, type Screen } from '../app/state.svelte.ts';
   import { t, type TextKey } from '../app/i18n.ts';
 
-  const LABELS: Record<Screen, TextKey> = { drop: 'step.drop', grid: 'step.grid', clean: 'step.clean' };
-  const current = $derived(SCREENS.indexOf(app.screen));
+  const LABELS: Record<Screen, TextKey> = { drop: 'step.drop', 'set-grid': 'step.grid', set: 'step.set', grid: 'step.grid', clean: 'step.clean' };
+  const SINGLE: readonly Screen[] = ['drop', 'grid', 'clean'];
+  const SET: readonly Screen[] = ['drop', 'set-grid', 'set'];
+  const SET_OBJECT: readonly Screen[] = ['set-grid', 'set', 'clean'];
 
-  /** Back is always open; forward only to a step that already has its data, so nothing is recomputed by surprise. */
+  /** The single flow, the set, or one set object open on the Limpar screen. */
+  const steps = $derived(app.editingId !== null && app.screen === 'clean' ? SET_OBJECT : app.set.active || app.startingSet ? SET : SINGLE);
+  const current = $derived(steps.indexOf(app.screen));
+
+  /**
+   * Back is always open; forward only to a step that already has its data, so nothing is recomputed by surprise.
+   * The result of a set opens from its Grade step: that is the "Limpar tudo!" of the set.
+   */
   function reachable(screen: Screen): boolean {
     if (screen === 'drop') return true;
+    if (screen === 'set-grid') return app.set.active;
+    if (screen === 'set') return app.set.active && (app.setCleaned || app.screen === 'set-grid');
     if (screen === 'grid') return app.source !== null;
     return app.result !== null && app.result.fitVersion === app.fitVersion;
   }
@@ -15,7 +26,7 @@
 
 <nav class="stepper" aria-label={t('step.label')}>
   <ol class="stepper-list">
-    {#each SCREENS as screen, index (screen)}
+    {#each steps as screen, index (screen)}
       <li class="stepper-item" class:is-done={index !== current && reachable(screen)} class:is-current={index === current}>
         {#if index > 0}<span class="stepper-link" aria-hidden="true"></span>{/if}
         <button

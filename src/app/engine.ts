@@ -1,5 +1,5 @@
-import type { EngineReply, EngineRequest, ErrorCode, MergeOptions, Stage, WorkerMessage } from '../core/protocol.ts';
-import type { GridFit, GridOptions, Selection, Sprite } from '../core/types.ts';
+import type { EngineReply, EngineRequest, ErrorCode, MergeOptions, SetFitItem, SetGrid, Stage, WorkerMessage } from '../core/protocol.ts';
+import type { CellGrid, GridFit, GridOptions, Selection, Sprite } from '../core/types.ts';
 import { TUNING } from './tuning.ts';
 
 type RequestType = EngineRequest['type'];
@@ -7,8 +7,8 @@ type SuccessReply<T extends RequestType> = Extract<EngineReply, { ok: true; type
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 type RequestBody = DistributiveOmit<EngineRequest, 'id'>;
 
-/** Only these request types use "latest wins": a slider sends many of them. */
-type LatestType = 'fit' | 'merge';
+/** Only these request types use "latest wins": a slider or a row of level buttons sends many of them. */
+type LatestType = 'fit' | 'merge' | 'merge-own' | 'fit-set';
 
 export class EngineError extends Error {
   readonly code: ErrorCode;
@@ -27,6 +27,8 @@ export interface LoadResult {
   height: number;
   bitmap: ImageBitmap;
   fit: GridFit;
+  /** Edge strength of each boundary between two columns (x) and two rows (y) of source pixels. */
+  profiles: { x: Float64Array; y: Float64Array };
 }
 
 export interface CleanResult {
@@ -38,6 +40,13 @@ export interface CleanResult {
 export interface MergeResult {
   sprite: Sprite;
   palette: Uint32Array;
+}
+
+export interface FitSetResult {
+  /** The joint pixel size of all images, or null when none exists. */
+  shared: { x: number; y: number } | null;
+  suggested: 'own' | 'shared';
+  items: SetFitItem[];
 }
 
 export type ProgressListener = (stage: Stage, ratio: number, id: number) => void;
@@ -63,7 +72,7 @@ export class CleanEngine {
   private worker: Worker | null = null;
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
-  private readonly latest: Record<LatestType, number> = { fit: 0, merge: 0 };
+  private readonly latest: Record<LatestType, number> = { fit: 0, merge: 0, 'merge-own': 0, 'fit-set': 0 };
   private readonly debounced: Partial<Record<LatestType, Debounced>> = {};
   private readonly listeners = new Set<ProgressListener>();
 
@@ -76,12 +85,19 @@ export class CleanEngine {
     this.dropDebounced('fit');
     this.dropDebounced('merge');
     const reply = await this.request({ type: 'load', bytes }, [bytes]);
-    const { width, height, bitmap, fit } = expect(reply, 'load');
-    return { width, height, bitmap, fit };
+    const { width, height, bitmap, fit, profiles } = expect(reply, 'load');
+    return { width, height, bitmap, fit, profiles };
   }
 
   async fit(selection: Selection | null, options: GridOptions, call: CallOptions = {}): Promise<GridFit | null> {
     const reply = await this.requestLatest('fit', { type: 'fit', selection, options }, call);
+    return reply ? expect(reply, 'fit').fit : null;
+  }
+
+  /** Grid lines placed by hand become the fit of the loaded image. Latest wins together with `fit`. */
+  async setGrid(grid: CellGrid, call: CallOptions = {}): Promise<GridFit | null> {
+    const copy: CellGrid = { x: grid.x.slice(), y: grid.y.slice() };
+    const reply = await this.requestLatest('fit', { type: 'set-grid', grid: copy }, call);
     return reply ? expect(reply, 'fit').fit : null;
   }
 
@@ -101,29 +117,46 @@ export class CleanEngine {
     return { sprite, palette };
   }
 
-  async exportPng(sprite: Sprite, scale: number): Promise<Uint8Array> {
+  /** The own palette merge of each raw sprite. Needs no loaded image. The raws are copied, so the caller keeps them. */
+  async mergeOwn(raws: readonly Sprite[], merge: MergeOptions, call: CallOptions = {}): Promise<Sprite[] | null> {
+    const copies = raws.map((raw): Sprite => ({ cols: raw.cols, rows: raw.rows, pixels: raw.pixels.slice() }));
+    const reply = await this.requestLatest('merge-own', { type: 'merge-own', raws: copies, merge }, call, copies.map((copy) => copy.pixels.buffer));
+    return reply ? expect(reply, 'merge-own').sprites : null;
+  }
+
+  /** Fits each image for the set mode, with no loaded image and no change to it. The bytes are copied. */
+  async fitSet(images: readonly ArrayBuffer[], grid: SetGrid, call: CallOptions = {}): Promise<FitSetResult | null> {
+    const copies = images.map((bytes) => bytes.slice(0));
+    const reply = await this.requestLatest('fit-set', { type: 'fit-set', images: copies, grid }, call, copies);
+    if (!reply) return null;
+    const { shared, suggested, items } = expect(reply, 'fit-set');
+    return { shared, suggested, items };
+  }
+
+  /** The PNG of a sprite at one image pixel per tile, the only export size. `optimize` makes it smaller with the same pixels. */
+  async exportPng(sprite: Sprite, options: { optimize: boolean }): Promise<Uint8Array> {
     const copy: Sprite = { cols: sprite.cols, rows: sprite.rows, pixels: sprite.pixels.slice() };
-    const reply = await this.request({ type: 'export', sprite: copy, scale }, [copy.pixels.buffer]);
+    const reply = await this.request({ type: 'export', sprite: copy, optimize: options.optimize }, [copy.pixels.buffer]);
     return new Uint8Array(expect(reply, 'export').png);
   }
 
-  private requestLatest(type: LatestType, body: RequestBody, call: CallOptions): Promise<EngineReply | null> {
+  private requestLatest(type: LatestType, body: RequestBody, call: CallOptions, transfer: Transferable[] = []): Promise<EngineReply | null> {
     this.dropDebounced(type);
-    if (!call.debounce) return this.sendLatest(type, body);
+    if (!call.debounce) return this.sendLatest(type, body, transfer);
     return new Promise((resolve, reject) => {
       const send = () => {
         delete this.debounced[type];
-        this.sendLatest(type, body).then(resolve, reject);
+        this.sendLatest(type, body, transfer).then(resolve, reject);
       };
       const timer = setTimeout(send, TUNING.ui.engineDebounceMs);
       this.debounced[type] = { timer, send, drop: () => resolve(null) };
     });
   }
 
-  private async sendLatest(type: LatestType, body: RequestBody): Promise<EngineReply | null> {
+  private async sendLatest(type: LatestType, body: RequestBody, transfer: Transferable[] = []): Promise<EngineReply | null> {
     const id = this.nextId;
     this.latest[type] = id;
-    const reply = await this.request(body);
+    const reply = await this.request(body, transfer);
     return id < this.latest[type] ? null : reply;
   }
 

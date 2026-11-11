@@ -38,10 +38,12 @@ export const PARAMS = {
     minProminence: 1.25,
     /** ...unless the joint significance (geometric mean of both axes) reaches this value. */
     strongJointSignificance: 15,
-    /** A drawn box keeps the peak within this share of it unless a peak farther away is hintTrust times stronger.
-     * A typed size refines only within this share. */
+    /** The wide search (the suggestion of a drawn box) keeps the peak within this share unless a peak farther away
+     * is hintTrust times stronger. A typed size refines only within this share. */
     hintWindow: 0.08,
     hintTrust: 1.25,
+    /** A drawn box defines the tile: its period stays within this share of the box side, with no harmonic change. */
+    boxWindow: 0.1,
     /** Ratio between two steps of the log-spaced search. */
     logStep: 1.003,
     /** Range of the prior search, as factors of the prior. */
@@ -73,17 +75,35 @@ export const PARAMS = {
     /** Positions per source pixel of the boundary lattice. */
     lattice: 4,
     /** Smallest period for the automatic elastic fit. */
-    minPeriod: 8,
+    minPeriod: 4,
+    /** Smallest grid quality for the automatic elastic fit: a weak grid often has a harmonic period. */
+    minQuality: 2,
     /** Edge energy that the fit must capture over the regular grid. */
-    minGain: 1.5,
+    minGain: 1.3,
     /** Edge energy gain that is enough when the fit has a different cell count than the regular grid. */
-    countChangeGain: 1.25,
+    countChangeGain: 1.15,
+    /**
+     * With a drawn box, the automatic elastic fit needs one of its cells centered near the box center: within
+     * anchorTolerance source pixels or anchorShare of the period, the larger one. A box farther off moves the whole grid.
+     */
+    anchorTolerance: 0.3,
+    anchorShare: 0.045,
+    /**
+     * With a period that the user set (fixedPeriod or a box), the elastic fit may change the cell count of an axis by
+     * at most userCountSlack cells or userCountShare of the regular count, the larger one; else the regular grid stays.
+     */
+    userCountSlack: 1,
+    userCountShare: 0.03,
     minSpacing: 0.75,
     maxSpacing: 1.3,
     /** A cell off the period by this share costs as much as a strong edge earns. */
     slack: 0.25,
     /** Percentile that normalizes the edge strength. */
     normalizePercentile: 0.9,
+  },
+  manualGrid: {
+    /** Smallest spacing between two grid lines that the user placed, in source pixels. */
+    minSpacing: 0.5,
   },
   cells: {
     /** Share of the cell size removed on each side before the vote. */
@@ -111,6 +131,23 @@ export const PARAMS = {
     refinePasses: 2,
     /** The shared palette of several sprites merges their own palettes with this share of the strength. */
     sharedFactor: 0.6,
+  },
+  sizing: {
+    /** Largest k of a 1/k reduction that a height snaps to. */
+    maxReduction: 8,
+    /** Largest enlargement of one object. */
+    maxEnlargement: 4,
+    /** A resampled tile is transparent only above this transparent share, so outlines survive a reduction. */
+    clearAbove: 0.5,
+  },
+  set: {
+    /** A set suggests one shared grid only when each image with a good grid of its own is within this share of the joint period... */
+    sharedTolerance: 0.08,
+    /**
+     * ...and the lower median image keeps at least this share of its own grid coherence under the joint period.
+     * Pieces of one drawing keep most of it; a weak image of another density loses more than half.
+     */
+    minSharedKeep: 0.75,
   },
   background: {
     /** A border color must cover this share of the border tiles. */

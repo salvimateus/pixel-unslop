@@ -25,6 +25,8 @@
     swap: 'M4 8h14M14 4l4 4-4 4M20 16H6M10 12l-4 4 4 4',
     sparkle: 'M12 3v6M12 15v6M3 12h6M15 12h6M18 4v2M17 5h2M6 18v2M5 19h2',
     image: 'M3 4h18v16H3zM3 16l5-5 5 5 3-3 5 5M15 8h1v1h-1z',
+    pieces: 'M2 21h20M4 21v-6h4v6M10 21V7h4v14M16 21v-9h4v9',
+    lock: 'M5 11h14v10H5zM8 11V7a4 4 0 0 1 8 0v4M12 15v2',
     close: 'M6 6l12 12M18 6L6 18',
     more: 'M5 12h1M11.5 12h1M18 12h1',
     compare: 'M12 2v20M4 6h5v12H4zM15 6h5v12h-5z',

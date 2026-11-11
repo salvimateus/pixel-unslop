@@ -40,13 +40,6 @@ export function parseOffset(text: string): { x: number; y: number } {
   return { x: parseNumber(parts[0], '--offset'), y: parseNumber(parts[1], '--offset') };
 }
 
-export type ScaleChoice = number | 'original';
-
-export function parseScale(text: string, allowOriginal: boolean): ScaleChoice {
-  if (allowOriginal && text.trim().toLowerCase() === 'original') return 'original';
-  return parseWhole(text, '--scale', 1);
-}
-
 export function parseCleanup(text: string): number {
   const presets = PARAMS.palette.presets;
   const key = text.trim().toLowerCase();
@@ -69,6 +62,15 @@ export function parseSwap(text: string, flag: string): { from: number; to: numbe
   const parts = text.split('=');
   if (parts.length !== 2) throw usage(`${flag}: use from=to (got ${text}).`);
   return { from: parseColor(parts[0], flag), to: parseColor(parts[1], flag) };
+}
+
+/** `h` for every input, or `input=h` for one input. The last `=` splits, so a path can hold `=`. */
+export function parseHeight(text: string): { key: string | null; height: number } {
+  const index = text.lastIndexOf('=');
+  if (index < 0) return { key: null, height: parseWhole(text, '--height', 1) };
+  const key = text.slice(0, index).trim();
+  if (key === '') throw usage(`--height: use h or input=h (got ${text}).`);
+  return { key, height: parseWhole(text.slice(index + 1), '--height', 1) };
 }
 
 /** `x,y` tile coordinates. */

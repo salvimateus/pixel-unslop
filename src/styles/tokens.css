@@ -47,7 +47,11 @@
     /* Canvas colors. stage-renderer.ts reads every --stage-* value once at startup. */
     --stage-grid-line: oklch(1 0 0 / 0.5);
     --stage-grid-soft: oklch(1 0 0 / 0.28);
+    --stage-grid-faint: oklch(1 0 0 / 0.13);
     --stage-grid-halo: oklch(0.1 0.005 160 / 0.45);
+    /* The fitted grid of the Grade screen: faint, so the art shows through and the teal moved lines stand out. Its thin dark halo keeps it visible on light art. */
+    --stage-grid-fit: oklch(1 0 0 / 0.3);
+    --stage-grid-fit-halo: oklch(0.1 0.005 160 / 0.3);
     --stage-flash: oklch(0.93 0.18 125);
     --stage-accent: var(--primary);
     --stage-accent-fill: var(--primary-fill);
@@ -91,5 +95,6 @@
     --header-h: 60px;
     --panel-w: clamp(312px, 22vw, 380px);
     --rail-w: 96px;
+    --set-rail-w: clamp(216px, 18vw, 280px);
   }
 }

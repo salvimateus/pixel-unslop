@@ -1,12 +1,11 @@
 import { toHex } from '../core/color.ts';
 import { mergePalette, mergeShared, paletteOf } from '../core/palette.ts';
-import { fitSource, sampleSource, sourceFromPng, type Source } from '../core/pipeline.ts';
-import { detectPeriods } from '../core/pitch.ts';
-import { listPalette } from '../core/sprite.ts';
+import { fitSource, sampleSource, sharedPeriodOf, sourceFromPng, type Source } from '../core/pipeline.ts';
+import { heightLimit, listPalette, trimSprite, wholeHeights } from '../core/sprite.ts';
 import type { ElasticMode, GridFit, GridOptions, Selection, Sprite } from '../core/types.ts';
 import { toCliError, type CliError } from './errors.ts';
 import { readInput } from './files.ts';
-import { applyOperations, type Operation } from './operations.ts';
+import { applyOperations, cropToOpaque, resizeToHeight, type Operation } from './operations.ts';
 
 export interface CleanSettings {
   pixelSize?: { x: number; y: number };
@@ -19,9 +18,17 @@ export interface CleanSettings {
   sharedPalette: boolean;
   /** Applied in this order after the palette merge: --palette, --erase-background, then each --swap. */
   operations: Operation[];
+  /** Crop each result to the box of its opaque tiles, after the operations (the default; false with --no-trim). */
+  trim: boolean;
+  /** Target height per input, parallel to the inputs; null keeps the height. */
+  heights: Array<number | null>;
 }
 
-export interface Processed { input: string; source: Source; fit: GridFit; sprite: Sprite }
+/** The box of the opaque tiles, before the resize: the output size unless --no-trim. */
+export interface ObjectSize { cols: number; rows: number }
+export interface Resize { fromRows: number; height: number; step: number }
+
+export interface Processed { input: string; source: Source; fit: GridFit; sprite: Sprite; object: ObjectSize | null; resize: Resize | null }
 export interface Failed { input: string; error: CliError }
 export type Outcome = Processed | Failed;
 
@@ -53,12 +60,7 @@ export function processInputs(inputs: string[], settings: CleanSettings): { outc
   const sources = loaded.filter((entry): entry is { input: string; source: Source } => !('error' in entry));
 
   let sharedPeriod: { x: number; y: number } | null = null;
-  if (settings.sharedPixelSize && !settings.pixelSize && sources.length > 0) {
-    sharedPeriod = detectPeriods(
-      sources.map((entry) => entry.source.edges.x),
-      sources.map((entry) => entry.source.edges.y),
-    );
-  }
+  if (settings.sharedPixelSize && !settings.pixelSize) sharedPeriod = sharedPeriodOf(sources.map((entry) => entry.source));
 
   const options = gridOptions(settings);
   const selection = selectionOf(settings);
@@ -84,11 +86,27 @@ export function processInputs(inputs: string[], settings: CleanSettings): { outc
     for (const entry of good) merged.set(entry.input, mergePalette(entry.raw, merge).sprite);
   }
 
-  const outcomes = fitted.map((entry): Outcome => {
+  const outcomes = fitted.map((entry, index): Outcome => {
     if ('error' in entry) return entry;
     try {
-      const sprite = applyOperations(merged.get(entry.input) as Sprite, settings.operations);
-      return { input: entry.input, source: entry.source, fit: entry.fit, sprite };
+      let sprite = applyOperations(merged.get(entry.input) as Sprite, settings.operations);
+      let object: ObjectSize | null = null;
+      let resize: Resize | null = null;
+      if (settings.trim) {
+        sprite = cropToOpaque(sprite);
+        object = { cols: sprite.cols, rows: sprite.rows };
+      } else if (sprite.pixels.some((color) => color !== 0)) {
+        const box = trimSprite(sprite);
+        object = { cols: box.cols, rows: box.rows };
+      }
+      const height = settings.heights[index] ?? null;
+      if (height !== null) {
+        const fromRows = sprite.rows;
+        const resized = resizeToHeight(sprite, height);
+        sprite = resized.sprite;
+        resize = { fromRows, height, step: resized.step };
+      }
+      return { input: entry.input, source: entry.source, fit: entry.fit, sprite, object, resize };
     } catch (error) {
       return { input: entry.input, error: toCliError(error) };
     }
@@ -111,6 +129,20 @@ export function fitReport(fit: GridFit) {
     quality: fit.quality,
     notes: fit.notes,
   };
+}
+
+/** The trimmed size and the height of each whole reduction (the values that --height accepts as 1/k). */
+export function objectReport(object: ObjectSize | null) {
+  if (!object) return null;
+  const reductions: Record<string, number> = {};
+  for (const size of wholeHeights(object.rows, heightLimit(object.cols, object.rows))) {
+    if (size.step > 1) reductions[`1/${size.step}`] = size.height;
+  }
+  return { cols: object.cols, rows: object.rows, reductions };
+}
+
+export function resizeReport(resize: Resize | null) {
+  return resize ? { fromRows: resize.fromRows, height: resize.height, step: round(resize.step) } : null;
 }
 
 export function paletteReport(sprite: Sprite) {

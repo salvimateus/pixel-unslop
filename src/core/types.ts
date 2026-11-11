@@ -16,11 +16,12 @@ export interface GridOptions {
   elastic: ElasticMode;
   /** Set by the pixel-size control: the fit uses these periods as given and skips the refinement. */
   fixedPeriod?: { x: number; y: number };
-  /** Manual phase shift, in source pixels. */
+  /** Moves the whole fitted grid by x,y source pixels, as one rigid body; the grid is decided as with no nudge. */
   nudge?: { x: number; y: number };
 }
 
-export type GridNote = 'harmonic-down' | 'harmonic-up' | 'weak-grid' | 'native-resolution' | 'elastic';
+/** 'manual': the user placed the grid lines (a set-grid request). */
+export type GridNote = 'harmonic-down' | 'harmonic-up' | 'weak-grid' | 'native-resolution' | 'elastic' | 'manual';
 
 export interface AxisFit { period: number; offset: number; coherence: number; adapted: boolean }
 
@@ -31,4 +32,6 @@ export interface GridFit {
   axes: { x: AxisFit; y: AxisFit };
   quality: 1 | 2 | 3;
   notes: GridNote[];
+  /** The fit kept the size that the user marked, but the edges point to this other pixel size. Never applied by the core. */
+  suggestion?: { period: { x: number; y: number }; kind: 'larger' | 'smaller' };
 }

@@ -1,56 +1,45 @@
 <script lang="ts">
   import { toHex } from '../core/color.ts';
-  import { PARAMS } from '../core/params.ts';
   import { EngineError } from '../app/engine.ts';
+  import { trimOrNull } from '../app/image-set.svelte.ts';
   import { app } from '../app/state.svelte.ts';
   import { t } from '../app/i18n.ts';
   import { isDesktop, revealFile, savePng, type SaveResult } from '../app/platform.ts';
   import * as sfx from '../app/sfx.ts';
-  import { readStored, writeStored } from '../app/storage.ts';
   import { TUNING } from '../app/tuning.ts';
   import Burst from './Burst.svelte';
   import Dialog from './Dialog.svelte';
+  import FileNameField from './FileNameField.svelte';
+  import SizeDelta from './SizeDelta.svelte';
+  import ToggleSwitch from './ToggleSwitch.svelte';
   import Icon from './Icon.svelte';
   import { sparkColors } from './stage-renderer.ts';
-
-  type ChoiceId = '1' | '2' | '4' | '8' | '16' | 'original';
-
-  interface Choice {
-    id: ChoiceId;
-    scale: number;
-    label: string;
-    width: number;
-    height: number;
-    tooBig: boolean;
-  }
-
-  const SCALES = [1, 2, 4, 8, 16] as const;
-  const SCALE_KEY = 'exportScale';
 
   let phase = $state<'choose' | 'saving' | 'done'>('choose');
   let saved = $state.raw<Exclude<SaveResult, { status: 'cancelled' }> | null>(null);
   let savedName = $state('');
   let confetti = $state(0);
-  let selected = $state<ChoiceId>((readStored(SCALE_KEY) as ChoiceId | null) ?? '1');
-
-  const cols = $derived(app.result?.sprite.cols ?? 0);
-  const rows = $derived(app.result?.sprite.rows ?? 0);
-  const originalScale = $derived(app.fit ? Math.max(1, Math.round((app.fit.axes.x.period + app.fit.axes.y.period) / 2)) : 1);
-  const choices = $derived.by((): Choice[] => {
-    const list: Array<{ id: ChoiceId; scale: number; label: string }> = SCALES.map((scale) => ({
-      id: String(scale) as ChoiceId,
-      scale,
-      label: scale === 1 ? t('export.scaleTrue') : t('export.scale', { k: scale }),
-    }));
-    list.push({ id: 'original', scale: originalScale, label: t('export.scaleOriginal') });
-    return list.map((choice) => {
-      const width = cols * choice.scale;
-      const height = rows * choice.scale;
-      return { ...choice, width, height, tooBig: Math.max(width, height) > PARAMS.limits.maxExportSide };
-    });
+  /** The base name that the user typed, or null for the suggested one. */
+  let customBase = $state<string | null>(null);
+  let nameInvalid = $state(false);
+  /** Both encodes of the open dialog, made once in the worker so the sizes show at once when the switch moves. */
+  let encoded = $state.raw<{ plain: Uint8Array; optimized: Uint8Array } | null>(null);
+  let encodeRun = 0;
+  /** The size that the export writes: the sprite cropped to its opaque tiles. Null when no tile is opaque. */
+  const output = $derived.by(() => {
+    void app.editVersion;
+    if (!app.exportOpen || !app.result) return null;
+    const full = app.session.composed();
+    const sprite = trimOrNull(full);
+    return sprite ? { cols: sprite.cols, rows: sprite.rows, trimmed: sprite.cols !== full.cols || sprite.rows !== full.rows } : null;
   });
-  const active = $derived(choices.find((choice) => choice.id === selected && !choice.tooBig) ?? choices[0]);
-  const fileName = $derived(`${app.source?.name ?? 'image'}-pixel-${cols}x${rows}${active && active.scale > 1 ? `-x${active.scale}` : ''}.png`);
+
+  const cols = $derived(output?.cols ?? 0);
+  const rows = $derived(output?.rows ?? 0);
+  const empty = $derived(app.exportOpen && output === null && app.result !== null);
+  const suggestedBase = $derived(`${app.source?.name ?? 'image'}-pixel-${cols}x${rows}`);
+  const baseName = $derived(customBase ?? suggestedBase);
+  const fileName = $derived(`${baseName}.png`);
   const confettiColors = $derived.by(() => {
     const palette = app.result?.palette ?? new Uint32Array(0);
     return [...Array.from(palette.subarray(0, 8), (color) => toHex(color)), ...sparkColors()];
@@ -60,27 +49,47 @@
     if (app.exportOpen) {
       phase = 'choose';
       saved = null;
+      customBase = null;
+      nameInvalid = false;
+      void encode();
     }
   });
+
+  const activeBytes = $derived(encoded ? (app.optimizePng ? encoded.optimized : encoded.plain) : null);
+
+  /** The composed sprite cropped to the box of its opaque tiles: the export never writes an empty border. */
+  function exportSprite() {
+    return trimOrNull(app.session.composed());
+  }
+
+  async function encode(): Promise<void> {
+    const run = ++encodeRun;
+    encoded = null;
+    if (!app.result) return;
+    const sprite = exportSprite();
+    if (!sprite) return;
+    try {
+      const [plain, optimized] = await Promise.all([app.engine.exportPng(sprite, { optimize: false }), app.engine.exportPng(sprite, { optimize: true })]);
+      if (run === encodeRun) encoded = { plain, optimized };
+    } catch (error) {
+      if (run !== encodeRun) return;
+      sfx.play('error');
+      app.toast(error instanceof EngineError ? app.errorText(error) : t('error.save'), 'error');
+    }
+  }
 
   function close(): void {
     if (phase === 'saving') return;
     app.exportOpen = false;
   }
 
-  function pick(choice: Choice): void {
-    if (choice.tooBig) return;
-    selected = choice.id;
-    writeStored(SCALE_KEY, choice.id);
-    sfx.play('tick');
-  }
-
   async function save(): Promise<void> {
-    if (!active || !app.result || phase === 'saving') return;
+    const sprite = exportSprite();
+    if (!app.result || !sprite || phase === 'saving' || nameInvalid) return;
     phase = 'saving';
     const name = fileName;
     try {
-      const png = await app.track(app.engine.exportPng(app.session.composed(), active.scale));
+      const png = activeBytes ?? (await app.track(app.engine.exportPng(sprite, { optimize: app.optimizePng })));
       const outcome = await savePng(png, name);
       if (outcome.status === 'cancelled') {
         phase = 'choose';
@@ -109,35 +118,34 @@
   }
 </script>
 
-<Dialog open={app.exportOpen} labelledby="export-title" onclose={close} wide>
+<Dialog open={app.exportOpen} labelledby="export-title" onclose={close}>
   <div class="dialog-body export">
     {#if phase !== 'done'}
       <h2 id="export-title" class="export-title">{t('export.title')}</h2>
-      <fieldset class="field">
-        <legend class="section-title">{t('export.size')}</legend>
-        <div class="choices">
-          {#each choices as choice (choice.id)}
-            <label class="choice" class:is-active={active?.id === choice.id} class:is-disabled={choice.tooBig}>
-              <input
-                class="visually-hidden"
-                type="radio"
-                id="export-scale-{choice.id}"
-                name="export-scale"
-                value={choice.id}
-                checked={active?.id === choice.id}
-                disabled={choice.tooBig || phase === 'saving'}
-                onchange={() => pick(choice)}
-              />
-              <span class="choice-label">{choice.label}</span>
-              <span class="choice-dims">{choice.tooBig ? t('export.tooBig') : t('export.dims', { w: choice.width, h: choice.height })}</span>
-            </label>
-          {/each}
-        </div>
-      </fieldset>
-      <p class="file-name"><span class="hint">{t('export.fileName')}</span> <code>{fileName}</code></p>
+      <div class="summary">
+        {#if empty}
+          <p class="empty-note" role="alert"><Icon name="alert" size={18} />{t('export.empty')}</p>
+        {:else}
+          <span class="summary-dims">{t('export.dims', { w: cols, h: rows })}</span>
+          <p class="hint">{t('rule.pixel')}</p>
+          <p class="hint">{output?.trimmed ? t('export.trimmed') : t('export.trimRule')}</p>
+        {/if}
+      </div>
+      <div class="optimize">
+        <ToggleSwitch id="export-optimize" label={t('export.optimize')} checked={app.optimizePng} disabled={phase === 'saving'} onchange={(on) => app.setOptimizePng(on)} />
+        <p class="hint">{t('export.optimizeHint')}</p>
+        <p class="file-size" aria-live="polite">
+          <span class="hint">{t('export.fileSizeLabel')}</span>
+          <SizeDelta before={encoded?.plain.length ?? null} after={encoded?.optimized.length ?? null} optimize={app.optimizePng} />
+        </p>
+      </div>
+      <div class="file-name">
+        <span class="hint">{t('export.fileName')}</span>
+        <FileNameField id="export-file" base={baseName} disabled={phase === 'saving'} onrename={(next) => (customBase = next)} oninvalid={(invalid) => (nameInvalid = invalid)} />
+      </div>
       <div class="dialog-actions">
         <button type="button" class="btn btn-quiet" onclick={close} disabled={phase === 'saving'}>{t('export.cancel')}</button>
-        <button type="button" class="btn btn-primary btn-big" onclick={save} disabled={phase === 'saving' || !active}>
+        <button type="button" class="btn btn-primary btn-big" onclick={save} disabled={phase === 'saving' || !app.result || empty || nameInvalid}>
           <Icon name="download" size={20} />
           {phase === 'saving' ? t('export.saving') : t('export.save')}
         </button>
@@ -180,70 +188,51 @@
       font-size: 1.5rem;
     }
 
-    .choices {
+    .summary {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: var(--space-2);
-      margin-top: var(--space-2);
-    }
-
-    .choice {
-      display: grid;
-      gap: 2px;
-      padding: var(--space-3);
+      gap: var(--space-1);
+      padding: var(--space-3) var(--space-4);
       background: var(--surface-sunken);
       border: 2px solid var(--line);
       border-radius: var(--radius-m);
-      cursor: pointer;
-      transition:
-        transform var(--dur-hover) var(--ease-sym),
-        border-color var(--dur-hover) var(--ease-sym),
-        background-color var(--dur-hover) var(--ease-sym);
+    }
 
-      &:hover:not(.is-disabled) {
-        border-color: var(--line-strong);
-        transform: translateY(-2px);
-      }
+    .empty-note {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--space-2);
+      color: var(--danger-text);
 
-      &:focus-within {
-        outline: 2px solid var(--focus);
-        outline-offset: 2px;
-      }
-
-      &.is-active {
-        background: color-mix(in oklch, var(--primary), var(--surface-sunken) 82%);
-        border-color: var(--primary);
-      }
-
-      &.is-disabled {
-        cursor: not-allowed;
-        opacity: 0.45;
+      & :global(.icon) {
+        flex: none;
+        margin-top: 2px;
       }
     }
 
-    .choice-label {
-      font: 700 1rem/1.2 var(--font-body);
+    .summary-dims {
+      font: 700 1.375rem/1.1 var(--font-body);
       font-variant-numeric: tabular-nums;
     }
 
-    .choice-dims {
-      color: var(--text-muted);
-      font-size: 0.8125rem;
-      font-variant-numeric: tabular-nums;
+    .optimize {
+      display: grid;
+      gap: var(--space-1);
+    }
+
+    .file-size {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-2);
+      margin-top: var(--space-1);
     }
 
     .file-name {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: baseline;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      align-items: center;
       gap: var(--space-2);
-
-      & code {
-        font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
-        font-size: 0.875rem;
-        overflow-wrap: anywhere;
-        color: var(--text);
-      }
     }
 
     .done {

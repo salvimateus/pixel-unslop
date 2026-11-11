@@ -1,14 +1,14 @@
 import { resolve } from 'node:path';
 import { errorLine, toCliError, usage } from './errors.ts';
 import { previewPaths, settingsFrom, writePreview, type CommandResult } from './clean.ts';
-import { fitReport, isFailed, paletteReport, processInputs, transparentCount } from './process.ts';
+import { fitReport, isFailed, objectReport, paletteReport, processInputs, resizeReport, transparentCount } from './process.ts';
 
 export function runInspect(
   inputs: string[],
   values: Parameters<typeof settingsFrom>[0] & { 'grid-preview'?: string; overwrite?: boolean },
 ): CommandResult {
   if (inputs.length === 0) throw usage('inspect needs at least one input PNG file.');
-  const settings = settingsFrom(values);
+  const settings = settingsFrom(values, inputs);
   const previews = previewPaths(inputs, values['grid-preview']);
   const { outcomes, sharedPeriod } = processInputs(inputs, settings);
   const lines: string[] = [];
@@ -31,12 +31,16 @@ export function runInspect(
     }
     const palette = paletteReport(sprite);
     const grid = fitReport(fit);
+    const object = objectReport(outcome.object);
+    const resize = resizeReport(outcome.resize);
     results.push({
       input: resolve(outcome.input),
       ok: true,
       width: source.image.width,
       height: source.image.height,
       grid,
+      object,
+      resize,
       colors: palette.length,
       transparentTiles: transparentCount(sprite),
       palette,
@@ -50,6 +54,11 @@ export function runInspect(
     lines.push(`  coherence: x ${grid.coherence.x}, y ${grid.coherence.y}`);
     lines.push(`  elastic: x ${grid.elastic.x}, y ${grid.elastic.y}`);
     lines.push(`  quality: ${fit.quality}/3${fit.notes.length > 0 ? `, notes: ${fit.notes.join(' ')}` : ''}`);
+    if (object) {
+      const reductions = Object.entries(object.reductions).map(([ratio, height]) => `${ratio} ${height}`).join(', ');
+      lines.push(`  object: ${object.cols}x${object.rows} tiles${reductions ? `, reductions: ${reductions} rows` : ''}`);
+    }
+    if (resize) lines.push(`  resize: ${resize.fromRows} -> ${resize.height} rows (${sprite.cols}x${sprite.rows} tiles, step ${resize.step})`);
     lines.push(`  palette (${palette.length}): ${palette.map((entry) => `${entry.color}x${entry.count}`).join(' ')}`);
     if (preview) lines.push(`  grid preview: ${preview}`);
   }

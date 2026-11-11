@@ -10,6 +10,8 @@
   import DropScreen from './DropScreen.svelte';
   import ExportDialog from './ExportDialog.svelte';
   import GridScreen from './GridScreen.svelte';
+  import SetExportDialog from './SetExportDialog.svelte';
+  import SetScreen from './SetScreen.svelte';
   import Icon from './Icon.svelte';
   import Stepper from './Stepper.svelte';
   import Toasts from './Toasts.svelte';
@@ -22,7 +24,7 @@
   }
 
   function dialogOpen(): boolean {
-    return app.exportOpen || app.aboutOpen || app.confirmRequest !== null;
+    return app.exportOpen || app.setExportOpen || app.aboutOpen || app.confirmRequest !== null;
   }
 
   // Without these guards the WebView navigates to a file dropped anywhere on the window.
@@ -51,7 +53,9 @@
     app.dragActive = false;
     const files = event.dataTransfer?.files;
     if (!files || files.length === 0 || dialogOpen()) return;
-    void app.openFiles(Array.from(files));
+    // A drop on the set card of the drop screen starts a set, even with one image.
+    const asSet = event.target instanceof Element && event.target.closest('[data-drop-set]') !== null;
+    void app.openFiles(Array.from(files), asSet);
   }
 
   function isEditable(target: EventTarget | null): boolean {
@@ -140,7 +144,9 @@
   <main class="app-main" aria-label={t('app.mainLabel')}>
     {#key app.screen}
       <div class="screen">
-        {#if app.screen === 'grid' && app.source}
+        {#if app.screen === 'set' && app.set.active}
+          <SetScreen />
+        {:else if (app.screen === 'grid' || app.screen === 'set-grid') && app.source}
           <GridScreen />
         {:else if app.screen === 'clean' && app.result}
           <CleanScreen />
@@ -154,7 +160,7 @@
       <div class="drag-overlay" aria-hidden="true">
         <div class="drag-card">
           <Icon name="image" size={40} />
-          <span>{t('drop.overlay')}</span>
+          <span>{app.set.active ? t('drop.overlaySet') : t('drop.overlay')}</span>
         </div>
       </div>
     {/if}
@@ -165,6 +171,7 @@
 <ConfirmDialog />
 <AboutDialog />
 <ExportDialog />
+<SetExportDialog />
 
 <style>
   @layer components {
@@ -174,7 +181,7 @@
       grid-template-columns: minmax(0, 1fr);
       width: 100%;
       height: 100dvh;
-      overflow: hidden;
+      overflow: clip;
       min-width: 960px;
       min-height: 640px;
     }
@@ -221,13 +228,13 @@
       grid-template: minmax(0, 1fr) / minmax(0, 1fr);
       min-width: 0;
       min-height: 0;
-      overflow: hidden;
+      overflow: clip;
     }
 
     .screen {
       min-width: 0;
       min-height: 0;
-      overflow: hidden;
+      overflow: clip;
       animation: screen-in var(--dur-screen) var(--ease-out);
     }
 

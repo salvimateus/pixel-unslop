@@ -21,6 +21,7 @@ Use it for sprites and game assets from AI image generators such as ChatGPT, DAL
 - [Why AI pixel art is not real pixel art](#why-ai-pixel-art-is-not-real-pixel-art)
 - [Who it is for](#who-it-is-for)
 - [How to fix AI pixel art in 4 steps](#how-to-fix-ai-pixel-art-in-4-steps)
+- [Make AI sprites the same scale with the set mode](#make-ai-sprites-the-same-scale-with-the-set-mode)
 - [What Pixel Unslop can do](#what-pixel-unslop-can-do)
 - [Clean AI pixel art from the command line (for AI agents)](#clean-ai-pixel-art-from-the-command-line-for-ai-agents)
 - [How Pixel Unslop finds the pixel grid](#how-pixel-unslop-finds-the-pixel-grid)
@@ -53,24 +54,36 @@ A game engine or a pixel art editor needs one flat color for each art pixel. Pix
 
 ### 1. Drop the image
 
-Open Pixel Unslop. Drag a PNG, JPG or WebP image into the window.
+Open Pixel Unslop. Drag a PNG, JPG or WebP image into the window. The drop screen shows two choices: "One image" and "A set".
 
-- To select a file, click the drop zone.
+- To clean one image, click "One image" and select the file.
 - To paste an image, push Ctrl+V.
+- To make several sprites the same scale, click "A set", or drop two or more images. See [the set mode](#make-ai-sprites-the-same-scale-with-the-set-mode).
 
-<img src="docs/images/pixel-unslop-drop-screen.png" width="900" alt="Pixel Unslop drop screen: the logo, a large drop zone with the text Drag an image here, and the line Your image never leaves your computer">
+<img src="docs/images/pixel-unslop-drop-screen.png" width="900" alt="Pixel Unslop drop screen: the logo, the text Drag one or more images here, two cards named One image and A set, and the line Your image never leaves your computer">
 
-### 2. Examine the pixel grid
+### 2. Set the size of 1 pixel
 
-The program finds the pixel grid and shows it on your image. Each square must cover one pixel of the art. Three stars show a good fit.
+The Grid step has one main job: set the size of one art pixel. The grid defines what 1 pixel of the art is, and each square of the grid becomes 1 pixel in the exported PNG. The result is correct when each square covers exactly one pixel of the art. The program finds the size and shows the grid on your image. Three stars show a good fit.
 
-- If the grid is not correct, drag a box over ONE pixel of the art. A magnifier shows the area. The program fits the grid to your box.
-- For fine adjustment, use the "Pixel size" slider, or type the size.
-- To change the size by 0.01, push an arrow key. To change it by 0.1, push Shift and an arrow key.
-- Select the "Color cleanup" level (Off, Light, Normal or Strong). You can change it later.
-- Click "Clean!".
+The "Size of 1 pixel" control is the first and largest control of the panel. A zoomed detail below it shows the art with the grid, so you can see each square clearly. Move the mouse over the image to see another part in the detail.
 
-<img src="docs/images/pixel-unslop-grid-screen.png" width="900" alt="Pixel grid detection on an AI sprite: grid lines on the source image, a box over one art pixel with a magnifier, and a panel with 40 by 32 pixels, three stars and the color cleanup levels">
+Set the size in one of these ways, in order of use:
+
+1. Move the slider, type the size, or click the "−" and "+" buttons. The grid on the image changes while you move the slider. The arrow keys change the size by 0.01, and Shift with an arrow key changes it by 0.1.
+2. Mark 1 pixel on the image: drag a square over ONE pixel of the art. The square follows the larger movement of the mouse, so the art pixel stays square. A magnifier shows the area, and the grid that your square gives shows while you drag. The grid aligns to your square: one cell sits on it, even when the full grid must move, and the grid keeps the size of your square. Later size changes keep that cell in place. If the edges of the art show another pixel size, a notice under the size tells you, and its button applies that size.
+3. Click "Detect for me" to find the size again from the image. This also removes a marked square and an offset of the grid.
+
+To move the full grid with no change of size, hold Ctrl and drag on the image. The grid follows the pointer and stays where you release it. The arrow buttons in "Advanced" show the new offset, and "Reset" removes it. When a square is marked, an outline shows the marked cell. Click "Release" to remove the mark: the size stays, and the grid goes back to its automatic position.
+
+Two tools are for special cases:
+
+- "Adjust lines" moves single grid lines. A drag of a line pushes the next lines, and they keep their sizes. A drag of the first line moves the full grid. Hold Alt to move one line only. A line snaps to the edges of the drawing, and Shift moves it freely. A double click removes a line, or splits a large square. Every edit keeps a valid grid, and Ctrl+Z undoes it.
+- "Advanced" has three controls. "Move the full grid" has four arrow buttons. Use them when the squares have the correct size but sit a little off the pixels of the art. "Flexible grid" lets each grid line follow the real edge of each row and column, because AI art often has squares of different sizes in one image. On Auto, it turns on when the art pixel is 4 px or larger and the grid is not weak. The teal lines show where it moved a line. "My art is stretched" is for art whose small squares look like rectangles, as a picture squeezed on a TV. Turn it on and move the "Pixel shape" slider until the grid covers each rectangle, or mark one rectangle on the image. The size control keeps the size, and "Square" makes the pixel square again.
+
+Then select the "Color cleanup" level (Off, Light, Normal or Strong) and click "Clean!". You can change the level later.
+
+<img src="docs/images/pixel-unslop-grid-screen.png" width="900" alt="Set the pixel size of an AI sprite: grid lines on the source image, and a panel with the title Set the size of 1 pixel, a large pixel size value with minus and plus buttons, a slider, a zoomed detail of the art with the grid, 40 by 32 pixels and three stars">
 
 ### 3. Clean and correct the sprite
 
@@ -80,34 +93,72 @@ The program shows the clean sprite. To compare it with the source, move the divi
 - To pick the color below the cursor, click the right mouse button. This works in all tools.
 - To replace a color in all the sprite, right-click it in the color list. You can also click the "..." button. You can also erase the color there.
 - To make the background transparent, click "Remove background". This changes the background that touches the border.
+- When the sprite has an empty border, a faint dashed box shows the part that the export writes.
 - You can change the "Color cleanup" level at any time. Your manual corrections stay.
 - To undo, push Ctrl+Z. To redo, push Ctrl+Y.
 
-<img src="docs/images/pixel-unslop-clean-and-edit-screen.png" width="900" alt="Clean pixel art editor: the tools on the left, the sprite in the middle with a divider between the blurred AI source and the flat result, and the color palette on the right">
+<img src="docs/images/pixel-unslop-clean-and-edit-screen.png" width="900" alt="Clean pixel art editor: the tools on the left, the sprite in the middle with a divider between the blurred AI source and the flat result and a dashed box around the part that the export writes, and the color palette on the right">
 
 ### 4. Export the PNG
 
-Click "Export PNG", or push Ctrl+S. Then select one size:
+Click "Export PNG", or push Ctrl+S. The dialog shows the size in pixels and the file name. To change the name, click the pencil next to it, type the new name and push Enter. Keep "Optimize PNG" on to get a smaller file with exactly the same pixels; the dialog shows the size before and after the optimization and the saving in percent. Then click "Save PNG".
 
-- The true resolution (1x): one image pixel for each art pixel.
-- An integer scale: 2x, 4x, 8x or 16x.
-- The size of the original image.
+The output is always 1 image pixel for each art pixel. There is no upscale choice: an asset at 8x next to an asset at 1x is not on the same grid in a game. If your game engine shows sprites larger, scale them there, with nearest-neighbor filtering.
 
-The scale keeps the pixel edges hard.
+The export always has the smallest size: the program crops the PNG to the box of its visible pixels, and it cuts no visible pixel. When the crop removes an empty border, the dialog tells you, and the file name shows the cropped size. A sprite with no visible pixel cannot be exported.
 
-<img src="docs/images/pixel-unslop-export-png-dialog.png" width="900" alt="Export pixel art as PNG: a dialog with six size choices from 40 by 32 pixels to 16x, the 8x choice selected, the file name and a Save PNG button">
+<img src="docs/images/pixel-unslop-export-png-dialog.png" width="900" alt="Export pixel art as PNG: a dialog with the cropped size 34 by 28 pixels, the sentences Each grid square becomes 1 pixel in the PNG and The empty border was removed, the Optimize PNG switch with the file size before and after the optimization and the saving in percent, the file name with a pencil to rename it, and a Save PNG button">
+
+## Make AI sprites the same scale with the set mode
+
+An AI image generator draws each object at its own density. For example, it can draw a tree 120 art pixels high and a monkey 200 art pixels high. After the cleanup, each file has a correct pixel grid, but the monkey is larger than the tree. The palettes are also different. The set mode puts the sprites on one common pixel grid, so you can set the proportion between them side by side.
+
+The set mode has the same three steps as one image: "Drop", "Grid" and "Set".
+
+1. On the drop screen, click "A set" and select one or more images. You can also drop two or more images at the same time.
+2. The Grid step opens. It shows the original image of one piece with its grid, and it has all the tools of the Grid step of one image. The list on the left shows each piece with its pixel size and its stars. A "weak grid" badge shows a piece that needs attention, a lock shows a reference, and "1:1" shows an image that is already pixel art. Click a piece to show it.
+3. Select the grid of the set. The app selects one for you:
+   - "One grid for all": for pieces of one drawing, such as the parts of a character rig. All the pieces get one pixel size, so they keep their original proportion. The app detects the size from all the pieces together. A size that you set on one piece applies to all the pieces, and "Detect for me" finds the common size again.
+   - "Each piece its own": for images that you generated one by one, such as a tree and a monkey. Each piece gets its own pixel grid, and the size control changes only the piece on the screen.
+4. Click "Clean all!". The app cleans each piece with its grid, removes the background and crops each sprite to its opaque pixels. Then the Set step opens.
+5. In the Set step, the sprites stand side by side on one ground line. One square of the grid is one pixel of the exported PNG files.
+6. Drag the small square at the top corner of a sprite to change its height. The preview is the exact result of the export. The corner snaps to the clean sizes: whole reductions (1/2 to 1/8) and whole enlargements (2x to 4x). Hold Shift to set a free height.
+7. Each sprite shows its height ("32 px") and its ratio ("1/2", "2x"). You can also type the height, use the arrow keys, or click a preset: "Reduce" has 1/2, 1/3 and 1/4, and "Enlarge" has 2x, 3x and 4x. A height above the largest permitted height becomes that height, and a message tells you the value.
+8. Hold "See original", or the O key, to see the original image of each piece in place. Release it to see the result again.
+9. Select "Edit" to correct the pixels of one sprite on the Clean screen. To change the grid of a piece, click "Back to the grid". Your edits and sizes stay when the grid does not change. A grid change that drops your edits asks first.
+10. Click "Export set" and select the files with the checkboxes. To change the name of a file, click the pencil next to it. Two files cannot have the same name. On the desktop app, you get one PNG for each sprite in a folder. In a browser, you get one PNG, or one ZIP file that holds all the selected PNG files. Each PNG has the true resolution, and all of them share one palette. A resize never adds a new color.
+
+You can enlarge a small piece up to 4x. Each pixel then becomes a block of 2, 3 or 4 pixels. You can send this blocky PNG to a generative AI to get more detail, and then clean the new image here again. In the command line tool, give the height with `--height file.png=N`:
+
+```sh
+pixel-unslop clean small.png --out-dir big --height small.png=96
+```
+
+To add more images later, click "+ Image" in the Grid step or in the Set step. New pieces open in the Grid step, so you can examine their grid.
+
+<img src="docs/images/pixel-unslop-set-grid-screen.png" width="900" alt="Grid step of the set mode: on the left the two grid choices and the list of pieces with the pixel size and the stars of each piece, in the middle the original image of one piece with its grid, and on the right the pixel size control and the Clean all button">
+
+To clean a new sprite next to an asset that is already final in your game, add that asset with "+ Reference", or select "Reference" on a piece. A reference is locked: the app does not change its pixels, its colors or its size, and it does not export it. Turn on "Use only the colors of the reference" to map the other pieces to the colors of the reference.
+
+The background removal works only for a flat background of one color or for a fake checkerboard. Thus, generate each object on a flat background of one color. When the app cannot remove the background of an image, the sprite and its row show a "background" badge, and a message tells you what to do.
+
+<img src="docs/images/pixel-unslop-set-screen.png" width="900" alt="Set step of the pixel art cleaner: three sprites and one locked reference side by side on one ground line, with a height and a ratio badge under each sprite, a See original button below, and on the right the list of pieces, the height field with the Reduce and Enlarge presets, and the Export set button">
 
 ## What Pixel Unslop can do
 
 - Automatic pixel grid detection, with a rating of the fit from 1 to 3 stars.
-- Manual correction: a box over one art pixel, or a pixel size with steps of 0.01 px.
-- Advanced grid controls: a flexible grid for art that moves away from the grid, a phase shift with the arrow keys, and a different width and height.
+- A pixel size control with a live grid and a zoomed detail, so you can see if each square covers one art pixel.
+- Manual correction: a square over one art pixel, a pixel size with steps of 0.01 px, or grid lines that you move one by one.
+- Advanced grid controls: a flexible grid for art that moves away from the grid, arrow buttons that move the full grid, and a pixel shape slider for stretched art, where the pixels are not square.
 - One flat color for each tile, with no blur.
 - Pixel art cleanup of the colors in four levels, in the OKLab color space. The merge agrees with what the eye sees.
 - Pencil, eraser, bucket fill and dropper, with undo and redo.
 - Replace a color in all the sprite, erase a color, or remove the background with one click.
 - A comparison of the source and the result, on a checker, dark or light background.
-- PNG export at the true resolution or at an integer scale.
+- PNG export at the true resolution: always 1 image pixel for each art pixel.
+- The smallest PNG size: each export is cropped to its visible pixels, and no visible pixel is cut.
+- Lossless PNG optimization: smaller files with exactly the same pixels.
+- A set mode for several sprites in three steps: a Grid step for all the pieces, one pixel grid for all the pieces or one for each piece, a visual resize with a snap to clean sizes, a comparison with the originals, one shared palette, locked reference pieces, and an export of the selected files.
 - An interface in English and in Brazilian Portuguese.
 - It works offline. There is no account, no upload and no telemetry.
 
@@ -134,6 +185,30 @@ Clean the parts of one sprite sheet with one pixel size and one palette for all 
 pixel-unslop clean pieces/*.png --out-dir clean --shared-pixel-size --shared-palette --write-palette clean/palette.txt
 ```
 
+Write the smallest lossless PNG files. The pixels stay exactly the same:
+
+```sh
+pixel-unslop clean pieces/*.png --out-dir clean --shared-palette --optimize
+```
+
+Each output is cropped to the box of its opaque pixels, so it has the smallest size and loses no opaque pixel. To keep the full frame, for example for the frames of an animation that must keep one size, add `--no-trim`:
+
+```sh
+pixel-unslop clean walk-*.png --out-dir walk --shared-palette --erase-background --no-trim
+```
+
+Make the sprites of one scene the same scale. Each output is resized to the height that you give, with one palette for all the outputs. The app gives the same pixels for the same images and heights:
+
+```sh
+pixel-unslop clean tree.png monkey.png --out-dir scene --shared-palette --erase-background --height tree.png=48 --height monkey.png=32
+```
+
+To find the clean heights first, read the `object.reductions` field of this report. A whole reduction keeps the most detail:
+
+```sh
+pixel-unslop inspect tree.png monkey.png --json
+```
+
 Read the grid and the palette as JSON. This command writes no image:
 
 ```sh
@@ -151,6 +226,8 @@ Edit a clean sprite. This example sets one tile, then fills the background area 
 ```sh
 pixel-unslop edit hero-pixel-40x32.png --set 10,4=#ff0000 --fill 0,0=transparent -o hero-fixed.png
 ```
+
+The output of `clean` and `edit` is always 1 image pixel for each art pixel. To edit an asset that was upscaled before, give `edit --from-scale <k>`: the tool reads each k by k block as one tile and writes the sprite back at 1x.
 
 With `--json`, the tool writes one JSON report to stdout. The report gives the output file, the grid, the number of colors and the palette. The grid data includes the pixel size, the offset, a quality from 1 to 3 and notes.
 
@@ -215,8 +292,9 @@ To build only the CLI for Linux or WSL, run `npm run build:cli`. This command wr
 
 ## Known limits
 
+- The background removal works only for a flat background of one color or for a fake checkerboard. It does not remove a scenery, such as a sky, grass or a gradient. Generate each object on a flat background of one color.
 - A small, blurred image gives little edge evidence. Thus the automatic grid can be incorrect.
-  - In the app, drag a box over one pixel of the art, or set the pixel size.
+  - In the app, set the size of 1 pixel, or drag a square over one pixel of the art.
   - In the CLI, give `--pixel-size`. Or clean the parts of one sheet together with `--shared-pixel-size`.
 - The Windows exe has no signature. Windows SmartScreen shows a warning when you open it for the first time.
 - The desktop app needs the Microsoft Edge WebView2 runtime. Windows 11 has it.
@@ -225,7 +303,7 @@ To build only the CLI for Linux or WSL, run `npm run build:cli`. This command wr
 
 ### How do I fix AI-generated pixel art?
 
-Open the image in Pixel Unslop. Examine the grid, click "Clean!", correct small defects and export the PNG. The [4 steps](#how-to-fix-ai-pixel-art-in-4-steps) above show the full procedure.
+Open the image in Pixel Unslop. Set the size of 1 pixel, click "Clean!", correct small defects and export the PNG. The [4 steps](#how-to-fix-ai-pixel-art-in-4-steps) above show the full procedure.
 
 ### Does Pixel Unslop use AI?
 
@@ -237,7 +315,7 @@ Yes. The tool does not depend on the generator. It needs an image that shows pix
 
 ### How do I find the pixel size of my image?
 
-The program finds it automatically. If the result is not correct, drag a box over one art pixel, or set the "Pixel size" control. In the command line tool, run `pixel-unslop inspect image.png` to read the pixel size, or give it with `--pixel-size`.
+The program finds it automatically. If the result is not correct, set the "Size of 1 pixel" control and look at the zoomed detail, or drag a square over one art pixel. In the command line tool, run `pixel-unslop inspect image.png` to read the pixel size, or give it with `--pixel-size`.
 
 ### Why does my result have too many or too few colors?
 
@@ -245,7 +323,11 @@ The "Color cleanup" level controls the merge of near-equal colors. For fewer col
 
 ### Can I clean many sprites with one palette?
 
-Yes, with the command line tool. Use `--shared-palette` to give all the outputs one palette. Add `--shared-pixel-size` for the parts of one sprite sheet. The desktop app cleans one image at a time.
+Yes. In the desktop app, drop two or more images at the same time. The [set mode](#make-ai-sprites-the-same-scale-with-the-set-mode) gives all the sprites one palette and one pixel grid, and exports one PNG for each sprite. In the command line tool, use `--shared-palette` to give all the outputs one palette. Add `--shared-pixel-size` for the parts of one sprite sheet, and `--height` to resize each sprite.
+
+### Can I export the sprite at a larger size?
+
+No. The output is always 1 image pixel for each art pixel, so all your assets stay on the same grid. Scale the sprites in your game engine, with nearest-neighbor filtering.
 
 ### Is it free?
 

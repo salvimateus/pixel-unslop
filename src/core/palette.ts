@@ -181,7 +181,11 @@ export function mergePalette(raw: Sprite, options: MergeOptions): { sprite: Spri
  * smaller strength and no median refinement: each cluster takes the color of its heaviest member.
  */
 export function mergeShared(raws: Sprite[], options: MergeOptions): Sprite[] {
-  const own = raws.map((raw) => mergePalette(raw, { strength: options.strength }).sprite);
+  return unifyPalettes(raws.map((raw) => mergePalette(raw, { strength: options.strength }).sprite), options);
+}
+
+/** One palette for sprites that already merged their own colors: the second stage of mergeShared. */
+export function unifyPalettes(own: Sprite[], options: MergeOptions): Sprite[] {
   const counts = new Map<number, number>();
   for (const sprite of own) for (const { color, count } of listPalette(sprite.pixels)) counts.set(color, (counts.get(color) ?? 0) + count);
   const entries = [...counts.entries()].map(([color, count]) => ({ color, count })).sort((a, b) => b.count - a.count || a.color - b.color);

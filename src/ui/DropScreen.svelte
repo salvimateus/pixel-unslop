@@ -7,9 +7,13 @@
   import Icon from './Icon.svelte';
   import { sparkColors } from './stage-renderer.ts';
 
-  let input: HTMLInputElement;
-  let zone: HTMLButtonElement;
+  type Entry = 'single' | 'set';
+
+  let singleInput: HTMLInputElement;
+  let setInput: HTMLInputElement;
+  let zone: HTMLDivElement;
   let burst = $state(0);
+  let over = $state<Entry | null>(null);
   let lastSignal = 0;
 
   const SHAKE: Keyframe[] = [
@@ -20,7 +24,7 @@
     { transform: 'translateX(4px)' },
     { transform: 'translateX(0)' },
   ];
-  const POP: Keyframe[] = [{ transform: 'scale(1)' }, { transform: 'scale(1.06)' }, { transform: 'scale(0.98)' }, { transform: 'scale(1)' }];
+  const POP: Keyframe[] = [{ transform: 'scale(1)' }, { transform: 'scale(1.04)' }, { transform: 'scale(0.99)' }, { transform: 'scale(1)' }];
 
   $effect(() => {
     const signal = app.dropSignal;
@@ -35,10 +39,19 @@
     }
   });
 
-  async function onPick(): Promise<void> {
+  $effect(() => {
+    if (!app.dragActive) over = null;
+  });
+
+  function leave(event: DragEvent): void {
+    const card = event.currentTarget as HTMLElement;
+    if (!(event.relatedTarget instanceof Node && card.contains(event.relatedTarget))) over = null;
+  }
+
+  async function onPick(input: HTMLInputElement, asSet: boolean): Promise<void> {
     const files = input.files ? Array.from(input.files) : [];
     input.value = '';
-    await app.openFiles(files);
+    await app.openFiles(files, asSet);
   }
 </script>
 
@@ -49,25 +62,54 @@
     <p class="drop-tagline">{t('drop.tagline')}</p>
   </div>
 
-  <button
-    type="button"
-    class="drop-zone"
-    class:is-over={app.dragActive}
-    bind:this={zone}
-    disabled={app.loading}
-    aria-describedby="drop-privacy"
-    onclick={() => input.click()}
-  >
-    <span class="drop-icon"><Icon name="image" size={44} /></span>
-    <span class="drop-zone-title">
-      {app.loading ? t('drop.loading') : app.dragActive ? t('drop.zoneRelease') : t('drop.zone')}
-    </span>
-    <span class="drop-zone-sub">{t('drop.zoneSub')}</span>
+  <div class="drop-zone" class:is-dragging={app.dragActive} bind:this={zone}>
+    <div class="drop-head">
+      <h2 class="drop-zone-title">{app.loading ? t('drop.loading') : app.dragActive ? t('drop.zoneRelease') : t('drop.zone')}</h2>
+      <p class="drop-zone-sub">{t('drop.zoneSub')}</p>
+    </div>
+
+    <div class="drop-choices">
+      <button
+        type="button"
+        class="drop-card"
+        class:is-over={over === 'single'}
+        disabled={app.loading}
+        aria-describedby="drop-privacy"
+        onclick={() => singleInput.click()}
+        ondragenter={() => (over = 'single')}
+        ondragover={() => (over = 'single')}
+        ondragleave={leave}
+      >
+        <span class="drop-icon"><Icon name="image" size={36} /></span>
+        <span class="drop-card-title">{t('drop.single')}</span>
+        <span class="drop-card-sub">{t('drop.singleSub')}</span>
+        <span class="drop-card-pick">{t('drop.pick')}</span>
+      </button>
+      <button
+        type="button"
+        class="drop-card is-set"
+        class:is-over={over === 'set'}
+        data-drop-set
+        disabled={app.loading}
+        aria-describedby="drop-privacy"
+        onclick={() => setInput.click()}
+        ondragenter={() => (over = 'set')}
+        ondragover={() => (over = 'set')}
+        ondragleave={leave}
+      >
+        <span class="drop-icon"><Icon name="pieces" size={36} /></span>
+        <span class="drop-card-title">{t('drop.set')}</span>
+        <span class="drop-card-sub">{t('drop.setSub')}</span>
+        <span class="drop-card-pick">{t('drop.pick')}</span>
+      </button>
+    </div>
+
     <span class="drop-formats">{t('drop.formats')}</span>
     <Burst trigger={burst} count={TUNING.ui.dropBurstCount} colors={sparkColors()} />
-  </button>
+  </div>
+
   <input
-    bind:this={input}
+    bind:this={singleInput}
     id="image-file"
     name="image-file"
     class="visually-hidden"
@@ -75,7 +117,19 @@
     accept="image/png,image/jpeg,image/webp"
     aria-label={t('drop.inputLabel')}
     tabindex="-1"
-    onchange={onPick}
+    onchange={() => onPick(singleInput, false)}
+  />
+  <input
+    bind:this={setInput}
+    id="set-files"
+    name="set-files"
+    class="visually-hidden"
+    type="file"
+    accept="image/png,image/jpeg,image/webp"
+    multiple
+    aria-label={t('drop.setInputLabel')}
+    tabindex="-1"
+    onchange={() => onPick(setInput, true)}
   />
 
   <p class="drop-privacy" id="drop-privacy">
@@ -92,7 +146,7 @@
       justify-items: center;
       gap: var(--space-5);
       height: 100%;
-      padding: var(--space-6) var(--space-4);
+      padding: var(--space-5) var(--space-4);
       overflow: auto;
       background-image: radial-gradient(var(--hairline) 1px, transparent 1.5px);
       background-size: 24px 24px;
@@ -129,9 +183,9 @@
       position: relative;
       display: grid;
       justify-items: center;
-      gap: var(--space-2);
-      width: min(620px, 100%);
-      padding: var(--space-6) var(--space-5);
+      gap: var(--space-4);
+      width: min(720px, 100%);
+      padding: var(--space-5);
       color: var(--text);
       background:
         repeating-linear-gradient(45deg, transparent 0 14px, var(--stripe) 14px 28px),
@@ -139,6 +193,52 @@
       border: 3px dashed var(--line-strong);
       border-radius: var(--radius-l);
       box-shadow: 0 6px 0 var(--depth);
+      transition: border-color var(--dur-hover) var(--ease-sym);
+
+      &.is-dragging {
+        border-style: solid;
+        border-color: var(--primary);
+      }
+    }
+
+    .drop-head {
+      display: grid;
+      justify-items: center;
+      gap: var(--space-1);
+      text-align: center;
+    }
+
+    .drop-zone-title {
+      font: 600 1.625rem/1.2 var(--font-display);
+    }
+
+    .drop-zone-sub {
+      max-width: 52ch;
+      color: var(--text-muted);
+      text-wrap: balance;
+    }
+
+    .drop-choices {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: var(--space-4);
+      width: 100%;
+    }
+
+    .drop-card {
+      position: relative;
+      display: grid;
+      justify-items: center;
+      align-content: start;
+      gap: var(--space-1);
+      min-width: 0;
+      padding: var(--space-4) var(--space-3);
+      color: var(--text);
+      text-align: center;
+      background: var(--surface-2);
+      border: 2px solid var(--line-strong);
+      border-radius: var(--radius-l);
+      box-shadow: 0 4px 0 var(--depth);
       transition:
         transform var(--dur-pop) var(--ease-sym),
         border-color var(--dur-hover) var(--ease-sym),
@@ -156,6 +256,7 @@
 
       &:disabled {
         cursor: progress;
+        opacity: 0.6;
       }
 
       &:focus-visible {
@@ -163,17 +264,17 @@
       }
 
       &.is-over {
-        border-style: solid;
         border-color: var(--primary);
-        transform: scale(1.04);
+        background: color-mix(in oklch, var(--primary), var(--surface-2) 86%);
+        transform: scale(1.03);
       }
 
       &::after {
         content: '';
         position: absolute;
-        inset: -3px;
+        inset: -2px;
         border-radius: inherit;
-        box-shadow: 0 0 0 6px var(--primary-fill), 0 0 48px 8px var(--primary-glow);
+        box-shadow: 0 0 0 5px var(--primary-fill), 0 0 40px 6px var(--primary-glow);
         opacity: 0;
         transition: opacity var(--dur-pop) var(--ease-sym);
         pointer-events: none;
@@ -187,31 +288,49 @@
     .drop-icon {
       display: grid;
       place-items: center;
-      width: 84px;
-      height: 84px;
-      margin-bottom: var(--space-2);
+      width: 64px;
+      height: 64px;
+      margin-bottom: var(--space-1);
       color: var(--primary);
       background: var(--surface-sunken);
       border: 2px solid var(--line);
       border-radius: var(--radius-l);
       transition: transform var(--dur-pop) var(--ease-spring);
 
-      .drop-zone:hover &,
+      .drop-card:hover &,
       .is-over & {
-        transform: translateY(-4px) rotate(-4deg);
+        transform: translateY(-3px) rotate(-4deg);
+      }
+
+      .is-set & {
+        color: var(--teal);
       }
     }
 
-    .drop-zone-title {
-      font: 600 1.625rem/1.2 var(--font-display);
+    .drop-card-title {
+      font: 600 1.375rem/1.2 var(--font-display);
     }
 
-    .drop-zone-sub {
+    .drop-card-sub {
       color: var(--text-muted);
+      font-size: 0.9375rem;
+      text-wrap: balance;
+    }
+
+    .drop-card-pick {
+      margin-top: var(--space-2);
+      padding: var(--space-1) var(--space-3);
+      color: var(--on-primary);
+      background: var(--primary);
+      border-radius: 999px;
+      font: 600 0.875rem/1.2 var(--font-display);
+
+      .is-set & {
+        background: var(--teal);
+      }
     }
 
     .drop-formats {
-      margin-top: var(--space-2);
       padding: var(--space-1) var(--space-3);
       font: 600 0.8125rem/1.2 var(--font-display);
       letter-spacing: 0.06em;
@@ -231,19 +350,37 @@
       }
     }
 
-    @media (max-height: 720px) {
+    @media (max-height: 760px) {
       .drop-screen {
-        gap: var(--space-4);
-        padding-block: var(--space-4);
+        gap: var(--space-3);
+        padding-block: var(--space-3);
       }
 
       .drop-logo {
-        width: 64px;
-        height: 64px;
+        width: 56px;
+        height: 56px;
+      }
+
+      .drop-title {
+        font-size: 2.25rem;
       }
 
       .drop-zone {
-        padding: var(--space-5) var(--space-5);
+        gap: var(--space-3);
+        padding: var(--space-4);
+      }
+
+      .drop-zone-title {
+        font-size: 1.375rem;
+      }
+
+      .drop-card {
+        padding: var(--space-3);
+      }
+
+      .drop-icon {
+        width: 52px;
+        height: 52px;
       }
     }
 

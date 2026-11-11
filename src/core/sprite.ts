@@ -1,8 +1,12 @@
 import { TRANSPARENT, alpha, blue, green, pack, red } from './color.ts';
+import { CoreError } from './errors.ts';
 import { PARAMS } from './params.ts';
 import type { RasterImage, Sprite } from './types.ts';
 
 const MAX_DISTANCE = 0xffff;
+
+/** Tolerance of the fractional area sums of a resample. */
+const AREA_EPSILON = 1e-9;
 
 /** 4-connected region of tiles with exactly the color of `start`. `distance` is the BFS step count from `start`, parallel to `indices`. */
 export function floodRegion(sprite: Sprite, start: number): { indices: Int32Array; distance: Uint16Array } {
@@ -149,32 +153,19 @@ export function lineTiles(x0: number, y0: number, x1: number, y1: number): Int32
   return out;
 }
 
-export function scaleNearest(sprite: Sprite, scale: number): RasterImage {
-  const k = Math.max(1, Math.floor(scale));
+/** One image pixel per tile; TRANSPARENT becomes 0,0,0,0. */
+export function spriteToRaster(sprite: Sprite): RasterImage {
   const { cols, rows, pixels } = sprite;
-  const width = cols * k;
-  const height = rows * k;
-  const data = new Uint8ClampedArray(width * height * 4);
-  const rowBytes = width * 4;
-  for (let ty = 0; ty < rows; ty++) {
-    const rowStart = ty * k * rowBytes;
-    for (let tx = 0; tx < cols; tx++) {
-      const color = pixels[ty * cols + tx];
-      if (color === TRANSPARENT) continue;
-      const r = red(color);
-      const g = green(color);
-      const b = blue(color);
-      const a = alpha(color);
-      for (let i = 0, o = rowStart + tx * k * 4; i < k; i++, o += 4) {
-        data[o] = r;
-        data[o + 1] = g;
-        data[o + 2] = b;
-        data[o + 3] = a;
-      }
-    }
-    for (let i = 1; i < k; i++) data.copyWithin(rowStart + i * rowBytes, rowStart, rowStart + rowBytes);
+  const data = new Uint8ClampedArray(cols * rows * 4);
+  for (let i = 0, o = 0; i < pixels.length; i++, o += 4) {
+    const color = pixels[i];
+    if (color === TRANSPARENT) continue;
+    data[o] = red(color);
+    data[o + 1] = green(color);
+    data[o + 2] = blue(color);
+    data[o + 3] = alpha(color);
   }
-  return { width, height, data };
+  return { width: cols, height: rows, data };
 }
 
 /** Converts a raster to a sprite: alpha below 128 becomes TRANSPARENT, every other pixel becomes opaque. */
@@ -192,4 +183,186 @@ export function spriteFromRaster(image: RasterImage, blockSize = 1): Sprite {
     }
   }
   return { cols, rows, pixels };
+}
+
+/** Crops to the box of the opaque tiles. Always returns a copy. Throws CoreError('empty-image') when no tile is opaque. */
+export function trimSprite(sprite: Sprite): Sprite {
+  const { cols, rows, pixels } = sprite;
+  let left = cols;
+  let right = -1;
+  let top = rows;
+  let bottom = -1;
+  for (let y = 0; y < rows; y++) {
+    const row = y * cols;
+    for (let x = 0; x < cols; x++) {
+      if (pixels[row + x] === TRANSPARENT) continue;
+      if (x < left) left = x;
+      if (x > right) right = x;
+      if (y < top) top = y;
+      bottom = y;
+    }
+  }
+  if (right < 0) throw new CoreError('empty-image', 'The sprite has no opaque tile.');
+  const outCols = right - left + 1;
+  const outRows = bottom - top + 1;
+  const out = new Uint32Array(outCols * outRows);
+  for (let y = 0; y < outRows; y++) {
+    const start = (top + y) * cols + left;
+    out.set(pixels.subarray(start, start + outCols), y * outCols);
+  }
+  return { cols: outCols, rows: outRows, pixels: out };
+}
+
+function checkSide(value: number, name: string): void {
+  if (!Number.isInteger(value) || value < 1) throw new CoreError('internal', `The ${name} must be a whole number of 1 or more (got ${value}).`);
+}
+
+/** Source tiles per result tile for a target height. A height that a whole reduction gives uses that whole step. */
+export function heightStep(rows: number, height: number): number {
+  checkSide(rows, 'row count');
+  checkSide(height, 'height');
+  if (height === rows) return 1;
+  if (height < rows) {
+    for (let k = 2; k <= PARAMS.sizing.maxReduction; k++) if (Math.ceil(rows / k) === height) return k;
+    return rows / height;
+  }
+  return height % rows === 0 ? 1 / (height / rows) : rows / height;
+}
+
+export function resampledSize(cols: number, rows: number, step: number): { cols: number; rows: number } {
+  return {
+    cols: Math.max(1, Math.ceil(cols / step - AREA_EPSILON)),
+    rows: Math.max(1, Math.ceil(rows / step - AREA_EPSILON)),
+  };
+}
+
+function withinLimits(size: { cols: number; rows: number }): boolean {
+  const { maxExportSide, maxCells } = PARAMS.limits;
+  return size.cols <= maxExportSide && size.rows <= maxExportSide && size.cols * size.rows <= maxCells;
+}
+
+/** Largest height whose result stays within the enlargement, export and cell limits. At least 1. */
+export function heightLimit(cols: number, rows: number): number {
+  checkSide(cols, 'column count');
+  checkSide(rows, 'row count');
+  const fits = (height: number) => withinLimits(resampledSize(cols, rows, heightStep(rows, height)));
+  // The result size never shrinks when the height grows, so a binary search finds the limit.
+  let low = 1;
+  let high = rows * PARAMS.sizing.maxEnlargement;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (fits(middle)) low = middle;
+    else high = middle - 1;
+  }
+  return low;
+}
+
+/**
+ * The whole-number sizes, in this order: native (step 1), the 1/k reductions (height rounded up, step k)
+ * and the k-times enlargements (step 1/k), with no repeated height. Each step equals heightStep(rows, height).
+ * The native size is always listed; the other sizes only up to `limit`.
+ */
+export function wholeHeights(rows: number, limit: number): Array<{ height: number; step: number }> {
+  checkSide(rows, 'row count');
+  const sizes = [{ height: rows, step: 1 }];
+  for (let k = 2; k <= PARAMS.sizing.maxReduction; k++) {
+    const height = Math.ceil(rows / k);
+    if (height <= limit && !sizes.some((size) => size.height === height)) sizes.push({ height, step: k });
+  }
+  for (let k = 2; k <= PARAMS.sizing.maxEnlargement; k++) {
+    const height = rows * k;
+    if (height <= limit) sizes.push({ height, step: 1 / k });
+  }
+  return sizes;
+}
+
+/** Integer luma; a lower value is a darker color. */
+function luma(color: number): number {
+  return 299 * red(color) + 587 * green(color) + 114 * blue(color);
+}
+
+/** Size of the result area that is outside the sprite on one axis. */
+function padding(resultTiles: number, step: number, sourceTiles: number): number {
+  const pad = resultTiles * step - sourceTiles;
+  return pad < AREA_EPSILON ? 0 : pad;
+}
+
+/**
+ * Each result tile takes the color with the largest area under it. `step` is the number of source tiles per
+ * result tile (2 halves the sprite, 0.5 doubles it). The rows anchor at the bottom and the columns are centered.
+ * A tile is transparent only when more than PARAMS.sizing.clearAbove of its square is transparent; the area
+ * outside the sprite counts as transparent. Equal areas go to the darker color, then to the lower value.
+ */
+export function resampleSprite(sprite: Sprite, step: number): Sprite {
+  if (!Number.isFinite(step) || !(step > 0)) throw new CoreError('internal', `Bad resample step ${step}.`);
+  const { cols, rows, pixels } = sprite;
+  const out = resampledSize(cols, rows, step);
+  if (!withinLimits(out)) {
+    throw new CoreError(
+      'too-large',
+      `The resized sprite would be ${out.cols} x ${out.rows} tiles; the limits are ${PARAMS.limits.maxExportSide} per side and ${PARAMS.limits.maxCells} tiles.`,
+    );
+  }
+  const padX = padding(out.cols, step, cols);
+  const padY = padding(out.rows, step, rows);
+  // A whole step keeps whole-tile squares, so each source tile falls in exactly one result tile.
+  const originX = Number.isInteger(step) ? -Math.floor(padX / 2) : -padX / 2;
+  const originY = -padY;
+  const area = step * step;
+  const clearLimit = PARAMS.sizing.clearAbove * area + AREA_EPSILON;
+  const result = new Uint32Array(out.cols * out.rows);
+  const colors: number[] = [];
+  const weights: number[] = [];
+
+  for (let r = 0; r < out.rows; r++) {
+    const y0 = originY + r * step;
+    const y1 = y0 + step;
+    const ty0 = Math.max(0, Math.floor(y0));
+    const ty1 = Math.min(rows, Math.ceil(y1));
+    for (let c = 0; c < out.cols; c++) {
+      const x0 = originX + c * step;
+      const x1 = x0 + step;
+      const tx0 = Math.max(0, Math.floor(x0));
+      const tx1 = Math.min(cols, Math.ceil(x1));
+      colors.length = 0;
+      weights.length = 0;
+      let opaque = 0;
+      for (let ty = ty0; ty < ty1; ty++) {
+        const wy = Math.min(ty + 1, y1) - Math.max(ty, y0);
+        if (wy <= 0) continue;
+        const row = ty * cols;
+        for (let tx = tx0; tx < tx1; tx++) {
+          const color = pixels[row + tx];
+          if (color === TRANSPARENT) continue;
+          const wx = Math.min(tx + 1, x1) - Math.max(tx, x0);
+          if (wx <= 0) continue;
+          const weight = wx * wy;
+          opaque += weight;
+          const index = colors.indexOf(color);
+          if (index < 0) {
+            colors.push(color);
+            weights.push(weight);
+          } else {
+            weights[index] += weight;
+          }
+        }
+      }
+      if (opaque <= AREA_EPSILON || area - opaque > clearLimit) continue;
+      let top = 0;
+      for (const weight of weights) if (weight > top) top = weight;
+      let winner = TRANSPARENT;
+      let winnerLuma = Infinity;
+      for (let i = 0; i < colors.length; i++) {
+        if (weights[i] < top - AREA_EPSILON) continue;
+        const candidate = colors[i];
+        const candidateLuma = luma(candidate);
+        if (candidateLuma < winnerLuma || (candidateLuma === winnerLuma && candidate < winner)) {
+          winner = candidate;
+          winnerLuma = candidateLuma;
+        }
+      }
+      result[r * out.cols + c] = winner;
+    }
+  }
+  return { cols: out.cols, rows: out.rows, pixels: result };
 }
