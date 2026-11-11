@@ -14,6 +14,7 @@
   import { holdRepeat } from './hold-repeat.ts';
   import { revealInPanel } from './reveal.ts';
   import Icon from './Icon.svelte';
+  import KeyText from './KeyText.svelte';
   import ProgressPill from './ProgressPill.svelte';
   import SetGridRail from './SetGridRail.svelte';
   import Stage from './Stage.svelte';
@@ -717,7 +718,7 @@
           <h1 class="grid-title" id="adjust-title">{t('grid.adjustTitle')}</h1>
           <ul class="adjust-tips">
             {#each ADJUST_TIPS as tip (tip.key)}
-              <li class="adjust-tip"><span class="tip-key">{t(tip.key)}</span><span class="tip-text">{t(tip.text)}</span></li>
+              <li class="adjust-tip"><span class="tip-key"><KeyText text={t(tip.key)} /></span> <span class="tip-text"><KeyText text={t(tip.text)} /></span></li>
             {/each}
           </ul>
           <div class="adjust-row">
@@ -858,7 +859,7 @@
               {/if}
             </div>
           </div>
-          <p class="way-move"><span class="tip-key">{t('grid.moveKey')}</span>{t('grid.moveHelp')}</p>
+          <p class="way-move"><span class="tip-key"><KeyText text={t('grid.moveKey')} /></span>{t('grid.moveHelp')}</p>
           <div class="way is-stacked">
             <button type="button" class="btn btn-quiet way-btn" onclick={detect}>
               <Icon name="wand" size={18} />
@@ -1443,19 +1444,10 @@
       line-height: 1.4;
     }
 
-    .adjust-tip .tip-key {
-      margin-right: var(--space-1);
-    }
-
+    /* The action of a tip. Its key names show as keycaps, with the shared look. */
     .tip-key {
-      display: inline-block;
-      padding: 0 var(--space-1);
       color: var(--text);
-      background: var(--surface-3);
-      border: 1px solid var(--line-strong);
-      border-radius: var(--radius-s);
       font-weight: 700;
-      font-size: 0.8125rem;
     }
 
     .tip-text {

@@ -417,14 +417,17 @@
       >
         <Icon name={tool.icon} size={22} />
         <span class="tool-label">{t(tool.label)}</span>
-        <kbd class="tool-key">{tool.key}</kbd>
+        <kbd class="keycap tool-key">{tool.key}</kbd>
         {#if (tool.id === 'pencil' || tool.id === 'eraser') && app.brush[tool.id] > 1}
           <span class="tool-size" title={t('brush.value', { size: app.brush[tool.id] })}>{app.brush[tool.id]}</span>
         {/if}
       </button>
     {/each}
     <p class="rail-hint">{t('clean.rightClickHint')}</p>
-    <p class="rail-hint">{t('brush.railHint')}</p>
+    <p class="rail-hint rail-keys">
+      <span class="keycap-group" role="group" aria-label={t('brush.bracketKeys')}><kbd class="keycap">[</kbd><kbd class="keycap">]</kbd></span>
+      <span>{t('brush.railHint')}</span>
+    </p>
   </nav>
 
   <div class="clean-main">
@@ -615,9 +618,12 @@
     .tool-key {
       position: absolute;
       top: 3px;
-      right: 4px;
-      font: 600 0.625rem/1 var(--font-body);
-      opacity: 0.8;
+      right: 3px;
+      min-width: 1.7em;
+      height: 1.7em;
+      padding: 0 0.25em;
+      border-bottom-width: 2px;
+      font-size: 0.625rem;
     }
 
     /* The brush size of the pencil or the eraser, when it is larger than 1. */
@@ -642,6 +648,17 @@
       font-size: 0.6875rem;
       line-height: 1.3;
       text-align: center;
+    }
+
+    /* The bracket keys on their own line, above what they do. */
+    .rail-keys {
+      display: grid;
+      justify-items: center;
+      gap: var(--space-1);
+
+      & .keycap-group {
+        font-size: 0.875rem;
+      }
     }
 
     .clean-main {
