@@ -105,7 +105,7 @@ Open Pixel Unslop. Drag a PNG, JPG or WebP image into the window. The drop scree
 - To paste an image, push Ctrl+V.
 - To make several sprites the same scale, click "A set", or drop two or more images. See [the set mode](#make-ai-sprites-the-same-scale-with-the-set-mode).
 
-In the desktop app, you can change the size of the interface. The app starts at 125%, or at 100% on a small screen, and keeps your zoom for the next start.
+In the desktop app, you can change the size of the interface. The app starts at 125%, or at 100% on a small screen, and keeps your zoom for the next start. The window opens at 1600 by 900 pixels, or smaller on a smaller screen. The app keeps the window size, the window position and the maximized state for the next start.
 
 - To make the interface larger, push Ctrl and +.
 - To make the interface smaller, push Ctrl and -.
@@ -216,6 +216,7 @@ The background removal works only for a flat background of one color or for a fa
 - Lossless PNG optimization: smaller files with exactly the same pixels.
 - A set mode for several sprites in three steps: a Grid step for all the pieces, one pixel grid for all the pieces or one for each piece, a visual resize with a snap to clean sizes, a comparison with the originals, one shared palette, locked reference pieces, and an export of the selected files.
 - An interface in English and in Brazilian Portuguese, with an interface zoom from 50% to 200% in the desktop app.
+- A desktop window that keeps its size, its position and its zoom for the next start.
 - It works offline. There is no account, no upload and no telemetry.
 
 ## Clean AI pixel art from the command line (for AI agents)
