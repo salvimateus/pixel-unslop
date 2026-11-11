@@ -1,0 +1,82 @@
+/** Every game-feel constant of the interface. Algorithm constants live in src/core/params.ts. */
+export const TUNING = {
+  stage: {
+    maxDpr: 2,
+    fitPadding: 40,
+    /** Fraction of the content that must stay inside the viewport while the user pans. */
+    panKeepVisible: 0.15,
+    keyPanPx: 48,
+  },
+  zoom: {
+    smoothing: 22,
+    wheelSensitivity: 0.0022,
+    buttonStep: 1.6,
+    /** Smallest zoom, as a fraction of the zoom that fits the content. */
+    minFitRatio: 0.35,
+    gridMax: 96,
+    cleanMax: 160,
+    /** Screen pixels per art pixel on the first view of the Grade screen. */
+    gridFirstCellPx: 24,
+  },
+  grid: {
+    minCellPx: 6,
+    haloMinCellPx: 12,
+    scanMs: 700,
+    flashMs: 520,
+    boxSettleMs: 280,
+    boxHoldMs: 700,
+    boxFadeMs: 420,
+    /** A box smaller than this (in source pixels) is a click, not a selection. */
+    minBoxSourcePx: 0.75,
+    pixelSizeMin: 1,
+    pixelSizeMax: 64,
+    sliderStep: 0.01,
+    sliderStepShift: 0.1,
+    nudgeStep: 0.1,
+    nudgeStepShift: 0.5,
+    nudgeMax: 32,
+  },
+  loupe: {
+    size: 176,
+    magnify: 2.2,
+    maxZoom: 64,
+    offset: 28,
+  },
+  clean: {
+    sweepMs: 950,
+    sweepSparksPerFrame: 6,
+    splitHitPx: 12,
+    splitKnobPx: 30,
+    waveStepMs: 26,
+    waveMaxMs: 650,
+    popMs: 240,
+    popScale: 0.7,
+    rippleMs: 520,
+    rippleRadiusTiles: 9,
+    eyedropperReturnsToPencil: true,
+  },
+  particles: {
+    budget: 900,
+    maxColors: 64,
+    gravity: 900,
+    eraseShards: 4,
+    eraseMaxTiles: 160,
+    sparkLifeS: 0.55,
+  },
+  sfx: {
+    master: 0.32,
+    paintMinIntervalMs: 40,
+    tickMinIntervalMs: 30,
+  },
+  ui: {
+    toastMs: 3800,
+    toastErrorMs: 6000,
+    maxToasts: 4,
+    progressDelayMs: 150,
+    loadPopMs: 420,
+    dropBurstCount: 18,
+    confettiCount: 56,
+    engineDebounceMs: 60,
+    maxSwatches: 240,
+  },
+} as const;

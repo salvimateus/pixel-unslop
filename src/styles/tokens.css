@@ -1,0 +1,95 @@
+@layer base {
+  :root {
+    color-scheme: dark;
+
+    /* Near-neutral charcoal with a faint cool green tint, so the colors of the art read true. */
+    --bg: #121614;
+    --surface-sunken: oklch(0.165 0.006 160);
+    --surface-1: oklch(0.215 0.008 160);
+    --surface-2: oklch(0.255 0.009 160);
+    --surface-3: oklch(0.305 0.01 160);
+    --line: oklch(0.37 0.01 160);
+    --line-strong: oklch(0.48 0.012 160);
+    --depth: oklch(0.105 0.005 160);
+    --overlay: oklch(0.1 0.005 160 / 0.78);
+    --hairline: oklch(1 0 0 / 0.18);
+    --hairline-strong: oklch(1 0 0 / 0.55);
+    --stripe: oklch(1 0 0 / 0.025);
+    --stage-glow: oklch(0.235 0.012 160);
+
+    --text: oklch(0.97 0.004 160);
+    --text-muted: oklch(0.84 0.008 160);
+    --text-faint: oklch(0.74 0.01 160);
+
+    --primary: oklch(0.89 0.2 128);
+    --primary-hover: oklch(0.93 0.18 125);
+    --primary-edge: oklch(0.78 0.2 132);
+    --primary-depth: oklch(0.5 0.14 136);
+    --primary-glow: oklch(0.89 0.2 128 / 0.3);
+    --primary-fill: oklch(0.89 0.2 128 / 0.16);
+    --on-primary: oklch(0.21 0.05 140);
+    --teal: oklch(0.82 0.12 185);
+    --yellow: oklch(0.9 0.17 100);
+    --danger: oklch(0.7 0.19 27);
+    --danger-hover: oklch(0.75 0.17 27);
+    --danger-edge: oklch(0.6 0.2 27);
+    --danger-depth: oklch(0.4 0.14 27);
+    --danger-text: oklch(0.8 0.13 27);
+    --on-danger: oklch(0.17 0.03 27);
+    --focus: var(--teal);
+
+    /* Neutral grays: a tinted checkerboard would shift the colors of transparent edges. */
+    --checker-a: oklch(0.38 0 0);
+    --checker-b: oklch(0.3 0 0);
+    --preview-dark: oklch(0.2 0.006 160);
+    --preview-light: oklch(0.9 0 0);
+
+    /* Canvas colors. stage-renderer.ts reads every --stage-* value once at startup. */
+    --stage-grid-line: oklch(1 0 0 / 0.5);
+    --stage-grid-soft: oklch(1 0 0 / 0.28);
+    --stage-grid-halo: oklch(0.1 0.005 160 / 0.45);
+    --stage-flash: oklch(0.93 0.18 125);
+    --stage-accent: var(--primary);
+    --stage-accent-fill: var(--primary-fill);
+    --stage-teal: var(--teal);
+    --stage-yellow: var(--yellow);
+    --stage-danger: var(--danger);
+    --stage-white: oklch(1 0 0);
+    --stage-wave: oklch(1 0 0 / 0.55);
+    --stage-shadow: oklch(0.08 0.005 160 / 0.7);
+    --stage-checker-a: var(--checker-a);
+    --stage-checker-b: var(--checker-b);
+    --stage-preview-dark: var(--preview-dark);
+    --stage-preview-light: var(--preview-light);
+    --stage-panel: var(--surface-1);
+    --stage-panel-edge: var(--line-strong);
+
+    --font-display: 'Pixelify Sans Variable', 'Pixelify Sans', system-ui, sans-serif;
+    --font-body: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+
+    --radius-s: 4px;
+    --radius-m: 8px;
+    --radius-l: 14px;
+
+    --space-1: 0.25rem;
+    --space-2: 0.5rem;
+    --space-3: 0.75rem;
+    --space-4: 1rem;
+    --space-5: 1.5rem;
+    --space-6: 2rem;
+
+    --ease-out: cubic-bezier(0, 0, 0.2, 1);
+    --ease-in: cubic-bezier(0.4, 0, 1, 1);
+    --ease-sym: cubic-bezier(0.4, 0, 0.2, 1);
+    --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+    --dur-instant: 80ms;
+    --dur-hover: 120ms;
+    --dur-pop: 200ms;
+    --dur-modal: 280ms;
+    --dur-screen: 400ms;
+
+    --header-h: 60px;
+    --panel-w: clamp(312px, 22vw, 380px);
+    --rail-w: 96px;
+  }
+}

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Pixel Unslop cleans AI-generated pixel art on your computer." />
+    <meta name="color-scheme" content="dark" />
+    <title>Pixel Unslop</title>
+    <link rel="icon" type="image/svg+xml" href="/app-icon.svg" />
+    <!-- The layer order must come before any other stylesheet, including the component styles. -->
+    <style>
+      @layer reset, base, components, utilities;
+      html,
+      body {
+        background: #121614;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
