@@ -3,7 +3,7 @@ import { exportSprite } from '../core/pipeline.ts';
 import { decodeRaster } from '../core/png.ts';
 import { spriteFromRaster } from '../core/sprite.ts';
 import { CliError, usage } from './errors.ts';
-import { derivedPath, readInput, readPalette, samePath, writeOutput } from './files.ts';
+import { derivedPath, readInput, readPalette, readReference, samePath, writeOutput } from './files.ts';
 import { applyOperations, cropToOpaque, type Operation } from './operations.ts';
 import type { CommandResult } from './clean.ts';
 import { paletteReport, transparentCount } from './process.ts';
@@ -17,6 +17,7 @@ export const EDIT_OPTIONS = {
   'erase-color': { type: 'string', multiple: true },
   'erase-background': { type: 'boolean', multiple: true },
   palette: { type: 'string', multiple: true },
+  reference: { type: 'string', multiple: true },
   height: { type: 'string', multiple: true },
   'from-scale': { type: 'string' },
   optimize: { type: 'boolean' },
@@ -55,6 +56,9 @@ export function operationsFrom(tokens: OptionToken[]): Operation[] {
         break;
       case 'palette':
         operations.push({ kind: 'palette', colors: readPalette(value) });
+        break;
+      case 'reference':
+        operations.push({ kind: 'reference', colors: readReference(value, null) });
         break;
       case 'height':
         operations.push({ kind: 'resize', height: parseWhole(value, '--height', 1) });

@@ -1,8 +1,10 @@
 import type { SetFitItem, SetGrid, Stage } from '../core/protocol.ts';
 import type { CellGrid, ElasticMode, GridFit, GridOptions, Selection, Sprite } from '../core/types.ts';
 import { PARAMS } from '../core/params.ts';
-import { pack } from '../core/color.ts';
-import { exportSprite } from '../core/pipeline.ts';
+import { pack, TRANSPARENT } from '../core/color.ts';
+import { matchToReference, type ColorCount } from '../core/palette.ts';
+import { exportSprite, referencePalette } from '../core/pipeline.ts';
+import { listPalette } from '../core/sprite.ts';
 import { isDesktop, monitorWorkArea, setDownloadFile, setInterfaceZoom, type PngFile } from './platform.ts';
 import { defaultZoom, nextZoom, snapZoom, storeZoom, storedZoom, type ZoomMove } from './zoom.ts';
 import type { Camera } from '../ui/camera.ts';
@@ -46,6 +48,15 @@ export interface CleanOutput {
   aligned: ImageBitmap;
   /** The fit version that produced this result. */
   fitVersion: number;
+}
+
+/** The image whose colors paint the single image. `on` false keeps it but shows the colors of the palette merge. */
+export interface ColorReference {
+  /** File name without the extension. */
+  name: string;
+  sprite: Sprite;
+  flat: boolean;
+  on: boolean;
 }
 
 export interface ToastItem {
@@ -155,6 +166,10 @@ class AppState {
   profiles = $state.raw<{ x: Float64Array; y: Float64Array } | null>(null);
 
   result = $state.raw<CleanOutput | null>(null);
+  /** Stays when a new image opens, until the user removes it. Raw state: replace the object. */
+  colorReference = $state.raw<ColorReference | null>(null);
+  /** The palette of the reference at one merge strength; a new reference or strength computes it again. */
+  private referenceColors: { sprite: Sprite; strength: number; colors: ColorCount[] } | null = null;
   /** Changes when the base sprite changes (clean, merge): the stage rewrites the whole sprite layer. */
   baseVersion = $state(0);
   /** Changes on every edit: the palette and the undo buttons read it. */
@@ -589,12 +604,14 @@ class AppState {
       const output = await this.track(this.engine.clean({ strength: PARAMS.palette.presets[this.preset] }));
       this.result?.aligned.close();
       if (this.editingId === null) this.session.clear();
-      this.session.setBase(output.sprite);
+      const base = this.baseOf(output.sprite);
+      this.session.setBase(base);
       this.result = { ...output, fitVersion: this.fitVersion };
       this.exportedEditVersion = -1;
       this.baseVersion++;
       this.editVersion++;
-      if (output.palette.length > 0) this.ink = output.palette[0];
+      const ink = base === output.sprite ? output.palette[0] : listPalette(base.pixels)[0]?.color;
+      if (ink !== undefined) this.ink = ink;
       this.tool = 'pencil';
       this.screen = 'clean';
     } catch (error) {
@@ -615,13 +632,100 @@ class AppState {
     try {
       const output = await this.track(this.engine.merge({ strength: PARAMS.palette.presets[name] }, { debounce: true }));
       if (!output || !this.result) return;
-      this.session.setBase(output.sprite);
+      this.session.setBase(this.baseOf(output.sprite));
       this.result = { ...this.result, sprite: output.sprite, palette: output.palette };
       this.baseVersion++;
       this.editVersion++;
     } catch (error) {
       this.fail(error);
     }
+  }
+
+  /** Reads a reference image and paints the single image with its colors. The old reference stays on a failure. */
+  async loadColorReference(files: ArrayLike<File>): Promise<void> {
+    const list = Array.from(files);
+    if (list.length === 0 || this.loading) return;
+    const file = list.find(isImageFile);
+    if (!file) {
+      sfx.play('error');
+      this.toast(t('toast.notImage'), 'error');
+      return;
+    }
+    this.loading = true;
+    try {
+      let bytes: ArrayBuffer;
+      try {
+        bytes = await file.arrayBuffer();
+      } catch {
+        sfx.play('error');
+        this.toast(t('error.read'), 'error');
+        return;
+      }
+      const { sprite, flat } = await this.track(this.engine.reference(bytes));
+      if (this.paletteOfReference({ sprite, flat }).length === 0) {
+        sfx.play('error');
+        this.toast(t('toast.referenceEmpty'), 'error');
+        return;
+      }
+      const name = baseName(file.name);
+      this.colorReference = { name, sprite, flat, on: true };
+      this.rebase();
+      sfx.play('drop');
+      this.toast(t('toast.referenceApplied', { name }), 'success');
+    } catch (error) {
+      this.fail(error);
+    } finally {
+      this.loading = false;
+    }
+  }
+
+  setColorReferenceOn(on: boolean): void {
+    const reference = this.colorReference;
+    if (!reference || reference.on === on) return;
+    this.colorReference = { ...reference, on };
+    this.rebase();
+  }
+
+  clearColorReference(): void {
+    if (!this.colorReference) return;
+    this.colorReference = null;
+    this.referenceColors = null;
+    sfx.play('erase');
+    this.rebase();
+  }
+
+  /** The base of the single image: the merged sprite, painted with the reference colors when the reference is on. */
+  private baseOf(sprite: Sprite): Sprite {
+    const reference = this.colorReference;
+    if (!reference || !reference.on || this.editingId !== null) return sprite;
+    return matchToReference(sprite, this.paletteOfReference(reference));
+  }
+
+  private paletteOfReference(reference: { sprite: Sprite; flat: boolean }): ColorCount[] {
+    const strength = this.strength;
+    const cached = this.referenceColors;
+    if (cached && cached.sprite === reference.sprite && cached.strength === strength) return cached.colors;
+    const colors = referencePalette(reference, { strength });
+    this.referenceColors = { sprite: reference.sprite, strength, colors };
+    return colors;
+  }
+
+  /** The reference changed: the single image takes its new base at once, with its edits. */
+  private rebase(): void {
+    if (!this.result || this.editingId !== null) return;
+    const before = this.session.composed();
+    this.session.setBase(this.baseOf(this.result.sprite));
+    this.followInk(before.pixels, this.session.composed().pixels);
+    this.baseVersion++;
+    this.editVersion++;
+  }
+
+  /** The ink follows the recolor: it takes the new color of the first tile that had it. A custom ink stays. */
+  private followInk(before: Uint32Array, after: Uint32Array): void {
+    const ink = this.ink;
+    if (ink === TRANSPARENT || after.includes(ink)) return;
+    const index = before.indexOf(ink);
+    if (index >= 0 && index < after.length) this.ink = after[index];
   }
 
   /** Navigation of the stepper and the back buttons. */

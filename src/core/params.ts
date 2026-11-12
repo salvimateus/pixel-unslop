@@ -131,6 +131,20 @@ export const PARAMS = {
     refinePasses: 2,
     /** The shared palette of several sprites merges their own palettes with this share of the strength. */
     sharedFactor: 0.6,
+    reference: {
+      /** The tone search reads this many colors of each palette, the heaviest first. */
+      topColors: 64,
+      /** Two colors nearer than this (OKLab) add to the score of the tone search. */
+      radius: 0.05,
+      /** Uniform OKLab scales, "no change" first. A linear gain of an image is such a scale. */
+      scales: [1, 0.95, 1.05, 0.9, 1.1],
+      /** Step of the tone offsets, with the steps to each side for L and for a and b. */
+      step: 0.02,
+      lightSteps: 5,
+      chromaSteps: 3,
+      /** A tone change must raise the score of "no change" by this share. */
+      minGain: 0.5,
+    },
   },
   sizing: {
     /** Largest k of a 1/k reduction that a height snaps to. */

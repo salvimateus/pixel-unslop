@@ -9,6 +9,7 @@ import {
   jointFit,
   manualFitSource,
   mergeSprite,
+  referenceTiles,
   sampleSource,
   sharedPeriodOf,
   sourceFromImage,
@@ -210,6 +211,15 @@ async function handle(request: EngineRequest): Promise<void> {
       const bytes = exportSprite(request.sprite, { optimize: request.optimize === true });
       const png = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
       post({ id, ok: true, type: 'export', png }, [png]);
+      return;
+    }
+    case 'reference': {
+      // Stateless: the loaded image, its fit and its raw sample stay.
+      progress(id, 'decode', 0);
+      const source = await decode(new Uint8Array(request.bytes));
+      progress(id, 'fit', 0);
+      const { sprite, flat } = referenceTiles(source);
+      post({ id, ok: true, type: 'reference', sprite, flat }, [sprite.pixels.buffer]);
       return;
     }
     default: {

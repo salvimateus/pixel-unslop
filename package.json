@@ -1,7 +1,7 @@
 {
   "name": "pixel-unslop",
   "private": true,
-  "version": "1.2.1",
+  "version": "1.3.0",
   "license": "MIT",
   "author": "Mateus Salvi (https://github.com/salvimateus)",
   "type": "module",

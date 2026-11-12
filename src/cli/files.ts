@@ -1,9 +1,12 @@
 import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { TRANSPARENT, fromHex, pack, toHex } from '../core/color.ts';
+import type { ColorCount } from '../core/palette.ts';
+import { PARAMS } from '../core/params.ts';
+import { referencePalette, referenceTiles, sourceFromPng, type ReferenceTiles } from '../core/pipeline.ts';
 import { decodeRaster, isPng } from '../core/png.ts';
 import { listPalette } from '../core/sprite.ts';
-import { CliError } from './errors.ts';
+import { CliError, toCliError } from './errors.ts';
 
 export function readInput(path: string): Uint8Array {
   let bytes: Buffer;
@@ -84,6 +87,24 @@ export function readPalette(path: string): Uint32Array {
   });
   if (colors.length === 0) throw new CliError('bad-palette', `The palette file has no color: ${path}`);
   return Uint32Array.from(colors);
+}
+
+/** The colors of a reference PNG. `strength` cleans an AI reference; null accepts only a clean sprite. */
+export function readReference(path: string, strength: number | null): ColorCount[] {
+  let tiles: ReferenceTiles;
+  try {
+    tiles = referenceTiles(sourceFromPng(readInput(path)));
+  } catch (error) {
+    const failure = toCliError(error);
+    const named = failure.message.includes(path);
+    throw new CliError(failure.code, `--reference${named ? '' : ` ${path}`}: ${failure.message}`);
+  }
+  if (!tiles.flat && strength === null) {
+    throw new CliError('bad-palette', `The reference of "edit" must be a clean sprite with at most ${PARAMS.pitch.nativeMaxColors} colors: ${path}. Clean it first with "pixel-unslop clean".`);
+  }
+  const colors = referencePalette(tiles, { strength: strength ?? 0 });
+  if (colors.length === 0) throw new CliError('bad-palette', `The reference image has no opaque color: ${path}`);
+  return colors;
 }
 
 export function paletteText(colors: ArrayLike<number>): string {

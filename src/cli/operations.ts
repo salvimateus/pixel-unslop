@@ -1,6 +1,6 @@
 import { TRANSPARENT } from '../core/color.ts';
 import { CoreError } from '../core/errors.ts';
-import { mapToPalette } from '../core/palette.ts';
+import { mapToPalette, matchToReference, type ColorCount } from '../core/palette.ts';
 import { PARAMS } from '../core/params.ts';
 import { borderBackground, floodRegion, heightLimit, heightStep, indicesOfColor, resampleSprite, trimSprite } from '../core/sprite.ts';
 import type { Sprite } from '../core/types.ts';
@@ -15,6 +15,7 @@ export type Operation =
   | { kind: 'erase-color'; color: number }
   | { kind: 'erase-background' }
   | { kind: 'palette'; colors: Uint32Array }
+  | { kind: 'reference'; colors: ColorCount[] }
   | { kind: 'resize'; height: number };
 
 function tileIndex(sprite: Sprite, x: number, y: number, flag: string): number {
@@ -73,6 +74,8 @@ export function applyOperation(sprite: Sprite, operation: Operation): Sprite {
       return paint(sprite, borderBackground(sprite), TRANSPARENT);
     case 'palette':
       return mapToPalette(sprite, operation.colors);
+    case 'reference':
+      return matchToReference(sprite, operation.colors);
     case 'resize':
       return resizeToHeight(sprite, operation.height).sprite;
   }

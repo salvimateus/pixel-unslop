@@ -50,10 +50,15 @@ Color options:
   --shared-palette         With several inputs: merge the colors of the full set, so all outputs share one palette.
   --palette <path>         Map every color to the nearest color of a fixed palette (OKLab). The file is a
                            text file with one #rrggbb per line, or a PNG whose opaque colors are the palette.
+  --reference <path>       Give each color the nearest color (OKLab) of a reference PNG. The tone change that
+                           all colors share against the reference (brightness, tint) is removed first. A
+                           reference with at most ${PARAMS.pitch.nativeMaxColors} colors is a clean sprite: its pixels are its colors.
+                           Other references are AI pixel art: automatic grid, then --cleanup. With
+                           --shared-palette, all inputs use one color map. Not with --palette.
   --erase-background       Make the background that touches the border transparent (a solid color or a
                            fake checkerboard of up to ${PARAMS.background.maxColors} colors).
   --swap <from=to>         Replace one color everywhere. Repeatable. "to" can be "transparent".
-                           Order after the merge: --palette, --erase-background, then each --swap.
+                           Order after the merge: --reference or --palette, --erase-background, then each --swap.
 Size options (by default each output is cropped to the box of its opaque tiles, after --erase-background
 and the other color operations; no opaque tile is cut, and a result with no opaque tile fails with "empty-image"):
   --no-trim                Keep the full frame, e.g. for the frames of an animation that must keep one size.
@@ -136,6 +141,7 @@ Examples:
   pixel-unslop clean hero.png --pixel-size 9.4 --grid-preview hero-grid.png --json
   pixel-unslop clean hero.png --pixel-size 8 --exact --offset 2,3 --elastic off
   pixel-unslop clean hero.png --palette pico8.txt --cleanup strong --max-colors 16
+  pixel-unslop clean hero-run.png --reference hero-idle-pixel-41x46.png
   pixel-unslop clean hero.png --swap "#ffffff=transparent" --overwrite
   pixel-unslop clean pieces/*.png --out-dir clean --shared-palette --optimize
 
@@ -190,6 +196,8 @@ Operations (each one is repeatable):
   --erase-color <color>    Make one color transparent everywhere.
   --erase-background       Make the background that touches the border transparent.
   --palette <path>         Map every color to the nearest color of a palette file (text or PNG).
+  --reference <path>       Give each color the nearest color of a reference PNG, as "clean --reference" does.
+                           The reference must be a clean sprite (at most ${PARAMS.pitch.nativeMaxColors} colors).
   --height <n>             Resize to n tiles high, as "clean --height" does (area vote, the width keeps the
                            proportion, at most ${sizing.maxEnlargement} times the height).
   color is #rrggbb, #rgb or transparent. x,y are tile coordinates, origin 0,0 at the top left.
@@ -213,6 +221,7 @@ Examples:
   pixel-unslop edit hero-pixel-41x46.png --fill 0,0=transparent --swap "#2b2b2b=#1a1520" --json
   pixel-unslop edit hero-x4.png --from-scale 4 --erase-background -o hero-clear.png
   pixel-unslop edit hero.png --palette palette.txt --erase-color "#ffffff" --overwrite -o hero.png
+  pixel-unslop edit hero-run-pixel-40x46.png --reference hero-idle-pixel-41x46.png -o hero-run-fixed.png
   pixel-unslop edit monkey-pixel-80x120.png --height 60 -o monkey-60.png`;
 
 export const HELP_TOPICS: Record<string, string> = { clean: CLEAN, inspect: INSPECT, edit: EDIT };

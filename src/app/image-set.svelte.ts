@@ -1,7 +1,7 @@
 import type { CellGrid, ElasticMode, GridFit, Selection, Sprite } from '../core/types.ts';
 import { TRANSPARENT } from '../core/color.ts';
 import { CoreError } from '../core/errors.ts';
-import { mapToPalette, unifyPalettes } from '../core/palette.ts';
+import { applyColorMap, combinedColors, matchColors, unifyPalettes } from '../core/palette.ts';
 import { borderBackground, heightLimit, heightStep, listPalette, resampledSize, resampleSprite, trimSprite, wholeHeights } from '../core/sprite.ts';
 import { clamp } from '../ui/camera.ts';
 import { EditSession } from './edit-session.ts';
@@ -284,14 +284,6 @@ export function trimOrNull(sprite: Sprite): Sprite | null {
   }
 }
 
-/** The colors of several sprites by total count, so the nearest-color map always prefers the same color. */
-function paletteOfSprites(sprites: readonly Sprite[]): Uint32Array {
-  const counts = new Map<number, number>();
-  for (const sprite of sprites) for (const { color, count } of listPalette(sprite.pixels)) counts.set(color, (counts.get(color) ?? 0) + count);
-  const entries = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0]);
-  return Uint32Array.from(entries, (entry) => entry[0]);
-}
-
 /** The pixel size of a fit, rounded to 2 decimals as the UI shows it. */
 export function pixelSizeOf(fit: GridFit): { x: number; y: number } {
   return { x: Math.round(fit.axes.x.period * 100) / 100, y: Math.round(fit.axes.y.period * 100) / 100 };
@@ -433,7 +425,9 @@ export class ImageSet {
     const live = this.objects.filter((object) => !object.reference && object.session.hasBase);
     const unified = live.length > 0 ? unifyPalettes(live.map((object) => object.session.composed()), { strength }) : [];
     const references = this.objects.filter((object) => object.reference);
-    const referencePalette = this.referenceColors ? paletteOfSprites(references.map((object) => object.raw)) : null;
+    const referenceEntries = this.referenceColors ? combinedColors(references.map((object) => object.raw)) : [];
+    // One map for the whole set, so one color never goes to two reference colors.
+    const toReference = referenceEntries.length > 0 && unified.length > 0 ? matchColors(combinedColors(unified), referenceEntries) : null;
     for (const object of references) {
       // A reference shows by its visible box, so its lowest visible row stands on the ground line. Its pixels do not
       // change; a reference with no opaque tile keeps its full box.
@@ -450,7 +444,7 @@ export class ImageSet {
     }
     live.forEach((object, i) => {
       let sprite = unified[i];
-      if (referencePalette && referencePalette.length > 0) sprite = mapToPalette(sprite, referencePalette);
+      if (toReference) sprite = applyColorMap(sprite, toReference);
       object.backgroundKept = false;
       if (this.eraseBackground) {
         const background = borderBackground(sprite);

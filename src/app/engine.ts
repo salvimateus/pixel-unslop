@@ -42,6 +42,12 @@ export interface MergeResult {
   palette: Uint32Array;
 }
 
+export interface ReferenceResult {
+  sprite: Sprite;
+  /** True for a reference that is already a clean sprite: its colors need no palette merge. */
+  flat: boolean;
+}
+
 export interface FitSetResult {
   /** The joint pixel size of all images, or null when none exists. */
   shared: { x: number; y: number } | null;
@@ -131,6 +137,13 @@ export class CleanEngine {
     if (!reply) return null;
     const { shared, suggested, items } = expect(reply, 'fit-set');
     return { shared, suggested, items };
+  }
+
+  /** Decodes a reference image, with no change to the loaded image. The bytes are transferred. */
+  async reference(bytes: ArrayBuffer): Promise<ReferenceResult> {
+    const reply = await this.request({ type: 'reference', bytes }, [bytes]);
+    const { sprite, flat } = expect(reply, 'reference');
+    return { sprite, flat };
   }
 
   /** The PNG of a sprite at one image pixel per tile, the only export size. `optimize` makes it smaller with the same pixels. */

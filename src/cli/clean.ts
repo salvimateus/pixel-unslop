@@ -4,7 +4,7 @@ import { exportSprite } from '../core/pipeline.ts';
 import { PARAMS } from '../core/params.ts';
 import type { ElasticMode } from '../core/types.ts';
 import { CliError, errorLine, toCliError, usage } from './errors.ts';
-import { checkFolder, derivedPath, paletteText, readPalette, samePath, writeOutput } from './files.ts';
+import { checkFolder, derivedPath, paletteText, readPalette, readReference, samePath, writeOutput } from './files.ts';
 import type { Operation } from './operations.ts';
 import { gridPreview } from './preview.ts';
 import {
@@ -32,6 +32,7 @@ export const PIPELINE_OPTIONS = {
   cleanup: { type: 'string' },
   'max-colors': { type: 'string' },
   palette: { type: 'string' },
+  reference: { type: 'string' },
   'shared-palette': { type: 'boolean' },
   'erase-background': { type: 'boolean' },
   swap: { type: 'string', multiple: true },
@@ -60,6 +61,7 @@ type PipelineValues = {
   cleanup?: string;
   'max-colors'?: string;
   palette?: string;
+  reference?: string;
   'shared-palette'?: boolean;
   'erase-background'?: boolean;
   swap?: string[];
@@ -103,6 +105,9 @@ export function settingsFrom(values: PipelineValues, inputs: string[]): CleanSet
   const elastic = (values.elastic ?? 'auto').toLowerCase();
   if (elastic !== 'auto' && elastic !== 'on' && elastic !== 'off') throw usage(`--elastic: use auto, on or off (got ${values.elastic}).`);
   if (values.exact && !values['pixel-size']) throw usage('--exact needs --pixel-size.');
+  if (values.palette && values.reference) throw usage('Use --palette or --reference, not both.');
+  const strength = values.cleanup ? parseCleanup(values.cleanup) : PARAMS.palette.presets.normal;
+  const reference = values.reference ? readReference(values.reference, strength) : undefined;
   const operations: Operation[] = [];
   if (values.palette) operations.push({ kind: 'palette', colors: readPalette(values.palette) });
   if (values['erase-background']) operations.push({ kind: 'erase-background' });
@@ -117,9 +122,10 @@ export function settingsFrom(values: PipelineValues, inputs: string[]): CleanSet
     offset: values.offset ? parseOffset(values.offset) : undefined,
     elastic: elastic as ElasticMode,
     sharedPixelSize: !!values['shared-pixel-size'],
-    strength: values.cleanup ? parseCleanup(values.cleanup) : PARAMS.palette.presets.normal,
+    strength,
     maxColors: values['max-colors'] ? parseWhole(values['max-colors'], '--max-colors', 1) : undefined,
     sharedPalette: !!values['shared-palette'],
+    reference,
     operations,
     trim: !keepFrame,
     heights,

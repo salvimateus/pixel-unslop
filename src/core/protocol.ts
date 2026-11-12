@@ -34,7 +34,9 @@ export type EngineRequest =
   /** The PNG of the sprite at one image pixel per tile; `optimize` makes the smallest lossless PNG. */
   | { id: number; type: 'export'; sprite: Sprite; optimize: boolean }
   /** Decodes and fits each image with the set grid. Needs no loaded image and leaves the worker state as it is. */
-  | { id: number; type: 'fit-set'; images: ArrayBuffer[]; grid: SetGrid };
+  | { id: number; type: 'fit-set'; images: ArrayBuffer[]; grid: SetGrid }
+  /** Decodes a reference image to its tiles (see referenceTiles). Needs no loaded image and leaves the worker state as it is. */
+  | { id: number; type: 'reference'; bytes: ArrayBuffer };
 
 export type EngineReply =
   /** `profiles.x[i]` is the edge strength between column i and i + 1 (length width - 1); the same for y. */
@@ -45,6 +47,8 @@ export type EngineReply =
   | { id: number; ok: true; type: 'merge-own'; sprites: Sprite[] }
   | { id: number; ok: true; type: 'export'; png: ArrayBuffer }
   | { id: number; ok: true; type: 'fit-set'; shared: { x: number; y: number } | null; suggested: 'own' | 'shared'; items: SetFitItem[] }
+  /** `flat` is true when each pixel of the reference is a tile; else `sprite` holds the raw tiles of its automatic grid. */
+  | { id: number; ok: true; type: 'reference'; sprite: Sprite; flat: boolean }
   | { id: number; ok: false; error: ErrorCode; detail?: string };
 
 export type EngineEvent = { id: number; type: 'progress'; stage: Stage; ratio: number };

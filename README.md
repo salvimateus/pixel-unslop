@@ -148,6 +148,7 @@ The program shows the clean sprite. To compare it with the source, move the divi
 - To replace a color in all the sprite, right-click it in the color list. You can also click the "..." button. You can also erase the color there.
 - To make the background transparent, click "Remove background". This changes the background that touches the border.
 - When the sprite has an empty border, a faint dashed box shows the part that the export writes.
+- To paint the sprite with the colors of another image, use "Reference colors" and click "Choose a reference". The reference can be a clean sprite or AI pixel art. First the app removes the tone difference that all the colors share, such as brightness or tint. Then each color changes to the nearest color of the reference. Your manual corrections stay. Turn off the "Use the colors of" switch to get the original colors back.
 - You can change the "Color cleanup" level at any time. Your manual corrections stay.
 - To undo, push Ctrl+Z. To redo, push Ctrl+Y.
 
@@ -194,7 +195,7 @@ To add more images later, click "+ Image" in the Grid step or in the Set step. N
 
 <img src="docs/images/pixel-unslop-set-grid-screen.png" width="900" alt="Grid step of the set mode: on the left the two grid choices and the list of pieces with the pixel size and the stars of each piece, in the middle the original image of one piece with its grid, and on the right the pixel size control and the Clean all button">
 
-To clean a new sprite next to an asset that is already final in your game, add that asset with "+ Reference", or select "Reference" on a piece. A reference is locked: the app does not change its pixels, its colors or its size, and it does not export it. Turn on "Use only the colors of the reference" to map the other pieces to the colors of the reference.
+To clean a new sprite next to an asset that is already final in your game, add that asset with "+ Reference", or select "Reference" on a piece. A reference is locked: the app does not change its pixels, its colors or its size, and it does not export it. Turn on "Use only reference colors" to map the other pieces to the colors of the reference. First the app removes the tone difference that all the colors share against the reference, such as brightness or tint. Then each color changes to the nearest color of the reference.
 
 The background removal works only for a flat background of one color or for a fake checkerboard. Thus, generate each object on a flat background of one color. When the app cannot remove the background of an image, the sprite and its row show a "background" badge, and a message tells you what to do.
 
@@ -210,6 +211,7 @@ The background removal works only for a flat background of one color or for a fa
 - Pixel art cleanup of the colors in four levels, in the OKLab color space. The merge agrees with what the eye sees.
 - Pencil, eraser, bucket fill and dropper, with undo and redo. The pencil and the eraser have a brush size from 1 to 32 squares.
 - Replace a color in all the sprite, erase a color, or remove the background with one click.
+- Reference colors: paint a sprite with the colors of another image, after the removal of the tone difference between the two images.
 - A comparison of the source and the result, on a checker, dark or light background.
 - PNG export at the true resolution: always 1 image pixel for each art pixel.
 - The smallest PNG size: each export is cropped to its visible pixels, and no visible pixel is cut.
@@ -282,6 +284,13 @@ Edit a clean sprite. This example sets one tile, then fills the background area 
 
 ```sh
 pixel-unslop edit hero-pixel-40x32.png --set 10,4=#ff0000 --fill 0,0=transparent -o hero-fixed.png
+```
+
+Paint a new sprite with the colors of a sprite that is already final. First the tool removes the tone difference that all the colors share, such as brightness or tint. Then each color changes to the nearest color of the reference. The same files and options always give the same pixels. The reference of `clean` can be a clean sprite or AI pixel art. The reference of `edit` must be a clean sprite. The CLI reads a PNG reference. The app also reads JPEG and WebP references:
+
+```sh
+pixel-unslop clean hero-run.png --reference hero-idle-pixel-41x46.png
+pixel-unslop edit hero-run-pixel-40x46.png --reference hero-idle-pixel-41x46.png -o hero-run-fixed.png
 ```
 
 The output of `clean` and `edit` is always 1 image pixel for each art pixel. To edit an asset that was upscaled before, give `edit --from-scale <k>`: the tool reads each k by k block as one tile and writes the sprite back at 1x.

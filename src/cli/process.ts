@@ -1,5 +1,5 @@
 import { toHex } from '../core/color.ts';
-import { mergePalette, mergeShared, paletteOf } from '../core/palette.ts';
+import { applyColorMap, combinedColors, matchColors, matchToReference, mergePalette, mergeShared, paletteOf, type ColorCount } from '../core/palette.ts';
 import { fitSource, sampleSource, sharedPeriodOf, sourceFromPng, type Source } from '../core/pipeline.ts';
 import { heightLimit, listPalette, trimSprite, wholeHeights } from '../core/sprite.ts';
 import type { ElasticMode, GridFit, GridOptions, Selection, Sprite } from '../core/types.ts';
@@ -16,7 +16,9 @@ export interface CleanSettings {
   strength: number;
   maxColors?: number;
   sharedPalette: boolean;
-  /** Applied in this order after the palette merge: --palette, --erase-background, then each --swap. */
+  /** The colors of --reference with their counts, applied right after the palette merge. */
+  reference?: ColorCount[];
+  /** Applied in this order after the palette merge and the reference: --palette, --erase-background, then each --swap. */
   operations: Operation[];
   /** Crop each result to the box of its opaque tiles, after the operations (the default; false with --no-trim). */
   trim: boolean;
@@ -84,6 +86,13 @@ export function processInputs(inputs: string[], settings: CleanSettings): { outc
     good.forEach((entry, i) => merged.set(entry.input, sprites[i]));
   } else {
     for (const entry of good) merged.set(entry.input, mergePalette(entry.raw, merge).sprite);
+  }
+  const reference = settings.reference;
+  if (reference) {
+    const sprites = good.map((entry) => merged.get(entry.input) as Sprite);
+    // One map for all inputs, so a shared color cannot take two reference colors.
+    const shared = settings.sharedPalette ? matchColors(combinedColors(sprites), reference) : null;
+    good.forEach((entry, i) => merged.set(entry.input, shared ? applyColorMap(sprites[i], shared) : matchToReference(sprites[i], reference)));
   }
 
   const outcomes = fitted.map((entry, index): Outcome => {

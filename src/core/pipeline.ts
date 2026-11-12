@@ -2,12 +2,12 @@ import { alignedBlock, alignedImage, sampleCells } from './cells.ts';
 import { computeProfiles, type EdgeProfiles } from './edge-profile.ts';
 import { CoreError } from './errors.ts';
 import { fitGrid, manualGridFit, type FitExtras } from './grid.ts';
-import { mergePalette } from './palette.ts';
+import { mergePalette, type ColorCount } from './palette.ts';
 import { PARAMS } from './params.ts';
 import { detectPeriods } from './pitch.ts';
 import { decodeImage, encodePng, encodePngSmallest, validateImage } from './png.ts';
 import type { MergeOptions, SetGrid } from './protocol.ts';
-import { spriteToRaster } from './sprite.ts';
+import { listPalette, spriteFromRaster, spriteToRaster } from './sprite.ts';
 import type { AxisFit, CellGrid, GridFit, GridOptions, RasterImage, Selection, Sprite } from './types.ts';
 
 /** A decoded image with the edge evidence that every fit reuses. */
@@ -105,6 +105,20 @@ export function sampleSource(source: Source, fit: GridFit, onProgress?: (ratio: 
 
 export function mergeSprite(raw: Sprite, merge: MergeOptions): { sprite: Sprite; palette: Uint32Array } {
   return mergePalette(raw, merge);
+}
+
+export interface ReferenceTiles { sprite: Sprite; flat: boolean }
+
+/** A reference with few colors is a clean sprite: each pixel is a tile. Other references give the tiles of their automatic grid. */
+export function referenceTiles(source: Source): ReferenceTiles {
+  if (source.edges.colorCount <= PARAMS.pitch.nativeMaxColors) return { sprite: spriteFromRaster(source.image), flat: true };
+  return { sprite: sampleSource(source, fitSource(source, null, AUTO_OPTIONS)), flat: false };
+}
+
+/** The colors of a reference with their counts. AI art gets its own palette merge first. */
+export function referencePalette(reference: ReferenceTiles, merge: MergeOptions): ColorCount[] {
+  const sprite = reference.flat ? reference.sprite : mergePalette(reference.sprite, { strength: merge.strength }).sprite;
+  return listPalette(sprite.pixels);
 }
 
 /** The source with each cell drawn as a uniform square block, for the before/after comparison. */

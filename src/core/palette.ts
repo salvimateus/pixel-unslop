@@ -31,7 +31,22 @@ class LabTable {
   distance(i: number, other: LabTable, j: number): number {
     return Math.hypot(this.l[i] - other.l[j], this.a[i] - other.a[j], this.b[i] - other.b[j]);
   }
+
+  /** Applies the tone to every color, in place. */
+  move(tone: Tone): this {
+    for (let i = 0; i < this.l.length; i++) {
+      this.l[i] = tone.scale * this.l[i] + tone.l;
+      this.a[i] = tone.scale * this.a[i] + tone.a;
+      this.b[i] = tone.scale * this.b[i] + tone.b;
+    }
+    return this;
+  }
 }
+
+/** A uniform OKLab scale (a linear gain of the image) plus an offset. */
+interface Tone { scale: number; l: number; a: number; b: number }
+
+const NO_TONE: Tone = { scale: 1, l: 0, a: 0, b: 0 };
 
 /** Index of the nearest color of `targets` (lowest index on ties). */
 function nearest(source: LabTable, i: number, targets: LabTable, count: number): { index: number; distance: number } {
@@ -184,11 +199,16 @@ export function mergeShared(raws: Sprite[], options: MergeOptions): Sprite[] {
   return unifyPalettes(raws.map((raw) => mergePalette(raw, { strength: options.strength }).sprite), options);
 }
 
+/** The opaque colors of several sprites with their summed counts, sorted by count descending, then by value ascending. */
+export function combinedColors(sprites: readonly Sprite[]): ColorCount[] {
+  const counts = new Map<number, number>();
+  for (const sprite of sprites) for (const { color, count } of listPalette(sprite.pixels)) counts.set(color, (counts.get(color) ?? 0) + count);
+  return [...counts.entries()].map(([color, count]) => ({ color, count })).sort((a, b) => b.count - a.count || a.color - b.color);
+}
+
 /** One palette for sprites that already merged their own colors: the second stage of mergeShared. */
 export function unifyPalettes(own: Sprite[], options: MergeOptions): Sprite[] {
-  const counts = new Map<number, number>();
-  for (const sprite of own) for (const { color, count } of listPalette(sprite.pixels)) counts.set(color, (counts.get(color) ?? 0) + count);
-  const entries = [...counts.entries()].map(([color, count]) => ({ color, count })).sort((a, b) => b.count - a.count || a.color - b.color);
+  const entries = combinedColors(own);
   const shared = { strength: options.strength * PARAMS.palette.sharedFactor, maxColors: options.maxColors };
   const map = clusterColors(entries, shared, 0);
   return own.map((sprite) => applyColorMap(sprite, map));
@@ -203,4 +223,94 @@ export function mapToPalette(sprite: Sprite, palette: ArrayLike<number>): Sprite
   const map = new Map<number, number>();
   for (let i = 0; i < entries.length; i++) map.set(entries[i].color, palette[nearest(labs, i, targets, palette.length).index]);
   return applyColorMap(sprite, map);
+}
+
+/** How much color mass of two palettes meets under `tone`: each pair counts by both tile counts and by its closeness. */
+function overlap(source: LabTable, weights: Float64Array, targets: LabTable, targetWeights: Float64Array, tone: Tone, radius: number): number {
+  const limit = radius * radius;
+  let sum = 0;
+  for (let i = 0; i < weights.length; i++) {
+    const l = tone.scale * source.l[i] + tone.l;
+    const a = tone.scale * source.a[i] + tone.a;
+    const b = tone.scale * source.b[i] + tone.b;
+    let inner = 0;
+    for (let j = 0; j < targetWeights.length; j++) {
+      const dl = l - targets.l[j];
+      const da = a - targets.a[j];
+      const db = b - targets.b[j];
+      const d2 = dl * dl + da * da + db * db;
+      if (d2 >= limit) continue;
+      const near = 1 - d2 / limit;
+      inner += targetWeights[j] * near * near;
+    }
+    sum += weights[i] * inner;
+  }
+  return sum;
+}
+
+/** Steps of one tone axis, nearest first: 0, +1, -1, +2, -2 and so on. */
+function stepOrder(steps: number): number[] {
+  const order = [0];
+  for (let k = 1; k <= steps; k++) order.push(k, -k);
+  return order;
+}
+
+/**
+ * The tone change that all colors of the image share against the reference. The candidates are a fixed grid
+ * that starts at "no change"; a later candidate wins only with a higher score, so a tie keeps the smaller change.
+ * A change must beat "no change" by `minGain`, else the result is NO_TONE. Only basic arithmetic and strict
+ * comparisons decide, so every runtime gives the same tone.
+ */
+function sharedTone(entries: readonly ColorCount[], reference: readonly ColorCount[]): Tone {
+  const params = PARAMS.palette.reference;
+  const top = entries.slice(0, params.topColors);
+  const topReference = reference.slice(0, params.topColors);
+  const source = new LabTable(top.map((e) => e.color));
+  const targets = new LabTable(topReference.map((e) => e.color));
+  const weights = Float64Array.from(top, (e) => e.count);
+  const targetWeights = Float64Array.from(topReference, (e) => e.count);
+  let best = NO_TONE;
+  let bestScore = overlap(source, weights, targets, targetWeights, NO_TONE, params.radius) * (1 + params.minGain);
+  const lights = stepOrder(params.lightSteps);
+  const chromas = stepOrder(params.chromaSteps);
+  for (const scale of params.scales) {
+    for (const il of lights) {
+      for (const ia of chromas) {
+        for (const ib of chromas) {
+          const tone: Tone = { scale, l: il * params.step, a: ia * params.step, b: ib * params.step };
+          const score = overlap(source, weights, targets, targetWeights, tone, params.radius);
+          if (score > bestScore) {
+            best = tone;
+            bestScore = score;
+          }
+        }
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * The reference color of each color of an image: the nearest reference color in OKLab (lowest index on ties),
+ * after the tone change that all colors share is taken out. Both lists are sorted by count descending, then by
+ * value ascending. An empty reference maps each color to itself. With no tone change the result is mapToPalette.
+ */
+export function matchColors(entries: readonly ColorCount[], reference: readonly ColorCount[]): Map<number, number> {
+  const map = new Map<number, number>();
+  if (reference.length === 0) {
+    for (const e of entries) map.set(e.color, e.color);
+    return map;
+  }
+  if (entries.length === 0) return map;
+  const tone = sharedTone(entries, reference);
+  const labs = new LabTable(entries.map((e) => e.color));
+  if (tone !== NO_TONE) labs.move(tone);
+  const targets = new LabTable(reference.map((e) => e.color));
+  for (let i = 0; i < entries.length; i++) map.set(entries[i].color, reference[nearest(labs, i, targets, reference.length).index].color);
+  return map;
+}
+
+/** The sprite painted with the colors of the reference (see matchColors). Transparent tiles stay. */
+export function matchToReference(sprite: Sprite, reference: readonly ColorCount[]): Sprite {
+  return applyColorMap(sprite, matchColors(listPalette(sprite.pixels), reference));
 }

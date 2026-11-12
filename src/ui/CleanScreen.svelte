@@ -13,6 +13,7 @@
   import { brushBox, stampIndices } from './brush.ts';
   import BrushSize from './BrushSize.svelte';
   import CleanupPresets from './CleanupPresets.svelte';
+  import ReferenceColors from './ReferenceColors.svelte';
   import PalettePanel from './PalettePanel.svelte';
   import ProgressPill from './ProgressPill.svelte';
   import Stage from './Stage.svelte';
@@ -513,6 +514,8 @@
       </button>
 
       <CleanupPresets hint={t('cleanup.hint')} />
+
+      {#if app.editingId === null}<ReferenceColors />{/if}
     </div>
 
     <div class="clean-actions" class:is-set={app.editingId !== null}>
