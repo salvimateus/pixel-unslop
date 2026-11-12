@@ -50,8 +50,8 @@ Color options:
   --shared-palette         With several inputs: merge the colors of the full set, so all outputs share one palette.
   --palette <path>         Map every color to the nearest color of a fixed palette (OKLab). The file is a
                            text file with one #rrggbb per line, or a PNG whose opaque colors are the palette.
-  --reference <path>       Give each color the nearest color (OKLab) of a reference PNG. The tone change that
-                           all colors share against the reference (brightness, tint) is removed first. A
+  --reference <path>       Give each color the nearest color (OKLab) of a reference PNG. The lightness
+                           difference between the image and the reference is corrected first. A
                            reference with at most ${PARAMS.pitch.nativeMaxColors} colors is a clean sprite: its pixels are its colors.
                            Other references are AI pixel art: automatic grid, then --cleanup. With
                            --shared-palette, all inputs use one color map. Not with --palette.

@@ -132,18 +132,20 @@ export const PARAMS = {
     /** The shared palette of several sprites merges their own palettes with this share of the strength. */
     sharedFactor: 0.6,
     reference: {
-      /** The tone search reads this many colors of each palette, the heaviest first. */
+      /** The plan, the curve fit and the gate read this many colors of each palette, the heaviest first. */
       topColors: 64,
-      /** Two colors nearer than this (OKLab) add to the score of the tone search. */
+      /** A palette with more than topColors colors first merges its near colors at this strength. */
+      planStrength: 0.03,
+      /** No tile pairs with a reference color at this OKLab distance or farther. It is also the largest lightness move of one pass. */
+      reach: 0.1,
+      /** Number of plan and curve fit passes. Each pass starts from the lightness of the pass before. */
+      passes: 3,
+      /** Two colors nearer than this (OKLab) add to the gate score. */
       radius: 0.05,
-      /** Uniform OKLab scales, "no change" first. A linear gain of an image is such a scale. */
-      scales: [1, 0.95, 1.05, 0.9, 1.1],
-      /** Step of the tone offsets, with the steps to each side for L and for a and b. */
-      step: 0.02,
-      lightSteps: 5,
-      chromaSteps: 3,
-      /** A tone change must raise the score of "no change" by this share. */
-      minGain: 0.5,
+      /** The curve must raise the gate score of "no change" by more than this share, else each color takes its nearest color. */
+      minGain: 0.4,
+      /** After a tone change, two reference colors are equally near when their distances to a color differ by less than this. */
+      close: 0.015,
     },
   },
   sizing: {

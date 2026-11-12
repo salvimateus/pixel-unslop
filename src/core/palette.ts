@@ -31,22 +31,7 @@ class LabTable {
   distance(i: number, other: LabTable, j: number): number {
     return Math.hypot(this.l[i] - other.l[j], this.a[i] - other.a[j], this.b[i] - other.b[j]);
   }
-
-  /** Applies the tone to every color, in place. */
-  move(tone: Tone): this {
-    for (let i = 0; i < this.l.length; i++) {
-      this.l[i] = tone.scale * this.l[i] + tone.l;
-      this.a[i] = tone.scale * this.a[i] + tone.a;
-      this.b[i] = tone.scale * this.b[i] + tone.b;
-    }
-    return this;
-  }
 }
-
-/** A uniform OKLab scale (a linear gain of the image) plus an offset. */
-interface Tone { scale: number; l: number; a: number; b: number }
-
-const NO_TONE: Tone = { scale: 1, l: 0, a: 0, b: 0 };
 
 /** Index of the nearest color of `targets` (lowest index on ties). */
 function nearest(source: LabTable, i: number, targets: LabTable, count: number): { index: number; distance: number } {
@@ -225,75 +210,288 @@ export function mapToPalette(sprite: Sprite, palette: ArrayLike<number>): Sprite
   return applyColorMap(sprite, map);
 }
 
-/** How much color mass of two palettes meets under `tone`: each pair counts by both tile counts and by its closeness. */
-function overlap(source: LabTable, weights: Float64Array, targets: LabTable, targetWeights: Float64Array, tone: Tone, radius: number): number {
-  const limit = radius * radius;
+/** Integer units of the plan: one share of tiles is MASS_UNIT, and a squared OKLab distance of 1 costs COST_UNIT. */
+const MASS_UNIT = 1_000_000_000;
+const COST_UNIT = 1_000_000;
+/** Keeps the curve fit defined when the pairs have fewer than three lightness values: it holds the scale and the bend at zero. */
+const RIDGE = 1e-6;
+/** The curve fit has no solution when a pivot is smaller than this. */
+const MIN_PIVOT = 1e-12;
+
+/** A lightness move c0 + c1 L + c2 L^2. */
+type Curve = [number, number, number];
+
+/** The colors that the plan reads. `of[i]` is the plan color of entry i. */
+interface PlanColors { colors: readonly ColorCount[]; of: Int32Array }
+
+/** The two palettes of the plan. Only the first `imageSize` and `targetSize` plan colors take part. */
+interface Plan {
+  image: PlanColors;
+  target: PlanColors;
+  labs: LabTable;
+  targets: LabTable;
+  imageSize: number;
+  targetSize: number;
+  imageTotal: number;
+  targetTotal: number;
+}
+
+/** Squared distance of color i, at lightness `light[i]`, to color j of `targets`. */
+function squaredGap(labs: LabTable, light: Float64Array, i: number, targets: LabTable, j: number): number {
+  const dl = light[i] - targets.l[j];
+  const da = labs.a[i] - targets.a[j];
+  const db = labs.b[i] - targets.b[j];
+  return dl * dl + da * da + db * db;
+}
+
+/**
+ * A palette of at most `topColors` colors is read as it is. A larger palette is merged first: each color joins the
+ * heaviest color nearer than `planStrength`. Then the heaviest colors hold the image again.
+ */
+function planColors(entries: readonly ColorCount[]): PlanColors {
+  const of = new Int32Array(entries.length);
+  if (entries.length <= PARAMS.palette.reference.topColors) {
+    for (let i = 0; i < of.length; i++) of[i] = i;
+    return { colors: entries, of };
+  }
+  const leader = clusterColors(entries.slice(), { strength: PARAMS.palette.reference.planStrength }, 0);
+  const counts = new Map<number, number>();
+  for (const e of entries) {
+    const to = leader.get(e.color) as number;
+    counts.set(to, (counts.get(to) ?? 0) + e.count);
+  }
+  const colors = [...counts.entries()].map(([color, count]) => ({ color, count })).sort((a, b) => b.count - a.count || a.color - b.color);
+  const index = new Map<number, number>();
+  colors.forEach((e, k) => index.set(e.color, k));
+  for (let i = 0; i < of.length; i++) of[i] = index.get(leader.get(entries[i].color) as number) as number;
+  return { colors, of };
+}
+
+function planOf(entries: readonly ColorCount[], reference: readonly ColorCount[]): Plan {
+  const topColors = PARAMS.palette.reference.topColors;
+  const image = planColors(entries);
+  const target = planColors(reference);
+  let imageTotal = 0;
+  let targetTotal = 0;
+  for (const e of entries) imageTotal += e.count;
+  for (const e of reference) targetTotal += e.count;
+  return {
+    image,
+    target,
+    labs: new LabTable(image.colors.map((e) => e.color)),
+    targets: new LabTable(target.colors.map((e) => e.color)),
+    imageSize: Math.min(image.colors.length, topColors),
+    targetSize: Math.min(target.colors.length, topColors),
+    imageTotal,
+    targetTotal,
+  };
+}
+
+/** A flow network. Each edge has a reverse edge at index ^ 1. */
+interface Graph { head: Int32Array; next: number[]; to: number[]; room: number[]; cost: number[] }
+
+/** Adds an edge and its reverse edge. The edges of a node are read newest first. */
+function addEdge(graph: Graph, from: number, to: number, room: number, cost: number): number {
+  const id = graph.to.length;
+  graph.to.push(to, from);
+  graph.room.push(room, 0);
+  graph.cost.push(cost, -cost);
+  graph.next.push(graph.head[from], graph.head[to]);
+  graph.head[from] = id;
+  graph.head[to] = id + 1;
+  return id;
+}
+
+/**
+ * Min-cost flow by successive shortest paths, with integer rooms and costs, so each result is exact. Each round is a
+ * dense Dijkstra on the reduced costs: the open node with the smallest distance goes first, lowest index on ties.
+ * Then the path takes the largest flow that it permits. The flow stops when the sink has no path.
+ */
+function minCostFlow(graph: Graph, nodes: number, source: number, sink: number): void {
+  const potential = new Float64Array(nodes);
+  const distance = new Float64Array(nodes);
+  const closed = new Uint8Array(nodes);
+  const via = new Int32Array(nodes);
+  for (;;) {
+    distance.fill(Infinity);
+    closed.fill(0);
+    distance[source] = 0;
+    for (;;) {
+      let node = -1;
+      for (let v = 0; v < nodes; v++) if (!closed[v] && distance[v] < Infinity && (node < 0 || distance[v] < distance[node])) node = v;
+      if (node < 0) break;
+      closed[node] = 1;
+      for (let e = graph.head[node]; e >= 0; e = graph.next[e]) {
+        if (graph.room[e] <= 0) continue;
+        const v = graph.to[e];
+        const d = distance[node] + graph.cost[e] + potential[node] - potential[v];
+        if (d < distance[v]) {
+          distance[v] = d;
+          via[v] = e;
+        }
+      }
+    }
+    if (distance[sink] === Infinity) return;
+    for (let v = 0; v < nodes; v++) if (distance[v] < Infinity) potential[v] += distance[v];
+    let push = Infinity;
+    for (let v = sink; v !== source; v = graph.to[via[v] ^ 1]) if (graph.room[via[v]] < push) push = graph.room[via[v]];
+    for (let v = sink; v !== source; v = graph.to[via[v] ^ 1]) {
+      graph.room[via[v]] -= push;
+      graph.room[via[v] ^ 1] += push;
+    }
+  }
+}
+
+/**
+ * The plan: the tile shares of the image colors go to the reference colors at the lowest sum of squared distances.
+ * A reference color accepts its own share of tiles and no more. A tile pairs only with a color nearer than `reach`.
+ * A tile with no partner costs as much as a pair at `reach`. `flow[i * targetSize + j]` is the share, in MASS_UNIT,
+ * of image color i that reference color j gets.
+ */
+function transport(plan: Plan, light: Float64Array): Float64Array {
+  const { image, target, labs, targets, imageSize, targetSize } = plan;
+  const source = imageSize + targetSize;
+  const sink = source + 1;
+  const graph: Graph = { head: new Int32Array(sink + 1).fill(-1), next: [], to: [], room: [], cost: [] };
+  const reach2 = PARAMS.palette.reference.reach * PARAMS.palette.reference.reach;
+  const looseCost = Math.round(reach2 * COST_UNIT);
+  const supply = new Float64Array(imageSize);
+  for (let i = 0; i < imageSize; i++) {
+    supply[i] = Math.round((image.colors[i].count / plan.imageTotal) * MASS_UNIT);
+    addEdge(graph, source, i, supply[i], 0);
+  }
+  for (let j = 0; j < targetSize; j++) addEdge(graph, imageSize + j, sink, Math.round((target.colors[j].count / plan.targetTotal) * MASS_UNIT), 0);
+  const pair = new Int32Array(imageSize * targetSize).fill(-1);
+  for (let i = 0; i < imageSize; i++) {
+    for (let j = 0; j < targetSize; j++) {
+      const d2 = squaredGap(labs, light, i, targets, j);
+      if (d2 < reach2) pair[i * targetSize + j] = addEdge(graph, i, imageSize + j, supply[i], Math.round(d2 * COST_UNIT));
+    }
+    addEdge(graph, i, sink, supply[i], looseCost);
+  }
+  minCostFlow(graph, sink + 1, source, sink);
+  const flow = new Float64Array(imageSize * targetSize);
+  for (let k = 0; k < flow.length; k++) if (pair[k] >= 0) flow[k] = graph.room[pair[k] + 1];
+  return flow;
+}
+
+/** The lightness curve that fits the pairs of the plan best: least squares, each pair by its share of tiles. Null when it has no solution. */
+function fitCurve(plan: Plan, flow: Float64Array, light: Float64Array): Curve | null {
+  const { targets, imageSize, targetSize } = plan;
+  const m = [[0, 0, 0], [0, RIDGE, 0], [0, 0, RIDGE]];
+  const v = [0, 0, 0];
+  for (let i = 0; i < imageSize; i++) {
+    const x = light[i];
+    const basis = [1, x, x * x];
+    for (let j = 0; j < targetSize; j++) {
+      const f = flow[i * targetSize + j];
+      if (f <= 0) continue;
+      const w = f / MASS_UNIT;
+      const y = targets.l[j] - x;
+      for (let p = 0; p < 3; p++) {
+        v[p] += w * basis[p] * y;
+        for (let q = 0; q < 3; q++) m[p][q] += w * basis[p] * basis[q];
+      }
+    }
+  }
+  // Gauss-Jordan. The pivot of a column is the first row with the largest absolute value.
+  for (let c = 0; c < 3; c++) {
+    let pivot = c;
+    for (let row = c + 1; row < 3; row++) if (Math.abs(m[row][c]) > Math.abs(m[pivot][c])) pivot = row;
+    if (Math.abs(m[pivot][c]) < MIN_PIVOT) return null;
+    [m[c], m[pivot]] = [m[pivot], m[c]];
+    [v[c], v[pivot]] = [v[pivot], v[c]];
+    for (let row = 0; row < 3; row++) {
+      if (row === c) continue;
+      const f = m[row][c] / m[c][c];
+      for (let k = c; k < 3; k++) m[row][k] -= f * m[c][k];
+      v[row] -= f * v[c];
+    }
+  }
+  return [v[0] / m[0][0], v[1] / m[1][1], v[2] / m[2][2]];
+}
+
+/** Moves each lightness by the curve. One move is `reach` at most. */
+function moveLight(curve: Curve, from: Float64Array): Float64Array {
+  const reach = PARAMS.palette.reference.reach;
+  const next = new Float64Array(from.length);
+  for (let i = 0; i < from.length; i++) {
+    const x = from[i];
+    let move = curve[0] + curve[1] * x + curve[2] * x * x;
+    if (move > reach) move = reach;
+    if (move < -reach) move = -reach;
+    next[i] = x + move;
+  }
+  return next;
+}
+
+/**
+ * Each pass pairs the tiles by share and distance, fits one lightness curve to the pairs and moves each color.
+ * `planLight` is the lightness of the plan colors, `light` the lightness of each entry.
+ */
+function fitTone(plan: Plan, start: Float64Array): { planLight: Float64Array; light: Float64Array } {
+  let planLight: Float64Array = plan.labs.l.slice();
+  let light: Float64Array = start.slice();
+  for (let pass = 0; pass < PARAMS.palette.reference.passes; pass++) {
+    const curve = fitCurve(plan, transport(plan, planLight), planLight);
+    if (!curve) break;
+    planLight = moveLight(curve, planLight);
+    light = moveLight(curve, light);
+  }
+  return { planLight, light };
+}
+
+/** The gate score: the pairs of colors nearer than `radius`, each by both tile counts and by its closeness. */
+function meetScore(plan: Plan, light: Float64Array): number {
+  const { image, target, labs, targets, imageSize, targetSize } = plan;
+  const limit = PARAMS.palette.reference.radius * PARAMS.palette.reference.radius;
   let sum = 0;
-  for (let i = 0; i < weights.length; i++) {
-    const l = tone.scale * source.l[i] + tone.l;
-    const a = tone.scale * source.a[i] + tone.a;
-    const b = tone.scale * source.b[i] + tone.b;
+  for (let i = 0; i < imageSize; i++) {
     let inner = 0;
-    for (let j = 0; j < targetWeights.length; j++) {
-      const dl = l - targets.l[j];
-      const da = a - targets.a[j];
-      const db = b - targets.b[j];
-      const d2 = dl * dl + da * da + db * db;
+    for (let j = 0; j < targetSize; j++) {
+      const d2 = squaredGap(labs, light, i, targets, j);
       if (d2 >= limit) continue;
       const near = 1 - d2 / limit;
-      inner += targetWeights[j] * near * near;
+      inner += target.colors[j].count * near * near;
     }
-    sum += weights[i] * inner;
+    sum += image.colors[i].count * inner;
   }
   return sum;
 }
 
-/** Steps of one tone axis, nearest first: 0, +1, -1, +2, -2 and so on. */
-function stepOrder(steps: number): number[] {
-  const order = [0];
-  for (let k = 1; k <= steps; k++) order.push(k, -k);
-  return order;
+/** The curve applies only when the two palettes meet clearly better with it. */
+function passesGate(plan: Plan, planLight: Float64Array): boolean {
+  return meetScore(plan, planLight) > meetScore(plan, plan.labs.l) * (1 + PARAMS.palette.reference.minGain);
 }
 
-/**
- * The tone change that all colors of the image share against the reference. The candidates are a fixed grid
- * that starts at "no change"; a later candidate wins only with a higher score, so a tie keeps the smaller change.
- * A change must beat "no change" by `minGain`, else the result is NO_TONE. Only basic arithmetic and strict
- * comparisons decide, so every runtime gives the same tone.
- */
-function sharedTone(entries: readonly ColorCount[], reference: readonly ColorCount[]): Tone {
-  const params = PARAMS.palette.reference;
-  const top = entries.slice(0, params.topColors);
-  const topReference = reference.slice(0, params.topColors);
-  const source = new LabTable(top.map((e) => e.color));
-  const targets = new LabTable(topReference.map((e) => e.color));
-  const weights = Float64Array.from(top, (e) => e.count);
-  const targetWeights = Float64Array.from(topReference, (e) => e.count);
-  let best = NO_TONE;
-  let bestScore = overlap(source, weights, targets, targetWeights, NO_TONE, params.radius) * (1 + params.minGain);
-  const lights = stepOrder(params.lightSteps);
-  const chromas = stepOrder(params.chromaSteps);
-  for (const scale of params.scales) {
-    for (const il of lights) {
-      for (const ia of chromas) {
-        for (const ib of chromas) {
-          const tone: Tone = { scale, l: il * params.step, a: ia * params.step, b: ib * params.step };
-          const score = overlap(source, weights, targets, targetWeights, tone, params.radius);
-          if (score > bestScore) {
-            best = tone;
-            bestScore = score;
-          }
-        }
-      }
+/** The two nearest colors of `targets`, lowest index on ties. `second` is -1 or equal to `first` when no second color is nearer than Infinity. */
+function nearestTwo(source: LabTable, i: number, targets: LabTable, count: number): { first: number; second: number; gap: number } {
+  let first = 0;
+  let second = -1;
+  let d1 = Infinity;
+  let d2 = Infinity;
+  for (let j = 0; j < count; j++) {
+    const d = source.distance(i, targets, j);
+    if (d < d1) {
+      second = first;
+      d2 = d1;
+      first = j;
+      d1 = d;
+    } else if (d < d2) {
+      second = j;
+      d2 = d;
     }
   }
-  return best;
+  return { first, second, gap: d2 - d1 };
 }
 
 /**
- * The reference color of each color of an image: the nearest reference color in OKLab (lowest index on ties),
- * after the tone change that all colors share is taken out. Both lists are sorted by count descending, then by
- * value ascending. An empty reference maps each color to itself. With no tone change the result is mapToPalette.
+ * The reference color of each color of an image. The rule removes first the lightness change that the image shares
+ * with the reference: a transport plan pairs the colors, and one lightness curve fits the pairs. A gate keeps the
+ * curve only when it clearly helps. Then each color takes the nearest reference color in OKLab, lowest index on ties.
+ * After a tone change, of two almost equally near colors, the plan selects the one that gets more tiles of the color.
+ * Both lists are sorted by count descending, then by value ascending. An empty reference maps each color to itself.
+ * With no tone change the result is mapToPalette.
  */
 export function matchColors(entries: readonly ColorCount[], reference: readonly ColorCount[]): Map<number, number> {
   const map = new Map<number, number>();
@@ -302,11 +500,29 @@ export function matchColors(entries: readonly ColorCount[], reference: readonly 
     return map;
   }
   if (entries.length === 0) return map;
-  const tone = sharedTone(entries, reference);
+  const plan = planOf(entries, reference);
   const labs = new LabTable(entries.map((e) => e.color));
-  if (tone !== NO_TONE) labs.move(tone);
   const targets = new LabTable(reference.map((e) => e.color));
-  for (let i = 0; i < entries.length; i++) map.set(entries[i].color, reference[nearest(labs, i, targets, reference.length).index].color);
+  const { planLight, light } = fitTone(plan, labs.l);
+  if (!passesGate(plan, planLight)) {
+    for (let i = 0; i < entries.length; i++) map.set(entries[i].color, reference[nearest(labs, i, targets, reference.length).index].color);
+    return map;
+  }
+  labs.l.set(light);
+  const { image, target, imageSize, targetSize } = plan;
+  let flow: Float64Array | null = null;
+  for (let i = 0; i < entries.length; i++) {
+    const { first, second, gap } = nearestTwo(labs, i, targets, reference.length);
+    let chosen = first;
+    if (second >= 0 && gap < PARAMS.palette.reference.close && image.of[i] < imageSize) {
+      flow ??= transport(plan, planLight);
+      const row = image.of[i] * targetSize;
+      const toFirst = target.of[first] < targetSize ? flow[row + target.of[first]] : 0;
+      const toSecond = target.of[second] < targetSize ? flow[row + target.of[second]] : 0;
+      if (toSecond > toFirst) chosen = second;
+    }
+    map.set(entries[i].color, reference[chosen].color);
+  }
   return map;
 }
 
