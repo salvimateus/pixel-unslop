@@ -75,9 +75,10 @@ export class CleanScene implements Scene {
   exportBox: { col: number; row: number; cols: number; rows: number } | null = null;
   /** Fraction of the width that shows "before", from the left edge. */
   split = 0;
+  /** The "before" and "after" labels of the divider, in the language of the interface. */
+  labels: CompareLabels;
   private host: StageHost | null = null;
   private aligned: ImageBitmap;
-  private readonly labels: CompareLabels;
   private readonly spriteCanvas: HTMLCanvasElement;
   private readonly spriteCtx: CanvasRenderingContext2D;
   private readonly image: ImageData;

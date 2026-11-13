@@ -1,3 +1,5 @@
+import { activeLocale, type Locale } from './locale.svelte.ts';
+
 const ptBR = {
   'app.name': 'Pixel Unslop',
   'app.logoAlt': 'Logo do Pixel Unslop',
@@ -7,6 +9,7 @@ const ptBR = {
   'header.unmute': 'Ligar sons',
   'header.about': 'Sobre',
   'header.home': 'Voltar ao início',
+  'header.language': 'Idioma',
 
   'step.label': 'Etapas',
   'step.drop': 'Soltar',
@@ -409,6 +412,7 @@ const en: Record<TextKey, string> = {
   'header.unmute': 'Turn sounds on',
   'header.about': 'About',
   'header.home': 'Back to start',
+  'header.language': 'Language',
 
   'step.label': 'Steps',
   'step.drop': 'Drop',
@@ -800,29 +804,38 @@ const en: Record<TextKey, string> = {
   'progress.working': 'Working…',
 };
 
-export const locale: 'pt-BR' | 'en' =
-  typeof navigator !== 'undefined' && navigator.language.toLowerCase().startsWith('pt') ? 'pt-BR' : 'en';
+const TABLES: Record<Locale, Record<TextKey, string>> = { 'pt-BR': ptBR, en };
 
-const table: Record<TextKey, string> = locale === 'pt-BR' ? ptBR : en;
-
+/** The text of a key in the active language. A call in a template, a `$derived` or an `$effect` follows a language change. */
 export function t(key: TextKey, vars?: Record<string, string | number>): string {
-  const text = table[key];
+  const text = TABLES[activeLocale()][key];
   if (!vars) return text;
   return text.replace(/\{(\w+)\}/g, (match, name: string) => (name in vars ? String(vars[name]) : match));
 }
 
-const numberFormat = new Intl.NumberFormat(locale, { maximumFractionDigits: 2, minimumFractionDigits: 2 });
+interface NumberFormats {
+  decimal: Intl.NumberFormat;
+  kb: Intl.NumberFormat;
+}
 
-const kbFormat = new Intl.NumberFormat(locale, { maximumFractionDigits: 1, minimumFractionDigits: 1 });
+function numberFormats(locale: Locale): NumberFormats {
+  return {
+    decimal: new Intl.NumberFormat(locale, { maximumFractionDigits: 2, minimumFractionDigits: 2 }),
+    kb: new Intl.NumberFormat(locale, { maximumFractionDigits: 1, minimumFractionDigits: 1 }),
+  };
+}
+
+const FORMATS: Record<Locale, NumberFormats> = { 'pt-BR': numberFormats('pt-BR'), en: numberFormats('en') };
 
 /** A file size in bytes or KB, in the format of the UI language. */
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${kbFormat.format(bytes / 1024)} KB`;
-  return `${kbFormat.format(bytes / (1024 * 1024))} MB`;
+  const { kb } = FORMATS[activeLocale()];
+  if (bytes < 1024 * 1024) return `${kb.format(bytes / 1024)} KB`;
+  return `${kb.format(bytes / (1024 * 1024))} MB`;
 }
 
 /** A number with exactly two decimals, in the format of the UI language. */
 export function formatDecimal(value: number): string {
-  return numberFormat.format(value);
+  return FORMATS[activeLocale()].decimal.format(value);
 }

@@ -55,9 +55,10 @@ export class SetScene implements Scene {
   readonly maxZoom = TUNING.zoom.setMax;
   background: PreviewBackground = 'checker';
   selectedId: number | null = null;
+  /** The texts under each object, in the language of the interface. */
+  labels: SetLabels;
   private host: StageHost | null = null;
   private readonly set: ImageSet;
-  private readonly labels: SetLabels;
   /** The layout that the camera knows. A drag keeps it, so the content size stays still. */
   private frame: SetLayout;
   /** The layout drawn now: equal to `frame`, except during a drag. */

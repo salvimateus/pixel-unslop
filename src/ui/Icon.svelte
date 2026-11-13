@@ -34,6 +34,8 @@
     eyeOff: 'M2 12l4-5h12l4 5-4 5H6zM10 10h4v4h-4zM3 3l18 18',
     star: 'M12 3l2.6 5.6 6.1.7-4.5 4.2 1.2 6L12 16.5l-5.4 3 1.2-6L3.3 9.3l6.1-.7z',
     arrows: 'M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3',
+    globe: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18M3 12h18M12 3c-3.5 3-3.5 15 0 18M12 3c3.5 3 3.5 15 0 18',
+    chevronDown: 'M6 9l6 6 6-6',
   } as const;
 
   export type IconName = keyof typeof PATHS;

@@ -8,7 +8,7 @@
   import * as sfx from '../app/sfx.ts';
   import { TUNING } from '../app/tuning.ts';
   import type { Tile } from './camera.ts';
-  import { CleanScene, type HoverMark, type PreviewBackground } from './clean-scene.ts';
+  import { CleanScene, type CompareLabels, type HoverMark, type PreviewBackground } from './clean-scene.ts';
   import Icon, { type IconName } from './Icon.svelte';
   import { brushBox, stampIndices } from './brush.ts';
   import BrushSize from './BrushSize.svelte';
@@ -87,6 +87,10 @@
   });
   const cursor = $derived(overSplit ? 'ew-resize' : app.tool === 'view' ? 'grab' : app.tool === 'picker' ? 'copy' : 'crosshair');
 
+  function compareLabels(): CompareLabels {
+    return { before: t('clean.before'), after: t('clean.after') };
+  }
+
   /** A new result (new grid) builds a new scene with the entry sweep; a merge only rewrites the sprite layer. */
   $effect(() => {
     const current = result;
@@ -99,7 +103,7 @@
       const composed = app.session.composed();
       if (!scene || sceneAligned !== current.aligned || scene.contentW !== composed.cols || scene.contentH !== composed.rows) {
         sceneAligned = current.aligned;
-        const next = new CleanScene(composed, current.aligned, { before: t('clean.before'), after: t('clean.after') }, true);
+        const next = new CleanScene(composed, current.aligned, compareLabels(), true);
         next.background = app.previewBg;
         next.showGrid = app.showTileGrid;
         scene = next;
@@ -124,6 +128,14 @@
     const box = trimmed ? exportBox : null;
     if (!scene) return;
     scene.exportBox = box;
+    stage?.invalidate();
+  });
+
+  // The labels are drawn on the canvas: a language change sets them again and repaints.
+  $effect(() => {
+    const labels = compareLabels();
+    if (!scene) return;
+    scene.labels = labels;
     stage?.invalidate();
   });
 

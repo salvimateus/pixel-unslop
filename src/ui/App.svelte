@@ -14,6 +14,7 @@
   import SetExportDialog from './SetExportDialog.svelte';
   import SetScreen from './SetScreen.svelte';
   import Icon from './Icon.svelte';
+  import LanguageSelect from './LanguageSelect.svelte';
   import Stepper from './Stepper.svelte';
   import Toasts from './Toasts.svelte';
   import ZoomIndicator from './ZoomIndicator.svelte';
@@ -153,6 +154,7 @@
           {app.zoomPercent}%
         </button>
       {/if}
+      <LanguageSelect />
       <button
         type="button"
         class="icon-btn"

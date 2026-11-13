@@ -113,6 +113,8 @@ In the desktop app, you can change the size of the interface. The app starts at 
 
 Each step is 5%, from 50% to 200%. An indicator shows the zoom in percent, with "−", "+" and "Reset" buttons. In a browser, use the zoom of the browser.
 
+To change the language of the interface, use the language selector at the top right, next to the sound button. The text changes at once, and your work stays as it is. At the first start, the app uses Brazilian Portuguese when the language of your system is Portuguese, and English for every other language. The app keeps your selection for the next start.
+
 <img src="docs/images/pixel-unslop-drop-screen.png" width="900" alt="Pixel Unslop drop screen: the logo, the text Drag one or more images here, two cards named One image and A set, and the line Your image never leaves your computer">
 
 ### 2. Set the size of 1 pixel
@@ -217,7 +219,7 @@ The background removal works only for a flat background of one color or for a fa
 - The smallest PNG size: each export is cropped to its visible pixels, and no visible pixel is cut.
 - Lossless PNG optimization: smaller files with exactly the same pixels.
 - A set mode for several sprites in three steps: a Grid step for all the pieces, one pixel grid for all the pieces or one for each piece, a visual resize with a snap to clean sizes, a comparison with the originals, one shared palette, locked reference pieces, and an export of the selected files.
-- An interface in English and in Brazilian Portuguese, with an interface zoom from 50% to 200% in the desktop app.
+- An interface in English and in Brazilian Portuguese, with a language selector in the header, and an interface zoom from 50% to 200% in the desktop app.
 - A desktop window that keeps its size, its position and its zoom for the next start.
 - It works offline. There is no account, no upload and no telemetry.
 

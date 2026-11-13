@@ -4,12 +4,12 @@ import './styles/reset.css';
 import './styles/base.css';
 import { mount } from 'svelte';
 import App from './ui/App.svelte';
-import { locale } from './app/i18n.ts';
+import { activeLocale } from './app/locale.svelte.ts';
 import { installAudioUnlock } from './app/sfx.ts';
 import { app, installDevHook } from './app/state.svelte.ts';
 import { loadStageColors } from './ui/stage-renderer.ts';
 
-document.documentElement.lang = locale;
+document.documentElement.lang = activeLocale();
 installAudioUnlock();
 loadStageColors();
 if (import.meta.env.DEV) installDevHook();

@@ -13,7 +13,7 @@
   import SetPieceControls from './SetPieceControls.svelte';
   import SetPieceList from './SetPieceList.svelte';
   import ToggleSwitch from './ToggleSwitch.svelte';
-  import { SetScene } from './set-scene.ts';
+  import { SetScene, type SetLabels } from './set-scene.ts';
   import Stage from './Stage.svelte';
   import type { StagePointer } from './stage-renderer.ts';
 
@@ -44,7 +44,11 @@
   /** A press on the body of an object: a move along the ground line once the pointer passes the threshold. */
   let move: { id: number; startSx: number; startIx: number; startX: number; moving: boolean } | null = null;
 
-  const scene = new SetScene(app.set, { height: (h) => t('set.pieceHeight', { h }), empty: t('set.pieceEmpty'), reference: t('set.reference') });
+  function sceneLabels(): SetLabels {
+    return { height: (h) => t('set.pieceHeight', { h }), empty: t('set.pieceEmpty'), reference: t('set.reference') };
+  }
+
+  const scene = new SetScene(app.set, sceneLabels());
 
   const allHidden = $derived.by(() => {
     void app.set.placeVersion;
@@ -87,6 +91,12 @@
   $effect(() => {
     scene.background = app.previewBg;
     scene.selectedId = app.set.selectedId;
+    stage?.invalidate();
+  });
+
+  // The labels are drawn on the canvas: a language change sets them again and repaints.
+  $effect(() => {
+    scene.labels = sceneLabels();
     stage?.invalidate();
   });
 
