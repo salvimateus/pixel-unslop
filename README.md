@@ -6,6 +6,8 @@
 
 <p align="center"><strong>Fix AI-generated pixel art. Pixel Unslop snaps it to a true pixel grid, makes each tile one flat color and merges the palette into a pixel-perfect sprite.</strong></p>
 
+**Try it in your browser:** [pixel-unslop.vercel.app](https://pixel-unslop.vercel.app). No install is necessary. For the desktop app and the command line tool, get the Windows files from the [latest release](https://github.com/salvimateus/pixel-unslop/releases/latest).
+
 <p align="center">
   <img src="docs/images/ai-pixel-art-before-after.png" width="900" alt="AI pixel art before and after the cleanup: on the left, a blurred and noisy AI sprite; on the right, the same sprite as 40 by 32 flat pixels">
 </p>
@@ -19,6 +21,8 @@ Use it for sprites and game assets from AI image generators such as ChatGPT, DAL
 ## Download Pixel Unslop for Windows
 
 Download the free Windows app and the command line tool from the [latest release](https://github.com/salvimateus/pixel-unslop/releases/latest). There is no installer and no account.
+
+Or use the web version in your browser at [pixel-unslop.vercel.app](https://pixel-unslop.vercel.app), with no download.
 
 | File | For | Needs |
 |---|---|---|
@@ -221,7 +225,7 @@ The background removal works only for a flat background of one color or for a fa
 - A set mode for several sprites in three steps: a Grid step for all the pieces, one pixel grid for all the pieces or one for each piece, a visual resize with a snap to clean sizes, a comparison with the originals, one shared palette, locked reference pieces, and an export of the selected files.
 - An interface in English and in Brazilian Portuguese, with a language selector in the header, and an interface zoom from 50% to 200% in the desktop app.
 - A desktop window that keeps its size, its position and its zoom for the next start.
-- It works offline. There is no account, no upload and no telemetry.
+- No account and no upload: your image never leaves your computer. The desktop app and the command line tool work offline and send no data. The web version sends anonymous usage events to Google Analytics, with no image and no file name.
 
 ## Clean AI pixel art from the command line (for AI agents)
 
@@ -411,7 +415,7 @@ Yes. Pixel Unslop is free and open source, with the MIT license.
 
 ### Does it run offline?
 
-Yes. The desktop app and the command line tool need no internet connection. Your image stays on your computer.
+The desktop app and the command line tool, yes: they need no internet connection. The web version needs the network to load the page. Your image stays on your computer in both versions.
 
 ## Credits
 
