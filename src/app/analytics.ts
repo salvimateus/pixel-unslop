@@ -1,7 +1,7 @@
 /** The few parameter keys that every usage event shares, so the tag manager needs few variables. */
 export interface TrackParams {
   kind?: string;
-  value?: string | number | boolean;
+  detail?: string | number | boolean;
   format?: string;
   width?: number;
   height?: number;
@@ -11,14 +11,14 @@ export interface TrackParams {
 
 declare global {
   interface Window {
-    dataLayer?: unknown[];
+    gtag?: (...args: unknown[]) => void;
   }
 }
 
-/** Sends a usage event to the tag manager. Does nothing where the tag is not installed, and never throws. */
+/** Sends a usage event through the `gtag` command of the tag snippet. Does nothing where the tag is not installed, and never throws. */
 export function track(event: string, params?: TrackParams): void {
   try {
-    window.dataLayer?.push({ event, ...params });
+    window.gtag?.('event', event, params ?? {});
   } catch {
     // Analytics must never break the app.
   }

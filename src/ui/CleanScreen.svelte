@@ -314,7 +314,7 @@
   function selectTool(tool: Tool): void {
     if (app.tool === tool) return;
     app.tool = tool;
-    track('tool_change', { value: tool });
+    track('tool_change', { detail: tool });
     sfx.play('tick');
   }
 

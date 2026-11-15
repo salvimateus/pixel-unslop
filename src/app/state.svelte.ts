@@ -314,19 +314,19 @@ class AppState {
   toggleMute(): void {
     this.muted = !this.muted;
     sfx.setMuted(this.muted);
-    trackEvent('sound_toggle', { value: !this.muted });
+    trackEvent('sound_toggle', { detail: !this.muted });
   }
 
   setOptimizePng(on: boolean): void {
     this.optimizePng = on;
     writeStored('optimizePng', on ? 'on' : 'off');
-    trackEvent('option_change', { kind: 'optimize_png', value: on });
+    trackEvent('option_change', { kind: 'optimize_png', detail: on });
   }
 
   setPreviewBackground(value: PreviewBackground): void {
     this.previewBg = value;
     writeStored('previewBg', value);
-    trackEvent('option_change', { kind: 'preview_background', value });
+    trackEvent('option_change', { kind: 'preview_background', detail: value });
   }
 
   toast(text: string, kind: ToastKind = 'info'): void {
@@ -529,7 +529,7 @@ class AppState {
   async useSuggestedSize(period: { x: number; y: number }): Promise<GridFit | null> {
     if (!(await this.dropManualGrid())) return null;
     const size = { x: round2(period.x), y: round2(period.y) };
-    trackEvent('grid_change', { kind: 'suggested_size', value: size.x, screen: this.screen });
+    trackEvent('grid_change', { kind: 'suggested_size', detail: size.x, screen: this.screen });
     this.selection = null;
     this.fixedPeriod = size;
     this.shareSize(size);
@@ -568,7 +568,7 @@ class AppState {
   async setElastic(mode: ElasticMode): Promise<GridFit | null> {
     if (!(await this.dropManualGrid())) return null;
     this.elastic = mode;
-    trackEvent('grid_change', { kind: 'elastic', value: mode, screen: this.screen });
+    trackEvent('grid_change', { kind: 'elastic', detail: mode, screen: this.screen });
     return this.requestFit(false);
   }
 
@@ -627,7 +627,7 @@ class AppState {
       this.screen = 'clean';
       trackEvent('clean_run', {
         kind: this.editingId === null ? 'single' : 'set_piece',
-        value: this.preset,
+        detail: this.preset,
         width: output.sprite.cols,
         height: output.sprite.rows,
         count: output.palette.length,
@@ -642,7 +642,7 @@ class AppState {
   async applyPreset(name: PresetName): Promise<void> {
     this.preset = name;
     writeStored('preset', name);
-    trackEvent('option_change', { kind: 'preset', value: name, screen: this.screen });
+    trackEvent('option_change', { kind: 'preset', detail: name, screen: this.screen });
     if (this.screen === 'set') {
       await this.refreshSet();
       return;
@@ -898,7 +898,7 @@ class AppState {
         ownStrength: Number.NaN,
       }));
       const added = this.set.add(inits);
-      trackEvent('image_open', { kind: asReference ? 'set_reference' : starting ? 'set_new' : 'set_add', count: added.length, value: grid.mode });
+      trackEvent('image_open', { kind: asReference ? 'set_reference' : starting ? 'set_new' : 'set_add', count: added.length, detail: grid.mode });
       if (!asReference) this.setGridChanged = true;
       if (starting) this.set.markExported();
       sfx.play('drop');
@@ -998,7 +998,7 @@ class AppState {
   async setGridMode(mode: SetGridMode): Promise<void> {
     const grid = this.set.grid;
     if (mode === grid.mode || this.loading) return;
-    trackEvent('grid_change', { kind: 'set_mode', value: mode, screen: this.screen });
+    trackEvent('grid_change', { kind: 'set_mode', detail: mode, screen: this.screen });
     sfx.play('tick');
     if (!(await this.refitSet({ mode, period: mode === 'shared' && grid.typed ? grid.period : null, typed: mode === 'shared' && grid.typed }))) return;
     if (this.screen === 'set-grid') await this.reopenGridObject();
@@ -1095,7 +1095,7 @@ class AppState {
     if (this.editingId !== null) this.closeEditor();
     this.setCleaned = true;
     this.setGridChanged = false;
-    trackEvent('clean_run', { kind: 'set', value: this.preset, count: this.set.objects.length });
+    trackEvent('clean_run', { kind: 'set', detail: this.preset, count: this.set.objects.length });
     sfx.play('sweep');
     this.screen = 'set';
   }

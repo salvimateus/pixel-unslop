@@ -100,7 +100,7 @@
       savedName = outcome.status === 'saved' ? (outcome.path.split(/[\\/]/).pop() ?? name) : name;
       phase = 'done';
       app.markExported();
-      track('export_png', { kind: outcome.status, format: 'png', width: sprite.cols, height: sprite.rows, value: app.optimizePng, count: 1 });
+      track('export_png', { kind: outcome.status, format: 'png', width: sprite.cols, height: sprite.rows, detail: app.optimizePng, count: 1 });
       sfx.play('saved');
       confetti++;
     } catch (error) {

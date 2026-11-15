@@ -24,7 +24,7 @@
   let dragDepth = 0;
 
   // One event for each screen that the user reaches.
-  $effect(() => track('screen_view', { screen: app.screen }));
+  $effect(() => track('app_screen', { screen: app.screen }));
 
   function hasFiles(event: DragEvent): boolean {
     return event.dataTransfer?.types.includes('Files') ?? false;

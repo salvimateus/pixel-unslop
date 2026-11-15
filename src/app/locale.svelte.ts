@@ -34,5 +34,5 @@ export function setLocale(next: Locale): void {
   active = next;
   document.documentElement.lang = next;
   writeStored(STORE_KEY, next);
-  track('language_change', { value: next });
+  track('language_change', { detail: next });
 }

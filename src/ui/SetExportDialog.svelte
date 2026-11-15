@@ -154,7 +154,7 @@
       saved = outcome;
       phase = 'done';
       app.markSetExported();
-      track('export_png', { kind: outcome.status, format: pngs.length > 1 && !isDesktop ? 'zip' : 'png', value: app.optimizePng, count: pngs.length, screen: 'set' });
+      track('export_png', { kind: outcome.status, format: pngs.length > 1 && !isDesktop ? 'zip' : 'png', detail: app.optimizePng, count: pngs.length, screen: 'set' });
       sfx.play('saved');
       confetti++;
     } catch {
