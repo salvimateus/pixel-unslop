@@ -1,3 +1,4 @@
+import { track } from './analytics.ts';
 import { readStored, writeStored } from './storage.ts';
 
 const STORE_KEY = 'locale';
@@ -33,4 +34,5 @@ export function setLocale(next: Locale): void {
   active = next;
   document.documentElement.lang = next;
   writeStored(STORE_KEY, next);
+  track('language_change', { value: next });
 }

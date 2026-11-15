@@ -9,6 +9,7 @@ import { isDesktop, monitorWorkArea, setDownloadFile, setInterfaceZoom, type Png
 import { defaultZoom, nextZoom, snapZoom, storeZoom, storedZoom, type ZoomMove } from './zoom.ts';
 import type { Camera } from '../ui/camera.ts';
 import type { PreviewBackground } from '../ui/clean-scene.ts';
+import { formatOf, track as trackEvent } from './analytics.ts';
 import { EditSession } from './edit-session.ts';
 import { CleanEngine, EngineError, type FitSetResult, type LoadResult } from './engine.ts';
 import { DEFAULT_FIT_INPUTS, ImageSet, pixelSizeOf, type FitInputs, type SetGridMode, type SetGridState, type SetObject, type SetObjectInit } from './image-set.svelte.ts';
@@ -313,16 +314,19 @@ class AppState {
   toggleMute(): void {
     this.muted = !this.muted;
     sfx.setMuted(this.muted);
+    trackEvent('sound_toggle', { value: !this.muted });
   }
 
   setOptimizePng(on: boolean): void {
     this.optimizePng = on;
     writeStored('optimizePng', on ? 'on' : 'off');
+    trackEvent('option_change', { kind: 'optimize_png', value: on });
   }
 
   setPreviewBackground(value: PreviewBackground): void {
     this.previewBg = value;
     writeStored('previewBg', value);
+    trackEvent('option_change', { kind: 'preview_background', value });
   }
 
   toast(text: string, kind: ToastKind = 'info'): void {
@@ -357,6 +361,7 @@ class AppState {
 
   /** Shows an error and returns to the drop screen when the worker lost the image. */
   fail(error: unknown): void {
+    trackEvent('app_error', { kind: error instanceof EngineError ? error.code : 'internal', screen: this.screen });
     sfx.play('error');
     this.toast(this.errorText(error), 'error');
     if (error instanceof EngineError && error.code === 'no-image') this.forgetImage();
@@ -434,6 +439,7 @@ class AppState {
       this.baseVersion++;
       this.editVersion++;
       this.exportOpen = false;
+      trackEvent('image_open', { kind: 'single', format: formatOf(fileName), width: loaded.width, height: loaded.height });
       sfx.play('drop');
       this.dropSignal = { kind: 'ok', at: performance.now() };
       if (this.screen === 'drop' && !prefersReducedMotion()) await wait(TUNING.ui.loadPopMs);
@@ -446,6 +452,7 @@ class AppState {
   }
 
   private rejectDrop(text: string): void {
+    trackEvent('app_error', { kind: 'open_rejected', screen: this.screen });
     sfx.play('error');
     this.toast(text, 'error');
     this.dropSignal = { kind: 'bad', at: performance.now() };
@@ -497,6 +504,7 @@ class AppState {
     this.selection = selection;
     this.fixedPeriod = null;
     this.nudge = { x: 0, y: 0 };
+    trackEvent('grid_change', { kind: 'mark_box', screen: this.screen });
     const fit = await this.requestFit(false);
     if (fit) this.shareSize({ x: round2(fit.axes.x.period), y: round2(fit.axes.y.period) });
     return fit;
@@ -505,6 +513,7 @@ class AppState {
   /** In "Uma grade para todas" of a set, the joint pixel size of all pieces is detected again. */
   async detectAuto(): Promise<GridFit | null> {
     if (!(await this.dropManualGrid())) return null;
+    trackEvent('grid_change', { kind: 'auto', screen: this.screen });
     if (this.sharedGridStep) {
       sfx.play('tick');
       if (!(await this.refitSet({ mode: 'shared', period: null, typed: false }))) return null;
@@ -520,6 +529,7 @@ class AppState {
   async useSuggestedSize(period: { x: number; y: number }): Promise<GridFit | null> {
     if (!(await this.dropManualGrid())) return null;
     const size = { x: round2(period.x), y: round2(period.y) };
+    trackEvent('grid_change', { kind: 'suggested_size', value: size.x, screen: this.screen });
     this.selection = null;
     this.fixedPeriod = size;
     this.shareSize(size);
@@ -558,6 +568,7 @@ class AppState {
   async setElastic(mode: ElasticMode): Promise<GridFit | null> {
     if (!(await this.dropManualGrid())) return null;
     this.elastic = mode;
+    trackEvent('grid_change', { kind: 'elastic', value: mode, screen: this.screen });
     return this.requestFit(false);
   }
 
@@ -614,6 +625,13 @@ class AppState {
       if (ink !== undefined) this.ink = ink;
       this.tool = 'pencil';
       this.screen = 'clean';
+      trackEvent('clean_run', {
+        kind: this.editingId === null ? 'single' : 'set_piece',
+        value: this.preset,
+        width: output.sprite.cols,
+        height: output.sprite.rows,
+        count: output.palette.length,
+      });
     } catch (error) {
       this.fail(error);
     } finally {
@@ -624,6 +642,7 @@ class AppState {
   async applyPreset(name: PresetName): Promise<void> {
     this.preset = name;
     writeStored('preset', name);
+    trackEvent('option_change', { kind: 'preset', value: name, screen: this.screen });
     if (this.screen === 'set') {
       await this.refreshSet();
       return;
@@ -670,6 +689,7 @@ class AppState {
       const name = baseName(file.name);
       this.colorReference = { name, sprite, flat, on: true };
       this.rebase();
+      trackEvent('color_reference', { kind: 'load', format: formatOf(file.name), width: sprite.cols, height: sprite.rows });
       sfx.play('drop');
       this.toast(t('toast.referenceApplied', { name }), 'success');
     } catch (error) {
@@ -878,6 +898,7 @@ class AppState {
         ownStrength: Number.NaN,
       }));
       const added = this.set.add(inits);
+      trackEvent('image_open', { kind: asReference ? 'set_reference' : starting ? 'set_new' : 'set_add', count: added.length, value: grid.mode });
       if (!asReference) this.setGridChanged = true;
       if (starting) this.set.markExported();
       sfx.play('drop');
@@ -977,6 +998,7 @@ class AppState {
   async setGridMode(mode: SetGridMode): Promise<void> {
     const grid = this.set.grid;
     if (mode === grid.mode || this.loading) return;
+    trackEvent('grid_change', { kind: 'set_mode', value: mode, screen: this.screen });
     sfx.play('tick');
     if (!(await this.refitSet({ mode, period: mode === 'shared' && grid.typed ? grid.period : null, typed: mode === 'shared' && grid.typed }))) return;
     if (this.screen === 'set-grid') await this.reopenGridObject();
@@ -1073,6 +1095,7 @@ class AppState {
     if (this.editingId !== null) this.closeEditor();
     this.setCleaned = true;
     this.setGridChanged = false;
+    trackEvent('clean_run', { kind: 'set', value: this.preset, count: this.set.objects.length });
     sfx.play('sweep');
     this.screen = 'set';
   }

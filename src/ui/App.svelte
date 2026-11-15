@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import logoUrl from '../../app-icon.svg';
+  import { track } from '../app/analytics.ts';
   import { app, isImageFile } from '../app/state.svelte.ts';
   import { t } from '../app/i18n.ts';
   import { isDesktop, launchFile } from '../app/platform.ts';
@@ -21,6 +22,9 @@
 
   const DEV = import.meta.env.DEV;
   let dragDepth = 0;
+
+  // One event for each screen that the user reaches.
+  $effect(() => track('screen_view', { screen: app.screen }));
 
   function hasFiles(event: DragEvent): boolean {
     return event.dataTransfer?.types.includes('Files') ?? false;

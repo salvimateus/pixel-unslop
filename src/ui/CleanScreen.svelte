@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import { TRANSPARENT } from '../core/color.ts';
   import { borderBackground, floodRegion, indicesOfColor, lineTiles, listPalette } from '../core/sprite.ts';
+  import { track } from '../app/analytics.ts';
   import { opaqueBox } from '../app/image-set.svelte.ts';
   import { app, type BrushTool, type Tool } from '../app/state.svelte.ts';
   import { t, type TextKey } from '../app/i18n.ts';
@@ -313,6 +314,7 @@
   function selectTool(tool: Tool): void {
     if (app.tool === tool) return;
     app.tool = tool;
+    track('tool_change', { value: tool });
     sfx.play('tick');
   }
 

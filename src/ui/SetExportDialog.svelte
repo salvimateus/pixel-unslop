@@ -1,6 +1,7 @@
 <script lang="ts">
   import { toHex } from '../core/color.ts';
   import { exportSprite } from '../core/pipeline.ts';
+  import { track } from '../app/analytics.ts';
   import type { SetExportFile } from '../app/image-set.svelte.ts';
   import { app } from '../app/state.svelte.ts';
   import { t } from '../app/i18n.ts';
@@ -153,6 +154,7 @@
       saved = outcome;
       phase = 'done';
       app.markSetExported();
+      track('export_png', { kind: outcome.status, format: pngs.length > 1 && !isDesktop ? 'zip' : 'png', value: app.optimizePng, count: pngs.length, screen: 'set' });
       sfx.play('saved');
       confetti++;
     } catch {

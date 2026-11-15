@@ -1,5 +1,6 @@
 <script lang="ts">
   import { toHex } from '../core/color.ts';
+  import { track } from '../app/analytics.ts';
   import { EngineError } from '../app/engine.ts';
   import { trimOrNull } from '../app/image-set.svelte.ts';
   import { app } from '../app/state.svelte.ts';
@@ -99,6 +100,7 @@
       savedName = outcome.status === 'saved' ? (outcome.path.split(/[\\/]/).pop() ?? name) : name;
       phase = 'done';
       app.markExported();
+      track('export_png', { kind: outcome.status, format: 'png', width: sprite.cols, height: sprite.rows, value: app.optimizePng, count: 1 });
       sfx.play('saved');
       confetti++;
     } catch (error) {
