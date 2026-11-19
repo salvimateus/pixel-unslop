@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { onDestroy, untrack } from 'svelte';
   import type { Sprite } from '../core/types.ts';
   import { t } from '../app/i18n.ts';
   import { prefersReducedMotion } from '../app/state.svelte.ts';
   import { TUNING } from '../app/tuning.ts';
   import type { PreviewBackground } from './clean-scene.ts';
   import Icon from './Icon.svelte';
+  import { loopFrames } from './loop-frames.ts';
 
   interface Props {
     frames: readonly Sprite[];
@@ -18,75 +18,7 @@
 
   let { frames, version, fps, background, label }: Props = $props();
 
-  let canvas: HTMLCanvasElement | undefined = $state();
   let playing = $state(!prefersReducedMotion());
-  let baked: HTMLCanvasElement[] = [];
-  let shown = -1;
-  let raf = 0;
-  let start = 0;
-
-  function bake(sprite: Sprite): HTMLCanvasElement {
-    const out = document.createElement('canvas');
-    out.width = sprite.cols;
-    out.height = sprite.rows;
-    const ctx = out.getContext('2d');
-    if (ctx) {
-      const image = ctx.createImageData(sprite.cols, sprite.rows);
-      new Uint32Array(image.data.buffer).set(sprite.pixels);
-      ctx.putImageData(image, 0, 0);
-    }
-    return out;
-  }
-
-  function paint(index: number): void {
-    const ctx = canvas?.getContext('2d');
-    const frame = baked[index];
-    if (!canvas || !ctx || !frame) return;
-    if (canvas.width !== frame.width || canvas.height !== frame.height) {
-      canvas.width = frame.width;
-      canvas.height = frame.height;
-    }
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(frame, 0, 0);
-    shown = index;
-  }
-
-  function tick(now: number): void {
-    raf = 0;
-    if (!playing || baked.length === 0) return;
-    const index = Math.floor(((now - start) * fps) / 1000) % baked.length;
-    if (index !== shown) paint(index);
-    raf = requestAnimationFrame(tick);
-  }
-
-  function run(): void {
-    cancelAnimationFrame(raf);
-    raf = 0;
-    if (playing && baked.length > 1) {
-      start = performance.now() - (Math.max(0, shown) * 1000) / Math.max(1, fps);
-      raf = requestAnimationFrame(tick);
-    }
-  }
-
-  $effect(() => {
-    void version;
-    const list = frames;
-    void canvas;
-    untrack(() => {
-      baked = list.map(bake);
-      if (shown >= baked.length) shown = 0;
-      paint(Math.max(0, shown));
-      run();
-    });
-  });
-
-  $effect(() => {
-    void fps;
-    void playing;
-    run();
-  });
-
-  onDestroy(() => cancelAnimationFrame(raf));
 </script>
 
 <figure class="loop" style:--loop-px="{TUNING.anim.loopPreviewPx}px">
@@ -94,7 +26,7 @@
     {#if frames.length === 0}
       <span class="loop-empty">{t('anim.loopEmpty')}</span>
     {:else}
-      <canvas class="loop-canvas" bind:this={canvas} aria-hidden="true"></canvas>
+      <canvas class="loop-canvas" use:loopFrames={{ frames, version, fps, playing }} aria-hidden="true"></canvas>
     {/if}
   </div>
   <figcaption class="loop-caption">

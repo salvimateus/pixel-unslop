@@ -19,6 +19,7 @@
   import Dialog from './Dialog.svelte';
   import FileNameField from './FileNameField.svelte';
   import Icon from './Icon.svelte';
+  import { loopFrames } from './loop-frames.ts';
   import { spriteThumb } from './sprite-thumb.ts';
   import { sparkColors } from './stage-renderer.ts';
   import ToggleSwitch from './ToggleSwitch.svelte';
@@ -39,6 +40,7 @@
   let columnsChoice = $state<number | null>(null);
   let scaleChoice = $state<number | null>(null);
   let gifBg = $state<PreviewBackground>('checker');
+  let gifPlaying = $state(!prefersReducedMotion());
   let customBase = $state<string | null>(null);
   let nameInvalid = $state(false);
   let done = $state.raw<Done | null>(null);
@@ -83,7 +85,6 @@
   const extension = $derived(format === 'sheet' ? '.png' : '.gif');
   const blocked = $derived(phase === 'saving' || count === 0 || nameInvalid || (format === 'sheet' && !packed));
 
-  const preview = $derived(format === 'sheet' ? (packed?.sprite ?? null) : (frames[0] ?? null));
   const previewBg = $derived(format === 'sheet' ? app.previewBg : gifBg);
 
   const confettiColors = $derived.by(() => {
@@ -99,6 +100,7 @@
       columnsChoice = null;
       scaleChoice = null;
       gifBg = app.previewBg;
+      gifPlaying = !prefersReducedMotion();
       customBase = null;
       nameInvalid = false;
       done = null;
@@ -268,12 +270,23 @@
 
       <div class="preview-row">
         <div class="preview" class:is-dark={previewBg === 'dark'} class:is-light={previewBg === 'light'}>
-          {#if preview}
-            <canvas
-              class="preview-canvas"
-              use:spriteThumb={preview}
-              aria-hidden="true"
-            ></canvas>
+          {#if format === 'sheet'}
+            {#if packed}
+              <canvas class="preview-canvas" use:spriteThumb={packed.sprite} aria-hidden="true"></canvas>
+            {/if}
+          {:else if count > 0}
+            <canvas class="preview-canvas" use:loopFrames={{ frames, version: app.anim.version, fps: gifFps, playing: gifPlaying }} aria-hidden="true"></canvas>
+            {#if count > 1}
+              <button
+                type="button"
+                class="icon-btn preview-toggle"
+                aria-label={gifPlaying ? t('anim.pause') : t('anim.play')}
+                title={gifPlaying ? t('anim.pause') : t('anim.play')}
+                onclick={() => (gifPlaying = !gifPlaying)}
+              >
+                <Icon name={gifPlaying ? 'pause' : 'play'} size={16} />
+              </button>
+            {/if}
           {/if}
         </div>
         <div class="summary">
@@ -447,6 +460,7 @@
     }
 
     .preview {
+      position: relative;
       display: grid;
       grid-template: minmax(0, 1fr) / minmax(0, 1fr);
       height: 160px;
@@ -470,6 +484,17 @@
       height: 100%;
       object-fit: contain;
       image-rendering: pixelated;
+    }
+
+    .preview-toggle {
+      position: absolute;
+      inset-block-end: var(--space-2);
+      inset-inline-end: var(--space-2);
+      width: 32px;
+      height: 32px;
+      color: var(--text);
+      background: var(--surface-2);
+      border-color: var(--line);
     }
 
     .summary {
