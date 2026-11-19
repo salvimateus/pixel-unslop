@@ -1,9 +1,10 @@
 <script lang="ts">
   import type { Sprite } from '../core/types.ts';
   import { t } from '../app/i18n.ts';
-  import { prefersReducedMotion } from '../app/state.svelte.ts';
+  import { app, prefersReducedMotion } from '../app/state.svelte.ts';
   import { TUNING } from '../app/tuning.ts';
   import type { PreviewBackground } from './clean-scene.ts';
+  import FpsControl from './FpsControl.svelte';
   import Icon from './Icon.svelte';
   import { loopFrames } from './loop-frames.ts';
 
@@ -11,12 +12,11 @@
     frames: readonly Sprite[];
     /** A change bakes the frames again. */
     version: number;
-    fps: number;
     background: PreviewBackground;
     label: string;
   }
 
-  let { frames, version, fps, background, label }: Props = $props();
+  let { frames, version, background, label }: Props = $props();
 
   let playing = $state(!prefersReducedMotion());
 </script>
@@ -26,8 +26,11 @@
     {#if frames.length === 0}
       <span class="loop-empty">{t('anim.loopEmpty')}</span>
     {:else}
-      <canvas class="loop-canvas" use:loopFrames={{ frames, version, fps, playing }} aria-hidden="true"></canvas>
+      <canvas class="loop-canvas" use:loopFrames={{ frames, version, fps: app.anim.fps, playing }} aria-hidden="true"></canvas>
     {/if}
+  </div>
+  <div class="loop-fps">
+    <FpsControl compact />
   </div>
   <figcaption class="loop-caption">
     <span class="loop-label">{label}</span>
@@ -92,12 +95,18 @@
     }
 
     .loop-caption {
+      grid-area: 1 / 2;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: var(--space-2);
       color: var(--text-muted);
       font-size: 0.8125rem;
+    }
+
+    .loop-fps {
+      grid-area: 2 / 1 / 3 / -1;
+      min-width: 0;
     }
 
     .loop-toggle {

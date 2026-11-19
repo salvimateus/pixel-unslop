@@ -18,6 +18,7 @@
   import type { PreviewBackground } from './clean-scene.ts';
   import Dialog from './Dialog.svelte';
   import FileNameField from './FileNameField.svelte';
+  import FpsControl from './FpsControl.svelte';
   import Icon from './Icon.svelte';
   import { loopFrames } from './loop-frames.ts';
   import { spriteThumb } from './sprite-thumb.ts';
@@ -304,6 +305,9 @@
             {#if app.anim.fps > GIF_MAX_FPS}
               <span class="hint warn">{t('animExport.fpsClamped', { fps: app.anim.fps, max: GIF_MAX_FPS })}</span>
             {/if}
+            <div class="summary-fps">
+              <FpsControl compact />
+            </div>
           {/if}
         </div>
       </div>
@@ -501,6 +505,10 @@
       display: grid;
       gap: var(--space-1);
       align-content: center;
+    }
+
+    .summary-fps {
+      margin-top: var(--space-1);
     }
 
     .summary-dims {

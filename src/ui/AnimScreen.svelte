@@ -12,7 +12,7 @@
   import AnimTimeline from './AnimTimeline.svelte';
   import type { PreviewBackground } from './clean-scene.ts';
   import CleanupPresets from './CleanupPresets.svelte';
-  import { holdRepeat } from './hold-repeat.ts';
+  import FpsControl from './FpsControl.svelte';
   import Icon from './Icon.svelte';
   import KeyText from './KeyText.svelte';
   import ProgressPill from './ProgressPill.svelte';
@@ -102,7 +102,6 @@
   });
 
   const referenceInTimeline = $derived(app.anim.timeline.some((frame) => frame.index === app.anim.referenceIndex));
-  const videoFps = $derived(app.anim.videoFps());
 
   /** New output frames: the scene reads them again and the stage follows a new size. */
   function syncSource(): void {
@@ -163,14 +162,8 @@
     sfx.play('tick');
   }
 
-  function stepFps(direction: 1 | -1, big: boolean, commit: boolean): void {
-    app.anim.setFps(app.anim.fps + direction * (big ? 5 : 1), commit);
-  }
-
-  function chooseFps(fps: number): void {
-    if (fps === app.anim.fps) return;
-    app.anim.setFps(fps);
-    sfx.play('tick');
+  function stepFps(direction: 1 | -1, big: boolean): void {
+    app.anim.setFps(app.anim.fps + direction * (big ? 5 : 1), false);
   }
 
   function toggleOnion(): void {
@@ -346,7 +339,7 @@
     } else if (key === '[' || key === '{' || key === ']' || key === '}') {
       event.preventDefault();
       fpsKeyHeld = true;
-      stepFps(key === '[' || key === '{' ? -1 : 1, event.shiftKey, false);
+      stepFps(key === '[' || key === '{' ? -1 : 1, event.shiftKey);
     } else if (key.toLowerCase() === 'o') {
       event.preventDefault();
       if (!event.repeat) toggleOnion();
@@ -449,44 +442,7 @@
             <span class="counter" aria-live="off">{Math.min(current + 1, count)} / {count}</span>
           </div>
 
-          <div class="transport-group" role="group" aria-label={t('anim.fpsLabel')}>
-            <button
-              type="button"
-              class="icon-btn small"
-              aria-label={t('anim.fpsDown')}
-              title="{t('anim.fpsDown')} ([)"
-              disabled={app.anim.fps <= TUNING.anim.minFps}
-              use:holdRepeat={{ step: (shift) => stepFps(-1, shift, false), release: () => app.anim.commitFps() }}
-            >
-              <span aria-hidden="true">−</span>
-            </button>
-            <span class="fps-value">{t('anim.fps', { fps: app.anim.fps })}</span>
-            <button
-              type="button"
-              class="icon-btn small"
-              aria-label={t('anim.fpsUp')}
-              title="{t('anim.fpsUp')} (])"
-              disabled={app.anim.fps >= TUNING.anim.maxFps}
-              use:holdRepeat={{ step: (shift) => stepFps(1, shift, false), release: () => app.anim.commitFps() }}
-            >
-              <span aria-hidden="true">+</span>
-            </button>
-            <div class="segmented fps-chips">
-              {#each TUNING.anim.fpsChips as chip (chip)}
-                <button type="button" aria-pressed={app.anim.fps === chip} onclick={() => chooseFps(chip)}>{chip}</button>
-              {/each}
-            </div>
-            <button
-              type="button"
-              class="video-speed"
-              aria-pressed={app.anim.fps === videoFps}
-              title={t('anim.videoSpeedHint', { fps: videoFps })}
-              onclick={() => chooseFps(videoFps)}
-            >
-              <Icon name="film" size={16} />
-              {t('anim.videoSpeed')}
-            </button>
-          </div>
+          <FpsControl />
         </div>
       </Stage>
       <ProgressPill />
@@ -765,12 +721,6 @@
     .transport .icon-btn {
       width: 36px;
       height: 36px;
-
-      &.small {
-        width: 30px;
-        height: 30px;
-        font: 700 1.125rem/1 var(--font-mono);
-      }
     }
 
     .play-btn:not(:disabled) {
@@ -783,61 +733,14 @@
       }
     }
 
-    .counter,
-    .fps-value {
-      min-width: 4.5ch;
+    .counter {
+      min-width: 7ch;
       padding: 0 var(--space-1);
       color: var(--text);
       font: 600 0.875rem/1 var(--font-mono);
       font-variant-numeric: tabular-nums;
       text-align: center;
       white-space: nowrap;
-    }
-
-    .counter {
-      min-width: 7ch;
-    }
-
-    .fps-value {
-      min-width: 6.5ch;
-    }
-
-    .fps-chips {
-      margin-left: var(--space-1);
-      padding: 2px;
-
-      & button {
-        min-height: 26px;
-        padding: 0 6px;
-        font-size: 0.8125rem;
-      }
-    }
-
-    .video-speed {
-      display: flex;
-      align-items: center;
-      gap: var(--space-1);
-      min-height: 30px;
-      margin-left: var(--space-1);
-      padding: 0 var(--space-2);
-      color: var(--text-muted);
-      font: 600 0.8125rem/1 var(--font-display);
-      background: var(--surface-2);
-      border-radius: var(--radius-s);
-      white-space: nowrap;
-      transition:
-        background-color var(--dur-hover) var(--ease-sym),
-        color var(--dur-hover) var(--ease-sym);
-
-      &:hover:not([aria-pressed='true']) {
-        color: var(--text);
-        background: var(--surface-3);
-      }
-
-      &[aria-pressed='true'] {
-        color: var(--on-primary);
-        background: var(--teal);
-      }
     }
 
     .anim-panel {

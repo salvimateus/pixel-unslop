@@ -948,7 +948,7 @@
 
       <section class="frames-block" aria-labelledby="frames-loop-label">
         <h2 class="section-title" id="frames-loop-label">{t('frames.loopTitle')}</h2>
-        <LoopPreview frames={anim.built.frames} version={anim.version} fps={anim.fps} background={app.previewBg} label={t('anim.loopLabel')} />
+        <LoopPreview frames={anim.built.frames} version={anim.version} background={app.previewBg} label={t('anim.loopLabel')} />
         <p class="hint" class:is-near={nearLimit}>
           {anim.timeline.length === 0
             ? t('anim.timelineEmpty')

@@ -228,7 +228,7 @@ The Grid step shows one frame of the video. Move the "Video frame" slider to a s
 
 The Frames screen shows the video frame by frame. A small player shows the original video. A new frame shows the original video for a moment, with "Cleaning…" at the top, until its clean pixels arrive.
 
-- Push the left and right arrow keys to move one step. With Shift, you move 10 frames.
+- Push the left and right arrow keys to move one step. With Shift, you move 10 frames. These keys work with the focus on any control.
 - Set the step size with the − and + buttons, type it, or scroll the mouse wheel over it (with Shift, 5 at a time). You can also push 1 to 9. The first step size is 4. For example, a step of 3 skips two frames.
 - Push Enter to add the frame to the timeline, or to remove it.
 - To add many frames at a time, set "every" and click "Add range". The app adds one frame every N frames, from the current frame to the end of the video.
@@ -284,7 +284,7 @@ Each frame keeps its own edits, with its own undo. A pencil mark shows on each e
 The Animation screen plays the frames in a loop.
 
 - Push Space to play or pause, and the left and right arrow keys to see one frame.
-- Set the speed with "−" and "+", with a preset from 6 to 24 fps, or with "Video speed". You can also push `[` and `]`. With Shift, the speed changes by 5 fps.
+- Set the speed with "−" and "+", with a preset from 6 to 24 fps, or with "Video speed". You can also push `[` and `]`. With Shift, the speed changes by 5 fps. The same "Speed" control shows under each loop preview. It sets one speed for all the previews and the export.
 - Push O, or click "Onion skin", to see the previous frame over the current one, transparent and tinted red.
 - The "Color cleanup" level applies to all the frames. All the frames share one palette.
 - Turn on "Use only the colors of one frame" to give all the frames the colors of the reference frame.

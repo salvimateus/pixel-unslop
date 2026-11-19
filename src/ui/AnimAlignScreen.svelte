@@ -468,7 +468,7 @@
 
       <section class="align-section" aria-labelledby="align-loop-title">
         <h2 class="section-title" id="align-loop-title">{t('align.loopTitle')}</h2>
-        <LoopPreview frames={anim.built.frames} version={anim.version} fps={anim.fps} background={app.previewBg} label={t('anim.loopLabel')} />
+        <LoopPreview frames={anim.built.frames} version={anim.version} background={app.previewBg} label={t('anim.loopLabel')} />
         <LoopSeam
           frames={anim.built.frames}
           version={anim.version}
