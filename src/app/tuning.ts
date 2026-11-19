@@ -144,6 +144,20 @@ export const TUNING = {
     /** The automatic GIF scale makes the long side about this size, up to the largest scale. */
     gifTargetPx: 384,
     gifMaxScale: 16,
+    /** The first container: the opaque box of the first frame plus this margin, in tiles, or this share of its side. */
+    containerMarginMin: 2,
+    containerMarginShare: 0.2,
+    /** The container handles: their size and their hit distance, in screen pixels. */
+    handlePx: 10,
+    handleHitPx: 12,
+    /** The outside of the container on the Frames screen, and the frame content outside the cell on the Align step. */
+    outsideDim: 0.55,
+    /** The Align step: the ghost opacity, the tiles of frame shown around the cell, the Shift nudge and the axis highlight. */
+    ghostAlpha: 0.35,
+    alignPadTiles: 8,
+    nudgeShift: 5,
+    nudgeTickMs: 60,
+    axisFlashMs: 360,
   },
   particles: {
     budget: 900,

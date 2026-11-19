@@ -39,7 +39,7 @@ export class AnimScene implements Scene {
   ghostOf: (index: number) => number | null = (index) => (this.source.count < 2 ? null : (index - 1 + this.source.count) % this.source.count);
   onframe: ((index: number) => void) | null = null;
 
-  private host: StageHost | null = null;
+  protected host: StageHost | null = null;
   private source: AnimSource;
   private baked = new Map<number, HTMLCanvasElement | null>();
   private current = 0;

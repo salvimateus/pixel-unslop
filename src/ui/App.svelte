@@ -9,6 +9,7 @@
   import { zoomMoveOf } from '../app/zoom.ts';
   import AboutDialog from './AboutDialog.svelte';
   import AnimExportDialog from './AnimExportDialog.svelte';
+  import AnimAlignScreen from './AnimAlignScreen.svelte';
   import AnimFramesScreen from './AnimFramesScreen.svelte';
   import AnimScreen from './AnimScreen.svelte';
   import CleanScreen from './CleanScreen.svelte';
@@ -186,6 +187,8 @@
           <SetScreen />
         {:else if app.screen === 'anim-frames' && app.anim.extracted}
           <AnimFramesScreen />
+        {:else if app.screen === 'anim-align' && app.anim.extracted && app.anim.timeline.length > 0}
+          <AnimAlignScreen />
         {:else if app.screen === 'anim' && app.anim.extracted && app.anim.timeline.length > 0}
           <AnimScreen />
         {:else if (app.screen === 'grid' || app.screen === 'set-grid' || app.screen === 'anim-grid') && app.source}

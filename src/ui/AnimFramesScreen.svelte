@@ -1,11 +1,14 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
+  import { track } from '../app/analytics.ts';
+  import type { AnimFrame } from '../app/animation.svelte.ts';
   import { app, prefersReducedMotion } from '../app/state.svelte.ts';
   import { t, type TextKey } from '../app/i18n.ts';
   import { activeLocale } from '../app/locale.svelte.ts';
   import * as sfx from '../app/sfx.ts';
   import { TUNING } from '../app/tuning.ts';
-  import { AnimScene, type AnimSource } from './anim-scene.ts';
+  import type { TileBox } from '../core/sprite.ts';
+  import type { AnimSource } from './anim-scene.ts';
   import AnimTimeline from './AnimTimeline.svelte';
   import type { PreviewBackground } from './clean-scene.ts';
   import { holdRepeat } from './hold-repeat.ts';
@@ -15,6 +18,8 @@
   import ProgressPill from './ProgressPill.svelte';
   import Stage from './Stage.svelte';
   import ToggleSwitch from './ToggleSwitch.svelte';
+  import { ContainerScene, type ContainerHandle, type ContainerMode, type ContainerPart } from './container-scene.ts';
+  import type { StagePointer } from './stage-renderer.ts';
 
   const BACKGROUNDS: ReadonlyArray<{ id: PreviewBackground; label: TextKey }> = [
     { id: 'checker', label: 'clean.bg.checker' },
@@ -47,7 +52,11 @@
   let lastSource = untrack(() => sourceOf());
   let lastFramesVersion = untrack(() => anim.framesVersion);
 
-  const scene = new AnimScene(lastSource, videoFps());
+  function sceneLabels() {
+    return { size: (cols: number, rows: number) => t('frames.containerSize', { w: cols, h: rows }) };
+  }
+
+  const scene = new ContainerScene(lastSource, videoFps(), untrack(() => sceneLabels()));
   scene.onframe = (index) => anim.seek(index);
   /** The ghost is the nearest picked frame before the shown one. */
   scene.ghostOf = (index) => {
@@ -55,6 +64,21 @@
     for (const frame of anim.timeline) if (frame.index < index && (best === null || frame.index > best)) best = frame.index;
     return best;
   };
+
+  /** The timeline entry that the container edits on the shown frame: the selected one when it shows this frame. */
+  const entry = $derived.by((): AnimFrame | null => {
+    const selected = anim.selected;
+    return selected && selected.index === anim.cursor ? selected : anim.entryOf(anim.cursor);
+  });
+  const hasContainer = $derived(anim.container !== null && anim.timeline.length > 0);
+  const containerMode = $derived<ContainerMode>(!entry ? 'preview' : entry.id === anim.first?.id ? 'resize' : 'move');
+  const shownBox = $derived(hasContainer ? anim.containerFor(entry ? entry.offset : anim.inheritedOffset(anim.cursor)) : null);
+  let cursor = $state('default');
+
+  type ContainerDrag =
+    | { kind: 'box'; part: ContainerPart; start: TileBox; startIx: number; startIy: number; offset: { x: number; y: number }; last: TileBox }
+    | { kind: 'offset'; id: number; start: { x: number; y: number }; startIx: number; startIy: number; last: { x: number; y: number } };
+  let drag: ContainerDrag | null = null;
 
   const lastIndex = $derived(Math.max(0, anim.count - 1));
   const uses = $derived(anim.uses(anim.cursor));
@@ -102,6 +126,17 @@
 
   $effect(() => {
     rangeEvery = anim.stepSize;
+  });
+
+  $effect(() => {
+    scene.setContainer(shownBox, containerMode);
+  });
+
+  // The size label is drawn on the canvas: a language change sets it again and repaints.
+  $effect(() => {
+    void activeLocale();
+    scene.labels = sceneLabels();
+    scene.invalidate();
   });
 
   /** The monitor shows the frame of the original video, scaled to its box. */
@@ -199,6 +234,98 @@
     if (anim.move(id, delta)) sfx.play('tick');
   }
 
+  const RESIZE_CURSORS: Record<ContainerHandle, string> = { nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize' };
+
+  function cursorOf(part: ContainerPart | null): string {
+    return part === null ? 'default' : part === 'inside' ? 'move' : RESIZE_CURSORS[part];
+  }
+
+  function sameTileBox(a: TileBox, b: TileBox): boolean {
+    return a.col === b.col && a.row === b.row && a.cols === b.cols && a.rows === b.rows;
+  }
+
+  function onStageDown(p: StagePointer): boolean | 'pan' {
+    const part = scene.hit(p.sx, p.sy);
+    const box = shownBox;
+    const current = entry;
+    if (part === null || !box || !current || containerMode === 'preview') return 'pan';
+    setPlaying(false);
+    anim.beginEdit();
+    if (containerMode === 'resize') {
+      drag = { kind: 'box', part, start: box, startIx: p.ix, startIy: p.iy, offset: current.offset, last: box };
+    } else {
+      drag = { kind: 'offset', id: current.id, start: current.offset, startIx: p.ix, startIy: p.iy, last: current.offset };
+    }
+    scene.setActive(part);
+    cursor = cursorOf(part);
+    return true;
+  }
+
+  /** The box on screen after a move or a resize by whole tiles; every side keeps at least 1 tile. */
+  function draggedBox(start: TileBox, part: ContainerPart, dx: number, dy: number): TileBox {
+    if (part === 'inside') return { ...start, col: start.col + dx, row: start.row + dy };
+    let left = start.col;
+    let top = start.row;
+    let right = start.col + start.cols;
+    let bottom = start.row + start.rows;
+    if (part.includes('w')) left = Math.min(right - 1, left + dx);
+    if (part.includes('e')) right = Math.max(left + 1, right + dx);
+    if (part.includes('n')) top = Math.min(bottom - 1, top + dy);
+    if (part.includes('s')) bottom = Math.max(top + 1, bottom + dy);
+    return { col: left, row: top, cols: right - left, rows: bottom - top };
+  }
+
+  function onStageMove(p: StagePointer): void {
+    const current = drag;
+    if (!current) return;
+    const dx = Math.round(p.ix - current.startIx);
+    const dy = Math.round(p.iy - current.startIy);
+    if (current.kind === 'box') {
+      const next = draggedBox(current.start, current.part, dx, dy);
+      if (sameTileBox(next, current.last)) return;
+      current.last = next;
+      anim.setContainer({ col: next.col + current.offset.x, row: next.row + current.offset.y, cols: next.cols, rows: next.rows });
+    } else {
+      const next = { x: current.start.x - dx, y: current.start.y - dy };
+      if (next.x === current.last.x && next.y === current.last.y) return;
+      current.last = next;
+      anim.setOffset(current.id, next);
+    }
+    scene.flash();
+  }
+
+  function onStageUp(p: StagePointer): void {
+    const done = drag;
+    drag = null;
+    scene.setActive(null);
+    onStageHover(p);
+    if (!done || !anim.endEdit()) return;
+    track('option_change', { kind: 'anim_container', detail: done.kind === 'box' ? 'resize' : 'move' });
+    sfx.play('tick');
+  }
+
+  function onStageHover(p: StagePointer | null): void {
+    if (drag) return;
+    const part = p ? scene.hit(p.sx, p.sy) : null;
+    scene.setHover(part);
+    cursor = cursorOf(part);
+  }
+
+  function undo(): void {
+    if (drag) return;
+    if (anim.undo()) sfx.play('tick');
+  }
+
+  function redo(): void {
+    if (drag) return;
+    if (anim.redo()) sfx.play('tick');
+  }
+
+  function goToFirst(): void {
+    const first = anim.first;
+    if (first) selectEntry(first.id);
+  }
+
   function isEditable(target: EventTarget | null): boolean {
     return target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
   }
@@ -206,7 +333,19 @@
   /** Capture phase: the arrows and Space drive the frames before the stage pans with them. */
   function onKeyDown(event: KeyboardEvent): void {
     if (app.animExportOpen || app.confirmRequest || app.aboutOpen) return;
-    if (event.ctrlKey || event.metaKey || isEditable(event.target)) return;
+    if (isEditable(event.target)) return;
+    if (event.ctrlKey || event.metaKey) {
+      if (event.altKey) return;
+      const letter = event.key.toLowerCase();
+      if (letter === 'z' && !event.shiftKey) {
+        event.preventDefault();
+        undo();
+      } else if (letter === 'y' || (letter === 'z' && event.shiftKey)) {
+        event.preventDefault();
+        redo();
+      }
+      return;
+    }
     const onButton = event.target instanceof HTMLButtonElement;
     const key = event.key;
     const selected = anim.selectedId;
@@ -257,7 +396,17 @@
 <section class="frames-screen">
   <div class="frames-stage">
     <div class="stage-box">
-      <Stage bind:this={stage} {scene} {insets} label={t('anim.stageLabel')} onprimarydown={() => 'pan'}>
+      <Stage
+        bind:this={stage}
+        {scene}
+        {insets}
+        {cursor}
+        label={t('anim.stageLabel')}
+        onprimarydown={onStageDown}
+        onprimarymove={onStageMove}
+        onprimaryup={onStageUp}
+        onhover={onStageHover}
+      >
         <div class="stage-top" bind:offsetHeight={overlayTop}>
           <p class="frame-counter" aria-live="off">
             <span class="counter-main">{t('frames.counter', { n: anim.cursor + 1, total: anim.count })}</span>
@@ -266,6 +415,25 @@
               <span class="counter-playing"><Icon name="play" size={14} />{t('frames.playing')}</span>
             {/if}
           </p>
+          {#if hasContainer}
+            <div class="container-bar">
+              <p class="container-hint">
+                <Icon name={containerMode === 'preview' ? 'plus' : 'arrows'} size={16} />
+                <span>{containerMode === 'resize' ? t('frames.containerResizeHint') : containerMode === 'move' ? t('frames.containerMoveHint') : t('frames.containerAddHint')}</span>
+                {#if containerMode === 'move'}
+                  <button type="button" class="btn btn-quiet container-first" onclick={goToFirst}>{t('frames.containerGoFirst')}</button>
+                {/if}
+              </p>
+              <div class="container-history">
+                <button type="button" class="icon-btn" aria-label={t('clean.undo')} title="{t('clean.undo')} (Ctrl+Z)" aria-keyshortcuts="Control+Z" disabled={!anim.canUndo} onclick={undo}>
+                  <Icon name="undo" />
+                </button>
+                <button type="button" class="icon-btn" aria-label={t('clean.redo')} title="{t('clean.redo')} (Ctrl+Y)" aria-keyshortcuts="Control+Y Control+Shift+Z" disabled={!anim.canRedo} onclick={redo}>
+                  <Icon name="redo" />
+                </button>
+              </div>
+            </div>
+          {/if}
         </div>
         <div class="stage-tools" bind:offsetHeight={overlayBottom}>
           <div class="stage-zoom">
@@ -452,6 +620,10 @@
           <dd>{t('frames.keyMove')}</dd>
           <dt><kbd class="keycap">D</kbd></dt>
           <dd>{t('anim.duplicate')}</dd>
+          <dt><span class="keycap-group"><KeyText text="Ctrl" /><kbd class="keycap">Z</kbd></span></dt>
+          <dd>{t('clean.undo')}</dd>
+          <dt><span class="keycap-group"><KeyText text="Ctrl" /><kbd class="keycap">Y</kbd></span></dt>
+          <dd><KeyText text={t('frames.keyRedo')} /></dd>
         </dl>
       </details>
     </div>
@@ -462,13 +634,13 @@
           <Icon name="back" size={18} />
           <span class="visually-hidden">{t('frames.back')}</span>
         </button>
-        <button type="button" class="btn btn-primary btn-big next-btn" disabled={app.loading || anim.timeline.length === 0} onclick={() => app.goTo('anim')}>
-          <Icon name="film" size={20} />
-          {t('frames.next')}
+        <button type="button" class="btn btn-primary btn-big next-btn" disabled={app.loading || anim.timeline.length === 0} onclick={() => app.goTo('anim-align')}>
+          <Icon name="arrows" size={20} />
+          {t('frames.nextAlign')}
         </button>
       </div>
       {#if anim.timeline.length === 0}
-        <p class="hint footer-hint">{t('frames.nextEmpty')}</p>
+        <p class="hint footer-hint">{t('frames.nextAlignEmpty')}</p>
       {/if}
     </div>
   </aside>
@@ -513,8 +685,55 @@
       left: var(--space-3);
       right: var(--space-3);
       display: flex;
-      justify-content: center;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--space-2);
       pointer-events: none;
+    }
+
+    .container-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-2);
+      max-width: 100%;
+    }
+
+    .container-hint {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: var(--space-1) var(--space-2);
+      min-width: 0;
+      padding: var(--space-1) var(--space-3);
+      font-size: 0.8125rem;
+      line-height: 1.35;
+      background: var(--surface-1);
+      border: 2px solid var(--line);
+      border-radius: var(--radius-m);
+
+      & :global(.icon) {
+        flex: none;
+        color: var(--primary);
+      }
+    }
+
+    .container-first {
+      min-height: 28px;
+      padding: 0 var(--space-2);
+      font-size: 0.8125rem;
+      pointer-events: auto;
+    }
+
+    .container-history {
+      display: flex;
+      gap: 2px;
+      padding: 3px;
+      background: var(--surface-1);
+      border: 2px solid var(--line);
+      border-radius: var(--radius-m);
+      pointer-events: auto;
     }
 
     .frame-counter {

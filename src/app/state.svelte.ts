@@ -22,9 +22,10 @@ import { TUNING } from './tuning.ts';
 
 /**
  * `set-grid` is the Grade step of a set: one piece of the set is open on the Grade screen. `anim-grid`,
- * `anim-frames` and `anim` are the steps of a video animation: its grid on one video frame, the frame pick, and the loop.
+ * `anim-frames`, `anim-align` and `anim` are the steps of a video animation: its grid on one video frame, the frame pick
+ * with the container, the frame by frame alignment, and the loop.
  */
-export type Screen = 'drop' | 'set-grid' | 'set' | 'grid' | 'clean' | 'anim-grid' | 'anim-frames' | 'anim';
+export type Screen = 'drop' | 'set-grid' | 'set' | 'grid' | 'clean' | 'anim-grid' | 'anim-frames' | 'anim-align' | 'anim';
 /** The stages of the progress pill: the worker stages, plus the frame extraction of a video. */
 export type ProgressStage = Stage | 'frames';
 export interface Progress {
@@ -1569,9 +1570,9 @@ class AppState {
       else if (this.anim.extracted) this.screen = 'anim-frames';
       return;
     }
-    if (target === 'anim') {
+    if (target === 'anim' || target === 'anim-align') {
       if (this.screen === 'anim-grid' && !(await this.lockAnimGrid())) return;
-      if (this.anim.extracted && this.anim.timeline.length > 0) this.screen = 'anim';
+      if (this.anim.extracted && this.anim.timeline.length > 0) this.screen = target;
     }
   }
 
@@ -1696,7 +1697,7 @@ class AppState {
         else if (cancelled) this.toast(t('toast.framesCancelled'), 'info');
         return false;
       }
-      anim.setFrames(frames.raws, frames.owns, frames.thumbs, strength, grid, fitVersion);
+      if (anim.setFrames(frames.raws, frames.owns, frames.thumbs, strength, grid, fitVersion)) this.toast(t('toast.containerReset'), 'info');
       if (count < info.frameCount) this.toast(t('toast.framesLimited', { count, total: info.frameCount }), 'info');
       trackEvent('clean_run', { kind: 'anim', detail: this.preset, width: fit.cols, height: fit.rows, count });
       sfx.play('sweep');
@@ -1792,7 +1793,7 @@ class AppState {
       this.fit = null;
       this.result = null;
       this.baseVersion++;
-      if (this.anim.extracted) this.screen = this.screen === 'anim' && this.anim.timeline.length > 0 ? 'anim' : 'anim-frames';
+      if (this.anim.extracted) this.screen = (this.screen === 'anim' || this.screen === 'anim-align') && this.anim.timeline.length > 0 ? this.screen : 'anim-frames';
       else void this.calibrateAt(this.anim.keyIndex);
       return;
     }
@@ -1878,6 +1879,10 @@ interface DevAnim {
   cursor: number;
   stepSize: number;
   timeline: number[];
+  /** The offset of each timeline entry, in whole tiles. */
+  offsets: Array<{ x: number; y: number }>;
+  /** The crop box in grid tiles, or null. */
+  container: { col: number; row: number; cols: number; rows: number } | null;
   selectedId: number | null;
   fps: number;
   onion: boolean;
@@ -1971,6 +1976,8 @@ export function installDevHook(): void {
         cursor: anim.cursor,
         stepSize: anim.stepSize,
         timeline: anim.timeline.map((frame) => frame.index),
+        offsets: anim.timeline.map((frame) => ({ ...frame.offset })),
+        container: anim.container ? { ...anim.container } : null,
         selectedId: anim.selectedId,
         fps: anim.fps,
         onion: anim.onion,

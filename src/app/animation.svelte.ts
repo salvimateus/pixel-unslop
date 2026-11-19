@@ -1,30 +1,53 @@
 import type { CellGrid, Sprite } from '../core/types.ts';
-import { buildFrames, type BuiltFrames, type CellMode } from '../core/frames.ts';
-import { borderBackground, eraseTiles, listPalette } from '../core/sprite.ts';
+import { placeFrames, prepareFrames, type BuiltFrames, type CellMode, type FrameOffset, type PreparedFrames } from '../core/frames.ts';
+import { borderBackground, eraseTiles, listPalette, opaqueBox, type TileBox } from '../core/sprite.ts';
 import { track } from './analytics.ts';
 import { readStored, writeStored } from './storage.ts';
 import { TUNING } from './tuning.ts';
 import type { VideoInfo, VideoSource } from './video.ts';
 
-/** One entry of the timeline: a video frame. The same frame can appear more than once, to hold a pose. */
+/** One entry of the timeline: a video frame. The same frame can appear more than once, to hold a pose. Replaced on change. */
 export interface AnimFrame {
   readonly id: number;
   /** The index of the video frame. */
   readonly index: number;
+  /** Whole tiles that the content of this frame moves by in the output. */
+  readonly offset: FrameOffset;
 }
 
-export const CELL_MODES: readonly CellMode[] = ['full', 'crop', 'feet'];
+/** The cell modes in the order of the UI: the container first, then the automatic ones. */
+export const CELL_MODES: readonly CellMode[] = ['box', 'crop', 'feet', 'full'];
 
 const EMPTY_BUILD: BuiltFrames = { frames: [], cell: { cols: 0, rows: 0 }, kept: [] };
+const EMPTY_PREPARED: PreparedFrames = { frames: [], kept: [] };
+const ZERO: FrameOffset = { x: 0, y: 0 };
+const UNDO_LIMIT = 100;
+
+/** The container and the offsets at one moment, for undo and redo. */
+interface PlaceSnapshot {
+  container: TileBox | null;
+  offsets: ReadonlyMap<number, FrameOffset>;
+}
+
+function sameOffset(a: FrameOffset, b: FrameOffset): boolean {
+  return a.x === b.x && a.y === b.y;
+}
+
+function sameBox(a: TileBox | null, b: TileBox | null): boolean {
+  return a === b || (a !== null && b !== null && a.col === b.col && a.row === b.row && a.cols === b.cols && a.rows === b.rows);
+}
 
 function storedNumber(key: string, min: number, max: number, fallback: number): number {
   const value = Number(readStored(key));
   return Number.isInteger(value) && value >= min && value <= max ? value : fallback;
 }
 
+/** A new key: the container is the default even where an older automatic mode was stored. */
+const CELL_KEY = 'animCellMode';
+
 function storedCell(): CellMode {
-  const value = readStored('animCell');
-  return (CELL_MODES as readonly string[]).includes(value ?? '') ? (value as CellMode) : 'crop';
+  const value = readStored(CELL_KEY);
+  return (CELL_MODES as readonly string[]).includes(value ?? '') ? (value as CellMode) : 'box';
 }
 
 function clampFps(fps: number): number {
@@ -79,6 +102,15 @@ export class Animation {
   sheetJson = $state(readStored('animJson') !== 'off');
   loopInGame = $state(readStored('animLoop') !== 'off');
 
+  /**
+   * The crop box of the frames, in tiles of the grid. The first timeline entry edits it; every other entry only
+   * moves its content under it, through its offset. It can reach past the grid.
+   */
+  container = $state.raw<TileBox | null>(null);
+  /** Undo and redo of the container and the offsets. */
+  canUndo = $state(false);
+  canRedo = $state(false);
+
   /** The output frames of the timeline: same size, one palette. */
   built = $state.raw<BuiltFrames>(EMPTY_BUILD);
   /** Changes on each build. */
@@ -92,6 +124,13 @@ export class Animation {
   private referenceChosen = false;
   /** The per-frame erase of the Frames screen, per video frame, until the frames or the erase change. */
   private displayCache = new Map<number, Sprite>();
+  /** The palette, reference and erase of the timeline frames: the slow part, made again only when its inputs change. */
+  private prepared: PreparedFrames = EMPTY_PREPARED;
+  private preparedKey = '';
+  private undoStack: PlaceSnapshot[] = [];
+  private redoStack: PlaceSnapshot[] = [];
+  /** The state before the edit in progress (a drag), or null. */
+  private editStart: PlaceSnapshot | null = null;
 
   get active(): boolean {
     return this.info !== null;
@@ -114,6 +153,53 @@ export class Animation {
     return this.timeline.find((frame) => frame.id === this.selectedId) ?? null;
   }
 
+  /** The timeline entry that edits the container. */
+  get first(): AnimFrame | null {
+    return this.timeline[0] ?? null;
+  }
+
+  /** The tile size of the grid of the sampled frames. */
+  get gridSize(): { cols: number; rows: number } {
+    const own = this.owns[0];
+    return own ? { cols: own.cols, rows: own.rows } : { cols: 0, rows: 0 };
+  }
+
+  find(id: number): AnimFrame | null {
+    return this.timeline.find((frame) => frame.id === id) ?? null;
+  }
+
+  /** The first timeline entry of a video frame. */
+  entryOf(index: number): AnimFrame | null {
+    return this.timeline.find((frame) => frame.index === index) ?? null;
+  }
+
+  /** The offset that a new entry of this video frame would take: that of the nearest earlier entry in timeline order. */
+  inheritedOffset(index: number): FrameOffset {
+    const list = this.timeline;
+    let at = list.length;
+    while (at > 0 && list[at - 1].index > index) at--;
+    return (list[at - 1] ?? list[at])?.offset ?? ZERO;
+  }
+
+  /** The container over the source tiles of one frame: it sits where the offset of the frame puts it. */
+  containerFor(offset: FrameOffset): TileBox | null {
+    const box = this.container;
+    return box ? { col: box.col - offset.x, row: box.row - offset.y, cols: box.cols, rows: box.rows } : null;
+  }
+
+  /** The container that the first add makes: the opaque box of that frame with a margin; the whole grid when it is empty. */
+  private initialContainer(sprite: Sprite | undefined): TileBox | null {
+    const { cols, rows } = this.gridSize;
+    if (cols === 0 || rows === 0) return null;
+    const box = sprite ? opaqueBox(sprite) : null;
+    if (!box) return { col: 0, row: 0, cols, rows };
+    const mx = Math.max(TUNING.anim.containerMarginMin, Math.round(box.cols * TUNING.anim.containerMarginShare));
+    const my = Math.max(TUNING.anim.containerMarginMin, Math.round(box.rows * TUNING.anim.containerMarginShare));
+    const col = Math.max(0, box.col - mx);
+    const row = Math.max(0, box.row - my);
+    return { col, row, cols: Math.min(cols, box.col + box.cols + mx) - col, rows: Math.min(rows, box.row + box.rows + my) - row };
+  }
+
   /** The number of timeline entries of one video frame. */
   uses(index: number): number {
     let count = 0;
@@ -134,8 +220,13 @@ export class Animation {
     return this.sampledFitVersion === fitVersion || sameGrid(this.grid, grid);
   }
 
-  /** New sampled frames. The timeline keeps its video indices; entries past the new count go away. */
-  setFrames(raws: Sprite[], owns: Sprite[], thumbs: ImageBitmap[], strength: number, grid: CellGrid, fitVersion: number): void {
+  /**
+   * New sampled frames. The timeline keeps its video indices; entries past the new count go away. A grid of
+   * another tile size makes the container again on the first entry and resets every offset: returns true then.
+   */
+  setFrames(raws: Sprite[], owns: Sprite[], thumbs: ImageBitmap[], strength: number, grid: CellGrid, fitVersion: number): boolean {
+    const before = this.gridSize;
+    const resized = this.container !== null && (owns[0]?.cols !== before.cols || owns[0]?.rows !== before.rows);
     for (const thumb of this.thumbs) thumb.close();
     this.raws = raws;
     this.owns = owns;
@@ -148,9 +239,19 @@ export class Animation {
     const count = owns.length;
     this.cursor = Math.min(this.cursor, Math.max(0, count - 1));
     if (!this.referenceChosen || this.referenceIndex >= count) this.referenceIndex = Math.min(this.keyIndex, Math.max(0, count - 1));
-    const kept = this.timeline.filter((frame) => frame.index < count);
-    if (kept.length !== this.timeline.length) this.setTimeline(kept);
+    let kept = this.timeline.filter((frame) => frame.index < count);
+    if (resized) {
+      kept = kept.map((frame) => ({ ...frame, offset: ZERO }));
+      this.container = null;
+      this.clearHistory();
+    }
+    if (kept.length !== this.timeline.length || resized) this.setTimeline(kept);
     else this.rebuild();
+    if (resized && kept.length > 0) {
+      this.container = this.initialContainer(this.prepared.frames[0]);
+      this.place();
+    }
+    return resized;
   }
 
   /** The own merge of every frame at a new strength. */
@@ -203,12 +304,14 @@ export class Animation {
    */
   add(index: number): AnimFrame | null {
     if (index < 0 || index >= this.count) return null;
-    const frame: AnimFrame = { id: this.nextId++, index };
+    const wasEmpty = this.timeline.length === 0;
+    const frame: AnimFrame = { id: this.nextId++, index, offset: wasEmpty ? ZERO : this.inheritedOffset(index) };
     const list = this.timeline;
     let at = list.length;
     while (at > 0 && list[at - 1].index > index) at--;
     this.setTimeline([...list.slice(0, at), frame, ...list.slice(at)]);
     this.selectedId = frame.id;
+    if (wasEmpty) this.startContainer();
     return frame;
   }
 
@@ -217,18 +320,21 @@ export class Animation {
     const step = Math.max(1, Math.round(every));
     const present = new Set(this.timeline.map((frame) => frame.index));
     const added: AnimFrame[] = [];
+    const wasEmpty = this.timeline.length === 0;
     const list = [...this.timeline];
     for (let index = Math.max(0, from); index < this.count; index += step) {
       if (present.has(index)) continue;
-      const frame: AnimFrame = { id: this.nextId++, index };
       let at = list.length;
       while (at > 0 && list[at - 1].index > index) at--;
+      const offset = (list[at - 1] ?? list[at])?.offset ?? ZERO;
+      const frame: AnimFrame = { id: this.nextId++, index, offset };
       list.splice(at, 0, frame);
       added.push(frame);
     }
     if (added.length === 0) return added;
     this.setTimeline(list);
     this.selectedId = added[added.length - 1].id;
+    if (wasEmpty) this.startContainer();
     return added;
   }
 
@@ -262,7 +368,7 @@ export class Animation {
     const list = this.timeline;
     const at = list.findIndex((frame) => frame.id === id);
     if (at < 0) return null;
-    const frame: AnimFrame = { id: this.nextId++, index: list[at].index };
+    const frame: AnimFrame = { id: this.nextId++, index: list[at].index, offset: list[at].offset };
     this.setTimeline([...list.slice(0, at + 1), frame, ...list.slice(at + 1)]);
     this.selectedId = frame.id;
     return frame;
@@ -312,9 +418,112 @@ export class Animation {
   setCell(mode: CellMode): void {
     if (mode === this.cell) return;
     this.cell = mode;
-    writeStored('animCell', mode);
+    writeStored(CELL_KEY, mode);
     track('option_change', { kind: 'anim_cell', detail: mode });
-    this.changed();
+    this.editVersion++;
+    this.place();
+  }
+
+  /** Starts an edit of the container or of offsets: a drag, or one key press. Many live changes make one undo step. */
+  beginEdit(): void {
+    if (!this.editStart) this.editStart = this.snapshot();
+  }
+
+  /** Ends the edit; an edit that changed nothing adds no step. Returns true when it changed something. */
+  endEdit(): boolean {
+    const start = this.editStart;
+    this.editStart = null;
+    if (!start || this.sameAsNow(start)) return false;
+    this.undoStack.push(start);
+    if (this.undoStack.length > UNDO_LIMIT) this.undoStack.shift();
+    this.redoStack = [];
+    this.syncHistory();
+    return true;
+  }
+
+  /**
+   * The container of the first entry: whole tiles, at least 1 by 1. Call it live during a drag, between
+   * beginEdit and endEdit.
+   */
+  setContainer(box: TileBox): void {
+    const next: TileBox = { col: Math.round(box.col), row: Math.round(box.row), cols: Math.max(1, Math.round(box.cols)), rows: Math.max(1, Math.round(box.rows)) };
+    if (sameBox(next, this.container)) return;
+    this.container = next;
+    this.editVersion++;
+    this.place();
+  }
+
+  /** The offset of one entry, in whole tiles. Live during a drag, between beginEdit and endEdit. */
+  setOffset(id: number, offset: FrameOffset): void {
+    const next = { x: Math.round(offset.x), y: Math.round(offset.y) };
+    const list = this.timeline;
+    const at = list.findIndex((frame) => frame.id === id);
+    if (at < 0 || sameOffset(list[at].offset, next)) return;
+    const copy = [...list];
+    copy[at] = { ...list[at], offset: next };
+    this.timeline = copy;
+    this.editVersion++;
+    this.place();
+  }
+
+  /** One step of undo of the container and the offsets. */
+  undo(): boolean {
+    const step = this.undoStack.pop();
+    if (!step) return false;
+    this.redoStack.push(this.snapshot());
+    this.restore(step);
+    this.syncHistory();
+    return true;
+  }
+
+  redo(): boolean {
+    const step = this.redoStack.pop();
+    if (!step) return false;
+    this.undoStack.push(this.snapshot());
+    this.restore(step);
+    this.syncHistory();
+    return true;
+  }
+
+  private snapshot(): PlaceSnapshot {
+    return { container: this.container, offsets: new Map(this.timeline.map((frame) => [frame.id, frame.offset])) };
+  }
+
+  private sameAsNow(snap: PlaceSnapshot): boolean {
+    if (!sameBox(snap.container, this.container)) return false;
+    return this.timeline.every((frame) => {
+      const before = snap.offsets.get(frame.id);
+      return !before || sameOffset(before, frame.offset);
+    });
+  }
+
+  private restore(snap: PlaceSnapshot): void {
+    this.container = snap.container;
+    this.timeline = this.timeline.map((frame) => {
+      const offset = snap.offsets.get(frame.id);
+      return offset && !sameOffset(offset, frame.offset) ? { ...frame, offset } : frame;
+    });
+    this.editVersion++;
+    this.place();
+  }
+
+  private syncHistory(): void {
+    this.canUndo = this.undoStack.length > 0;
+    this.canRedo = this.redoStack.length > 0;
+  }
+
+  private clearHistory(): void {
+    this.undoStack = [];
+    this.redoStack = [];
+    this.editStart = null;
+    this.syncHistory();
+  }
+
+  /** The first add makes the container from the prepared sprite of that frame. */
+  private startContainer(): void {
+    this.container = this.initialContainer(this.prepared.frames[0]);
+    this.clearHistory();
+    this.place();
   }
 
   /** The playback speed. A held button sends many changes: `commit` stores and reports only the last one. */
@@ -367,19 +576,57 @@ export class Animation {
     return clampFps(fps / gap);
   }
 
-  /** Builds the output frames of the timeline: one palette, the reference colors, the erase and the common cell. */
+  /**
+   * Builds the output frames of the timeline: one palette, the reference colors and the erase (only when the
+   * frames, the strength, the reference or the erase changed), then the placement in the cell.
+   */
   rebuild(): void {
-    const owns = this.timeline.map((frame) => this.owns[frame.index]).filter((sprite): sprite is Sprite => sprite !== undefined);
+    const timeline = this.timeline.filter((frame) => this.owns[frame.index] !== undefined);
+    const strength = Number.isFinite(this.ownStrength) ? this.ownStrength : 0;
     const reference = this.referenceColors ? this.owns[this.referenceIndex] : undefined;
-    this.built =
-      owns.length === 0
-        ? EMPTY_BUILD
-        : buildFrames(owns, {
-            strength: Number.isFinite(this.ownStrength) ? this.ownStrength : 0,
-            reference: reference ? listPalette(reference.pixels) : null,
-            eraseBackground: this.eraseBackground,
-            cell: this.cell,
-          });
+    const key = `${this.framesVersion}|${strength}|${this.referenceColors ? this.referenceIndex : -1}|${this.eraseBackground}|${timeline.map((frame) => frame.index).join(',')}`;
+    if (key !== this.preparedKey) {
+      this.preparedKey = key;
+      this.prepared =
+        timeline.length === 0
+          ? EMPTY_PREPARED
+          : prepareFrames(
+              timeline.map((frame) => this.owns[frame.index]),
+              { strength, reference: reference ? listPalette(reference.pixels) : null, eraseBackground: this.eraseBackground },
+            );
+    }
+    this.place();
+  }
+
+  /**
+   * One output frame with `pad` tiles of its frame around the cell, for the Align step: `inner` is the cell inside
+   * the sprite. Only the container mode knows where the cell sits in the frame; the other modes give the cell alone.
+   */
+  paddedFrame(position: number, pad: number): { sprite: Sprite; inner: TileBox } | null {
+    const frame = this.timeline[position];
+    const prepared = this.prepared.frames[position];
+    const built = this.built.frames[position];
+    if (!frame || !prepared || !built) return null;
+    const box = this.container;
+    if (this.cell !== 'box' || !box || pad <= 0) return { sprite: built, inner: { col: 0, row: 0, cols: built.cols, rows: built.rows } };
+    const wide: TileBox = { col: box.col - pad, row: box.row - pad, cols: box.cols + pad * 2, rows: box.rows + pad * 2 };
+    const placed = placeFrames([prepared], { cell: 'box', offsets: [frame.offset], box: wide });
+    const sprite = placed.frames[0];
+    return sprite ? { sprite, inner: { col: pad, row: pad, cols: box.cols, rows: box.rows } } : null;
+  }
+
+  /** Places the prepared frames in the cell with the offsets and the container. Cheap: it runs on every drag move. */
+  private place(): void {
+    const timeline = this.timeline.filter((frame) => this.owns[frame.index] !== undefined);
+    const prepared = this.prepared;
+    if (prepared.frames.length === 0 || prepared.frames.length !== timeline.length) {
+      this.built = prepared.frames.length === 0 ? EMPTY_BUILD : this.built;
+      this.version++;
+      return;
+    }
+    const cell = this.cell === 'box' && !this.container ? 'crop' : this.cell;
+    const placed = placeFrames(prepared.frames, { cell, offsets: timeline.map((frame) => frame.offset), box: this.container });
+    this.built = { frames: placed.frames, cell: placed.cell, kept: prepared.kept };
     this.version++;
   }
 
@@ -408,6 +655,10 @@ export class Animation {
     this.referenceIndex = 0;
     this.referenceChosen = false;
     this.referenceColors = false;
+    this.container = null;
+    this.clearHistory();
+    this.prepared = EMPTY_PREPARED;
+    this.preparedKey = '';
     this.built = EMPTY_BUILD;
     this.version++;
     this.editVersion++;

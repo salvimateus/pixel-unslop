@@ -26,6 +26,7 @@
   ];
 
   const CELL_LABELS: Record<CellMode, { label: TextKey; hint: TextKey }> = {
+    box: { label: 'animPlay.cellBox', hint: 'animPlay.cellBoxHint' },
     full: { label: 'animPlay.cellFull', hint: 'animPlay.cellFullHint' },
     crop: { label: 'animPlay.cellCrop', hint: 'animPlay.cellCropHint' },
     feet: { label: 'animPlay.cellFeet', hint: 'animPlay.cellFeetHint' },
@@ -824,8 +825,14 @@
       border-radius: var(--radius-s);
     }
 
-    .cell-choice button {
-      font-size: 0.8125rem;
+    /* Four modes in two rows, so each label keeps one line in the narrow panel. */
+    .cell-choice {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+
+      & button {
+        font-size: 0.8125rem;
+      }
     }
 
     .output-size {
