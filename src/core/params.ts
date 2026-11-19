@@ -9,6 +9,10 @@ export const PARAMS = {
     maxExportSide: 16_384,
     /** Largest number of tiles in one fit. */
     maxCells: 4_000_000,
+    /** Largest number of frames that one video gives to an animation. */
+    maxFrames: 600,
+    /** Largest number of raw plus own tiles of all sampled frames together. */
+    maxFrameTiles: 8_000_000,
   },
   edges: {
     /** Histogram bins per source pixel for the sub-pixel edge positions. */

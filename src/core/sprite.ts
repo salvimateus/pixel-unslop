@@ -366,3 +366,79 @@ export function resampleSprite(sprite: Sprite, step: number): Sprite {
   }
   return { cols: out.cols, rows: out.rows, pixels: result };
 }
+
+/** A box of tiles on the grid of a fit. */
+export interface TileBox {
+  col: number;
+  row: number;
+  cols: number;
+  rows: number;
+}
+
+/** A copy of the sprite with the tiles at `indices` made transparent. */
+export function eraseTiles(sprite: Sprite, indices: Int32Array): Sprite {
+  const pixels = sprite.pixels.slice();
+  for (let i = 0; i < indices.length; i++) pixels[indices[i]] = TRANSPARENT;
+  return { cols: sprite.cols, rows: sprite.rows, pixels };
+}
+
+/**
+ * A sprite that still holds a scenery: less than half of its border tiles are transparent (the rule that makes
+ * borderBackground find nothing), or, after an erase that removed part of the border, opaque tiles still touch
+ * all four edges. A clean sprite cropped to its drawing touches its edges too, so the second test needs the erase.
+ */
+export function holdsScenery(sprite: Sprite, erased: boolean): boolean {
+  const { cols, rows, pixels } = sprite;
+  let border = 0;
+  let clear = 0;
+  let top = false;
+  let bottom = false;
+  let left = false;
+  let right = false;
+  for (let y = 0; y < rows; y++) {
+    const edgeRow = y === 0 || y === rows - 1;
+    for (let x = 0; x < cols; x++) {
+      if (!edgeRow && x !== 0 && x !== cols - 1) continue;
+      border++;
+      if (pixels[y * cols + x] === TRANSPARENT) {
+        clear++;
+        continue;
+      }
+      if (y === 0) top = true;
+      if (y === rows - 1) bottom = true;
+      if (x === 0) left = true;
+      if (x === cols - 1) right = true;
+    }
+  }
+  if (border === 0) return false;
+  return clear * 2 < border || (erased && top && bottom && left && right);
+}
+
+/** The box of the opaque tiles, the box that trimSprite keeps; null when no tile is opaque. */
+export function opaqueBox(sprite: Sprite): TileBox | null {
+  const { cols, rows, pixels } = sprite;
+  let left = cols;
+  let right = -1;
+  let top = rows;
+  let bottom = -1;
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      if (pixels[y * cols + x] === TRANSPARENT) continue;
+      if (x < left) left = x;
+      if (x > right) right = x;
+      if (y < top) top = y;
+      bottom = y;
+    }
+  }
+  return right < 0 ? null : { col: left, row: top, cols: right - left + 1, rows: bottom - top + 1 };
+}
+
+/** The sprite cropped to its opaque tiles, as every export writes it; null when no tile is opaque. */
+export function trimOrNull(sprite: Sprite): Sprite | null {
+  try {
+    return trimSprite(sprite);
+  } catch (error) {
+    if (error instanceof CoreError && error.code === 'empty-image') return null;
+    throw error;
+  }
+}

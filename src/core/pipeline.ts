@@ -1,12 +1,14 @@
 import { alignedBlock, alignedImage, sampleCells } from './cells.ts';
 import { computeProfiles, type EdgeProfiles } from './edge-profile.ts';
 import { CoreError } from './errors.ts';
+import { encodeGif, GIF_MAX_COLORS, type GifOptions } from './gif.ts';
 import { fitGrid, manualGridFit, type FitExtras } from './grid.ts';
-import { mergePalette, type ColorCount } from './palette.ts';
+import { combinedColors, mergePalette, unifyPalettes, type ColorCount } from './palette.ts';
 import { PARAMS } from './params.ts';
 import { detectPeriods } from './pitch.ts';
 import { decodeImage, encodePng, encodePngSmallest, validateImage } from './png.ts';
 import type { MergeOptions, SetGrid } from './protocol.ts';
+import { TRANSPARENT } from './color.ts';
 import { listPalette, spriteFromRaster, spriteToRaster } from './sprite.ts';
 import type { AxisFit, CellGrid, GridFit, GridOptions, RasterImage, Selection, Sprite } from './types.ts';
 
@@ -137,4 +139,41 @@ export function exportSprite(sprite: Sprite, options: { optimize?: boolean } = {
   }
   const image = spriteToRaster(sprite);
   return options.optimize ? encodePngSmallest(image) : encodePng(image);
+}
+
+function checkFrameGrid(grid: CellGrid): void {
+  const cols = (grid?.x?.length ?? 0) - 1;
+  const rows = (grid?.y?.length ?? 0) - 1;
+  if (cols < 1 || rows < 1) throw new CoreError('internal', 'A frame grid needs at least one cell on each axis.');
+  if (cols * rows > PARAMS.limits.maxCells) {
+    throw new CoreError('too-many-cells', `The grid has ${cols * rows} cells; the limit is ${PARAMS.limits.maxCells}.`);
+  }
+}
+
+/** A video frame on the grid that the user locked: no fit, so every frame gets the same lines. */
+export function sampleFrame(image: RasterImage, grid: CellGrid, merge: MergeOptions): { raw: Sprite; own: Sprite } {
+  validateImage(image);
+  checkFrameGrid(grid);
+  const raw = sampleCells(image, grid);
+  const own = mergePalette(raw, { strength: merge.strength }).sprite;
+  return { raw, own };
+}
+
+/**
+ * An animated GIF of equal-size frames. A background fills the transparent tiles first. Frames with more colors
+ * than a GIF table holds lose the nearest colors first, with one map for all frames.
+ */
+export function exportGif(frames: readonly Sprite[], options: GifOptions): Uint8Array {
+  const background = options.background;
+  let painted: Sprite[] = background === null ? [...frames] : frames.map((frame) => fillTransparent(frame, background));
+  const needsSlot = background === null && painted.some((frame) => frame.pixels.includes(TRANSPARENT));
+  const maxColors = needsSlot ? GIF_MAX_COLORS - 1 : GIF_MAX_COLORS;
+  if (combinedColors(painted).length > maxColors) painted = unifyPalettes(painted, { strength: 0, maxColors });
+  return encodeGif(painted, options);
+}
+
+function fillTransparent(sprite: Sprite, color: number): Sprite {
+  const pixels = sprite.pixels.slice();
+  for (let i = 0; i < pixels.length; i++) if (pixels[i] === TRANSPARENT) pixels[i] = color;
+  return { cols: sprite.cols, rows: sprite.rows, pixels };
 }

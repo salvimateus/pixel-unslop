@@ -1,4 +1,5 @@
 import type { EngineReply, EngineRequest, ErrorCode, MergeOptions, SetFitItem, SetGrid, Stage, WorkerMessage } from '../core/protocol.ts';
+import type { GifOptions } from '../core/gif.ts';
 import type { CellGrid, GridFit, GridOptions, Selection, Sprite } from '../core/types.ts';
 import { TUNING } from './tuning.ts';
 
@@ -151,6 +152,25 @@ export class CleanEngine {
     const copy: Sprite = { cols: sprite.cols, rows: sprite.rows, pixels: sprite.pixels.slice() };
     const reply = await this.request({ type: 'export', sprite: copy, optimize: options.optimize }, [copy.pixels.buffer]);
     return new Uint8Array(expect(reply, 'export').png);
+  }
+
+  /**
+   * Samples one video frame on a locked grid, with no change to the loaded image. The bitmap is transferred, so the
+   * caller must not use it after the call. Every call gets its reply: frames of one video never replace each other.
+   */
+  async sampleFrame(frame: ImageBitmap, grid: CellGrid, merge: MergeOptions): Promise<{ raw: Sprite; own: Sprite }> {
+    const copy: CellGrid = { x: grid.x.slice(), y: grid.y.slice() };
+    const reply = await this.request({ type: 'sample-frame', frame, grid: copy, merge }, [frame, copy.x.buffer, copy.y.buffer]);
+    const { raw, own } = expect(reply, 'sample-frame');
+    return { raw, own };
+  }
+
+  /** The animated GIF of equal-size frames. The frames are copied, so the caller keeps them. */
+  async exportGif(frames: readonly Sprite[], options: GifOptions): Promise<Uint8Array> {
+    const copies = frames.map((frame): Sprite => ({ cols: frame.cols, rows: frame.rows, pixels: frame.pixels.slice() }));
+    const copy: GifOptions = { delays: [...options.delays], scale: options.scale, background: options.background };
+    const reply = await this.request({ type: 'gif', frames: copies, options: copy }, copies.map((sprite) => sprite.pixels.buffer));
+    return new Uint8Array(expect(reply, 'gif').gif);
   }
 
   private requestLatest(type: LatestType, body: RequestBody, call: CallOptions, transfer: Transferable[] = []): Promise<EngineReply | null> {

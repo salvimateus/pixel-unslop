@@ -3,6 +3,7 @@ import {
   AUTO_OPTIONS,
   alignSource,
   checkSetGrid,
+  exportGif,
   exportSprite,
   fitSetSource,
   fitSource,
@@ -10,6 +11,7 @@ import {
   manualFitSource,
   mergeSprite,
   referenceTiles,
+  sampleFrame,
   sampleSource,
   sharedPeriodOf,
   sourceFromImage,
@@ -50,6 +52,33 @@ function isWebp(bytes: Uint8Array): boolean {
   return bytes.length >= 12 && tag(0) === 'RIFF' && tag(8) === 'WEBP';
 }
 
+let canvas: OffscreenCanvas | null = null;
+let context: OffscreenCanvasRenderingContext2D | null = null;
+
+/** The RGBA pixels of a bitmap, through one reused canvas. Always closes the bitmap. */
+function rasterOf(bitmap: ImageBitmap): RasterImage {
+  try {
+    const { width, height } = bitmap;
+    if (!canvas || !context) {
+      canvas = new OffscreenCanvas(width, height);
+      context = canvas.getContext('2d', { willReadFrequently: true });
+      if (!context) {
+        canvas = null;
+        throw new CoreError('internal', 'No 2D canvas in the worker.');
+      }
+    } else if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+    context.clearRect(0, 0, width, height);
+    context.drawImage(bitmap, 0, 0);
+    const pixels = context.getImageData(0, 0, width, height);
+    return { width: pixels.width, height: pixels.height, data: pixels.data };
+  } finally {
+    bitmap.close();
+  }
+}
+
 async function decodeWithBrowser(bytes: Uint8Array, type: string): Promise<RasterImage> {
   let bitmap: ImageBitmap;
   try {
@@ -60,16 +89,7 @@ async function decodeWithBrowser(bytes: Uint8Array, type: string): Promise<Raste
   } catch (error) {
     throw new CoreError('decode-failed', `The image is damaged: ${errorMessage(error)}`);
   }
-  try {
-    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-    const context = canvas.getContext('2d', { willReadFrequently: true });
-    if (!context) throw new CoreError('internal', 'No 2D canvas in the worker.');
-    context.drawImage(bitmap, 0, 0);
-    const pixels = context.getImageData(0, 0, bitmap.width, bitmap.height);
-    return { width: pixels.width, height: pixels.height, data: pixels.data };
-  } finally {
-    bitmap.close();
-  }
+  return rasterOf(bitmap);
 }
 
 async function decode(bytes: Uint8Array): Promise<Source> {
@@ -220,6 +240,28 @@ async function handle(request: EngineRequest): Promise<void> {
       progress(id, 'fit', 0);
       const { sprite, flat } = referenceTiles(source);
       post({ id, ok: true, type: 'reference', sprite, flat }, [sprite.pixels.buffer]);
+      return;
+    }
+    case 'sample-frame': {
+      // Stateless: the loaded image, its fit and its raw sample stay.
+      const { frame, grid, merge } = request;
+      if (!(frame instanceof ImageBitmap)) throw new CoreError('internal', 'sample-frame needs an image bitmap.');
+      if (!grid || !isNumberList(grid.x) || !isNumberList(grid.y) || !merge) {
+        frame.close();
+        throw new CoreError('internal', 'sample-frame needs x and y lists of grid lines and merge options.');
+      }
+      const lines = { x: Float64Array.from(grid.x), y: Float64Array.from(grid.y) };
+      const { raw, own } = sampleFrame(rasterOf(frame), lines, merge);
+      post({ id, ok: true, type: 'sample-frame', raw, own }, [raw.pixels.buffer, own.pixels.buffer]);
+      return;
+    }
+    case 'gif': {
+      // Stateless: it encodes only the frames of the request.
+      if (!Array.isArray(request.frames) || !request.options) throw new CoreError('internal', 'gif needs a list of sprites and options.');
+      const bytes = exportGif(request.frames, request.options);
+      const whole = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength;
+      const gif = (whole ? bytes.buffer : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)) as ArrayBuffer;
+      post({ id, ok: true, type: 'gif', gif }, [gif]);
       return;
     }
     default: {

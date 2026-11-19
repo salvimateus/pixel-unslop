@@ -1,3 +1,4 @@
+import type { GifOptions } from './gif.ts';
 import type { CellGrid, GridFit, GridOptions, Selection, Sprite } from './types.ts';
 
 export type ErrorCode =
@@ -36,7 +37,11 @@ export type EngineRequest =
   /** Decodes and fits each image with the set grid. Needs no loaded image and leaves the worker state as it is. */
   | { id: number; type: 'fit-set'; images: ArrayBuffer[]; grid: SetGrid }
   /** Decodes a reference image to its tiles (see referenceTiles). Needs no loaded image and leaves the worker state as it is. */
-  | { id: number; type: 'reference'; bytes: ArrayBuffer };
+  | { id: number; type: 'reference'; bytes: ArrayBuffer }
+  /** Samples one video frame on a locked grid and merges its own palette. Stateless; the bitmap is closed. */
+  | { id: number; type: 'sample-frame'; frame: ImageBitmap; grid: CellGrid; merge: MergeOptions }
+  /** An animated GIF of equal-size sprites. Stateless. */
+  | { id: number; type: 'gif'; frames: Sprite[]; options: GifOptions };
 
 export type EngineReply =
   /** `profiles.x[i]` is the edge strength between column i and i + 1 (length width - 1); the same for y. */
@@ -49,6 +54,9 @@ export type EngineReply =
   | { id: number; ok: true; type: 'fit-set'; shared: { x: number; y: number } | null; suggested: 'own' | 'shared'; items: SetFitItem[] }
   /** `flat` is true when each pixel of the reference is a tile; else `sprite` holds the raw tiles of its automatic grid. */
   | { id: number; ok: true; type: 'reference'; sprite: Sprite; flat: boolean }
+  /** `raw` is the flat tile colors; `own` is `raw` after its own palette merge. They never share a buffer. */
+  | { id: number; ok: true; type: 'sample-frame'; raw: Sprite; own: Sprite }
+  | { id: number; ok: true; type: 'gif'; gif: ArrayBuffer }
   | { id: number; ok: false; error: ErrorCode; detail?: string };
 
 export type EngineEvent = { id: number; type: 'progress'; stage: Stage; ratio: number };
