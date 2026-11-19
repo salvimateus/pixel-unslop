@@ -406,12 +406,12 @@ To get the programs with no build, use the [download](#download-pixel-unslop-for
 
 ### Requirements
 
-- Node.js 24.10.0, exactly. The Windows CLI build stops with a different version. The build puts the CLI into the official Node.js 24.10.0 Windows binary.
+- Node.js 24 or later. The Windows CLI build uses a pinned Node.js 24.10.0, whatever Node.js version you use. It puts the CLI into the official Node.js 24.10.0 Windows binary.
 - Rust (with `rustup`) and the Windows target: `rustup target add x86_64-pc-windows-msvc`.
 - cargo-xwin: `cargo install cargo-xwin --locked`.
 - The LLVM tools. On Ubuntu or WSL: `sudo apt install clang lld llvm`.
 
-The first Windows build downloads the Windows SDK and CRT files with cargo-xwin. The Windows CLI build downloads `node.exe` 24.10.0 from nodejs.org. Then it examines the SHA-256 hash of the file.
+The first Windows build downloads the Windows SDK and CRT files with cargo-xwin. The Windows CLI build downloads `node.exe` 24.10.0 and the Node.js 24.10.0 Linux archive from nodejs.org. Then it examines the SHA-256 hash of each file. It keeps the two files in `.cache/` and deletes the files of other Node.js versions.
 
 ### Commands
 
