@@ -2492,7 +2492,7 @@ dependencies = [
 
 [[package]]
 name = "pixel-unslop"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "tauri",
  "tauri-build",
