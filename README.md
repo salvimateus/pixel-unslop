@@ -71,6 +71,7 @@ You can also [build Pixel Unslop from source](#how-to-build-pixel-unslop-from-so
 - [Who it is for](#who-it-is-for)
 - [How to fix AI pixel art in 4 steps](#how-to-fix-ai-pixel-art-in-4-steps)
 - [Make AI sprites the same scale with the set mode](#make-ai-sprites-the-same-scale-with-the-set-mode)
+- [Turn an AI video into a sprite animation](#turn-an-ai-video-into-a-sprite-animation)
 - [What Pixel Unslop can do](#what-pixel-unslop-can-do)
 - [Clean AI pixel art from the command line (for AI agents)](#clean-ai-pixel-art-from-the-command-line-for-ai-agents)
 - [How Pixel Unslop finds the pixel grid](#how-pixel-unslop-finds-the-pixel-grid)
@@ -103,11 +104,12 @@ A game engine or a pixel art editor needs one flat color for each art pixel. Pix
 
 ### 1. Drop the image
 
-Open Pixel Unslop. Drag a PNG, JPG or WebP image into the window. The drop screen shows two choices: "One image" and "A set".
+Open Pixel Unslop. Drag a PNG, JPG or WebP image into the window. The drop screen shows three choices: "One image", "A set" and "A video".
 
 - To clean one image, click "One image" and select the file.
 - To paste an image, push Ctrl+V.
 - To make several sprites the same scale, click "A set", or drop two or more images. See [the set mode](#make-ai-sprites-the-same-scale-with-the-set-mode).
+- To make a sprite animation from an AI video, click "A video", or drop an MP4, MOV or WebM file. See [the video journey](#turn-an-ai-video-into-a-sprite-animation).
 
 In the desktop app, you can change the size of the interface. The app starts at 125%, or at 100% on a small screen, and keeps your zoom for the next start. The window opens at 1600 by 900 pixels, or smaller on a smaller screen. The app keeps the window size, the window position and the maximized state for the next start.
 
@@ -119,7 +121,7 @@ Each step is 5%, from 50% to 200%. An indicator shows the zoom in percent, with 
 
 To change the language of the interface, use the language selector at the top right, next to the sound button. The text changes at once, and your work stays as it is. At the first start, the app uses Brazilian Portuguese when the language of your system is Portuguese, and English for every other language. The app keeps your selection for the next start.
 
-<img src="docs/images/pixel-unslop-drop-screen.png" width="900" alt="Pixel Unslop drop screen: the logo, the text Drag one or more images here, two cards named One image and A set, and the line Your image never leaves your computer">
+<img src="docs/images/pixel-unslop-drop-screen.png" width="900" alt="Pixel Unslop drop screen: the logo, the text Drag images or a video here, three cards named One image, A set and A video, and the line Your image never leaves your computer">
 
 ### 2. Set the size of 1 pixel
 
@@ -207,6 +209,85 @@ The background removal works only for a flat background of one color or for a fa
 
 <img src="docs/images/pixel-unslop-set-screen.png" width="900" alt="Set step of the pixel art cleaner: three sprites and one locked reference side by side on one ground line, with a height and a ratio badge under each sprite, a short tip above, the Tidy and See original buttons below, and on the right the list of pieces with an eye button on each row, the height field with the Reduce and Enlarge presets, the Edit pixels button, and the Export set button">
 
+## Turn an AI video into a sprite animation
+
+An AI video generator can animate a character, for example a walk cycle. But each frame of the video has the same defects as AI pixel art: blur, noise and no true grid. The video journey reads the frames with one pixel grid, cleans them with one palette, and exports a sprite sheet for your game engine.
+
+The video journey has five steps: "Drop", "Grid", "Frames", "Align" and "Animation".
+
+### 1. Drop the video
+
+On the drop screen, click "A video" and select an MP4, MOV or WebM file. You can also drop the video into the window. For the best result, generate the character on a flat background of one color.
+
+### 2. Set the grid on one frame
+
+The Grid step shows one frame of the video. Move the "Video frame" slider to a sharp frame. Then set the size of 1 pixel with the same tools as for one image. The grid that you lock here applies to all the frames. Click "Read frames": the app reads every frame of the video with this grid.
+
+### 3. Pick the frames
+
+The Frames screen shows the video frame by frame. A small player shows the original video.
+
+- Push the left and right arrow keys to move one step. With Shift, you move 10 frames.
+- Set the step size with the 1 to 4 buttons, or push 1, 2, 3 or 4. For example, a step of 3 skips two frames.
+- Push Enter to add the frame to the timeline, or to remove it.
+- To add many frames at a time, set "every" and click "Add range". The app adds one frame every N frames, from the current frame to the end of the video.
+- Push Space to play or pause the video.
+- Click "Use as color reference" to mark the frame with the best colors. A star shows it.
+- If the grid is not good on this part of the video, click "Calibrate the grid here". The app keeps your timeline.
+
+The first frame of the timeline shows a crop container. Drag it over the character and pull its handles to set its size. On the other frames, you can only drag the container, so all the frames have the same size. Ctrl+Z undoes a container edit, and Ctrl+Y redoes it.
+
+In the timeline, push Delete to remove the selected frame, D to repeat it, and Alt with an arrow key to move it.
+
+<img src="docs/images/pixel-unslop-video-frames-screen.png" width="900" alt="Frames screen of the video journey: a clean pixel art character in a green crop container of 15 by 28 pixels, the original video and the step size buttons on the right, and a timeline of 8 frames at the bottom">
+
+### 4. Align the frames
+
+The Align step shows each frame in its container. The previous frame, or the first frame, shows below it as a transparent ghost. A vertical line marks the middle of the container. Put the center of the character on this line in each frame, so the character does not jump in the animation.
+
+- Drag the frame, or push the arrow keys to move it 1 pixel. With Shift, the frame moves 5 pixels.
+- Push "," and "." to go to the previous or the next frame. Push Home or End to go to the first or the last frame.
+- Select the ghost: "Previous" or "First".
+- Push G to show or hide the guides.
+- Click "Copy previous" to use the offset of the previous frame. Click "Reset" to put the frame back at its video position.
+- Push Ctrl+Z to undo and Ctrl+Y to redo.
+
+<img src="docs/images/pixel-unslop-video-align-screen.png" width="900" alt="Align step of the video journey: the current frame of the character, 2 pixels to the right of the transparent ghost of the first frame, with a vertical middle line, the frame offset x +2, y 0, the Previous and First ghost buttons, a loop preview and the list of shortcuts">
+
+### 5. Tune and export the animation
+
+The Animation screen plays the frames in a loop.
+
+- Push Space to play or pause, and the left and right arrow keys to see one frame.
+- Set the speed with "−" and "+", with a preset from 6 to 24 fps, or with "Video speed". You can also push `[` and `]`. With Shift, the speed changes by 5 fps.
+- Push O, or click "Onion skin", to see the previous frame below the current one.
+- The "Color cleanup" level applies to all the frames. All the frames share one palette.
+- Turn on "Use only the colors of one frame" to give all the frames the colors of the reference frame.
+- Turn on "Remove the frame backgrounds" to make the background transparent.
+- Under "Frame size", select the size of each frame:
+  - "Container": the container that you set on the first frame, with the alignment of each frame.
+  - "Crop": the smallest box that holds all the frames. The motion stays exact.
+  - "Feet in place": each frame aligned on its bottom center. This is good for a walk in place.
+  - "Full grid": each frame uses the full grid of the video.
+
+<img src="docs/images/pixel-unslop-video-animation-screen.png" width="900" alt="Animation screen of the video journey: the clean character on a checker, the play controls with 12 fps and the fps presets, the timeline of 8 frames, and on the right the color cleanup level, the reference colors switch, the background removal switch and the four frame size choices">
+
+Click "Export animation", or push Ctrl+S. Select a format:
+
+- "Sprite sheet": all the frames in one PNG, for the game. Each frame is one cell of a grid, with no padding. The PNG has 1 image pixel for each art pixel. You can change the number of columns. Turn on "JSON file" to also get a JSON file that tells where each frame is, with the duration of each frame. "Loop in game" writes in the JSON if the animation loops. With the JSON, the desktop app saves the PNG and the JSON in a folder that you select, and a browser gives you one ZIP file with the two files.
+- "GIF": an animated GIF to share. Select the scale and the background. A GIF plays at 50 fps or less. Do not use the GIF in a game engine.
+
+The JSON uses the TexturePacker "JSON hash" format. The frame names are the file name with the frame number, for example `walk-0`, `walk-1` and so on, when the file name is `walk`. The JSON also has the `animations` key of Pixi and the `frameTags` key of Aseprite exports.
+
+Load the sprite sheet in your game engine:
+
+- **Phaser 3:** load the two files with `this.load.atlas('walk', 'walk.png', 'walk.json')`. Then make the animation with `this.anims.generateFrameNames('walk', { prefix: 'walk-', start: 0, end: 7 })`.
+- **PixiJS:** load the JSON with `const sheet = await Assets.load('walk.json')`. Then play `new AnimatedSprite(sheet.animations.walk)`.
+- **Godot 4:** make a `SpriteFrames` resource for an `AnimatedSprite2D`. Click "Add frames from sprite sheet", select the PNG and set the number of columns and rows. Set the texture filter to "Nearest".
+- **Unity:** import the PNG with "Sprite Mode" set to "Multiple" and "Filter Mode" set to "Point (no filter)". In the Sprite Editor, slice it with "Grid By Cell Size" and the frame size from the export dialog.
+
+The export dialog shows the frame size, the number of columns and the number of rows.
+
 ## What Pixel Unslop can do
 
 - Automatic pixel grid detection, with a rating of the fit from 1 to 3 stars.
@@ -223,6 +304,7 @@ The background removal works only for a flat background of one color or for a fa
 - The smallest PNG size: each export is cropped to its visible pixels, and no visible pixel is cut.
 - Lossless PNG optimization: smaller files with exactly the same pixels.
 - A set mode for several sprites in three steps: a Grid step for all the pieces, one pixel grid for all the pieces or one for each piece, a visual resize with a snap to clean sizes, a comparison with the originals, one shared palette, locked reference pieces, and an export of the selected files.
+- A video to sprite animation journey: one pixel grid for all frames, a crop container, frame alignment with a ghost, one shared palette, and an export as a sprite sheet PNG with a TexturePacker JSON or as an animated GIF.
 - An interface in English and in Brazilian Portuguese, with a language selector in the header, and an interface zoom from 50% to 200% in the desktop app.
 - A desktop window that keeps its size, its position and its zoom for the next start.
 - No account and no upload: your image never leaves your computer. The desktop app and the command line tool work offline and send no data. The web version sends anonymous usage events to Google Analytics, with no image and no file name.
@@ -370,6 +452,10 @@ To build only the CLI for Linux or WSL, run `npm run build:cli`. This command wr
   - In the CLI, give `--pixel-size`. Or clean the parts of one sheet together with `--shared-pixel-size`.
 - The Windows files have no paid code signing certificate. Thus Windows shows "Windows protected your PC" at the first start. Click "More info", then "Run anyway". See [the warning in the download section](#download-pixel-unslop-for-windows).
 - The desktop app needs Windows 10 or 11 with the Microsoft Edge WebView2 runtime. Windows 11 has it.
+- The video journey opens only the videos that your browser can decode. The desktop app uses WebView2, which decodes the same formats as Microsoft Edge. MP4 with H.264 works everywhere. HEVC (H.265) and some MOV files can fail. If a video does not open, export it again as MP4 (H.264).
+- The frame timing is exact for MP4 and MOV files. For WebM files, the app estimates the fps.
+- An animation takes at most the first 600 frames of a video. With a very fine grid, the limit is lower, and a message tells you how many frames the app kept.
+- The command line tool has no command for video. Use the app for the video journey.
 
 ## Frequently asked questions
 
