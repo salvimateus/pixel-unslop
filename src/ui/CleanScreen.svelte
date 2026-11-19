@@ -3,7 +3,7 @@
   import { TRANSPARENT } from '../core/color.ts';
   import { borderBackground, colorMatches, floodRegion, indicesOfColor, lineTiles, listPalette } from '../core/sprite.ts';
   import { track } from '../app/analytics.ts';
-  import { clampTolerance } from '../app/animation.svelte.ts';
+  import { clampTolerance, type RemovalPick } from '../app/animation.svelte.ts';
   import { opaqueBox } from '../app/image-set.svelte.ts';
   import { app, type BrushTool, type Tool } from '../app/state.svelte.ts';
   import { t, type TextKey } from '../app/i18n.ts';
@@ -23,7 +23,7 @@
   import Stage from './Stage.svelte';
   import PanelSplitter from './PanelSplitter.svelte';
   import ToleranceSlider from './ToleranceSlider.svelte';
-  import { bakeMask, bakeSprite, PICKER_CURSOR, STAGE_COLORS, type StagePointer } from './stage-renderer.ts';
+  import { bakeMask, bakePickFlash, bakePickMask, bakeSprite, PICKER_CURSOR, STAGE_COLORS, type StagePointer } from './stage-renderer.ts';
 
   interface ToolInfo {
     id: Tool;
@@ -79,6 +79,8 @@
   const tolerance = $derived(frameMode ? app.anim.colorTolerance : singleTolerance);
   /** What the shown mask of "Remove color" was made from, so a hover on the same color bakes nothing. */
   let maskKey = '';
+  /** The pointer is on a spot that does not reach the border: a click there erases the color inside the drawing too. */
+  let pickInside = $state(false);
 
   const result = $derived(app.result);
   /** The frame editor shows a stand-in before view until the worker loads the real one: the compare waits. */
@@ -388,6 +390,10 @@
   function updateMask(): void {
     if (!scene) return;
     const tile = app.tool === 'remove' ? lastTile : null;
+    if (frameMode) {
+      updateFrameMask(tile);
+      return;
+    }
     const composed = app.session.composed();
     const color = tile ? composed.pixels[tile.row * composed.cols + tile.col] : TRANSPARENT;
     const key = color === TRANSPARENT ? '' : `${color}|${tolerance}|${app.editVersion}|${app.baseVersion}`;
@@ -395,6 +401,31 @@
     maskKey = key;
     scene.setMask(key === '' ? null : bakeMask(composed.cols, composed.rows, colorMatches(composed, [color], tolerance), STAGE_COLORS.danger));
   }
+
+  /** The frame editor shows the full grid of its entry, so a square is already a grid tile of the animation pick. */
+  function framePick(tile: Tile | null): RemovalPick | null {
+    const id = app.editingFrameId;
+    const cols = app.session.composed().cols;
+    return tile && id !== null ? app.anim.pickAt(id, tile.row * cols + tile.col) : null;
+  }
+
+  function updateFrameMask(tile: Tile | null): void {
+    if (!scene) return;
+    const found = framePick(tile);
+    const pick = found && found.action !== 'listed' ? found : null;
+    pickInside = pick?.scope === 'all';
+    const key = pick ? `${pick.color}|${pick.scope}|${tolerance}|${app.editVersion}|${app.baseVersion}` : '';
+    if (key === maskKey) return;
+    maskKey = key;
+    const composed = app.session.composed();
+    scene.setMask(pick ? bakePickMask(composed.cols, composed.rows, pick.cleared, pick.kept, pick.scope) : null);
+  }
+
+  // The mask follows the tolerance slider while the pointer rests.
+  $effect(() => {
+    void tolerance;
+    untrack(updateMask);
+  });
 
   function setTolerance(value: number, commit: boolean): void {
     if (frameMode) {
@@ -426,7 +457,7 @@
       return;
     }
     if (frameMode) {
-      removeColorInFrames(color);
+      removeColorInFrames(tile);
       return;
     }
     const count = eraseTiles(colorMatches(composed, [color], tolerance), true);
@@ -437,14 +468,19 @@
     updateMask();
   }
 
-  function removeColorInFrames(color: number): void {
+  function removeColorInFrames(tile: Tile): void {
     if (!scene) return;
-    if (app.anim.hasRemovedColor(color)) {
+    const pick = framePick(tile);
+    if (!pick) {
+      sfx.play('tick');
+      return;
+    }
+    if (pick.action === 'listed') {
       app.toast(t('toast.colorAlreadyRemoved'), 'info');
       return;
     }
     const before = app.session.composed().pixels;
-    const frames = app.anim.addRemovedColor(color, 'all');
+    const frames = app.anim.addRemovedColor(pick.color, pick.scope);
     if (frames === 0) {
       app.toast(t('toast.colorNotInFrames'), 'info');
       return;
@@ -454,10 +490,11 @@
     for (let i = 0; i < after.pixels.length; i++) if (after.pixels[i] !== before[i]) changed.push(i);
     scene.writeTiles(changed, after.pixels);
     scene.shatter(changed, before);
-    if (changed.length > 0) scene.flashMask(bakeMask(after.cols, after.rows, changed, STAGE_COLORS.white));
+    if (changed.length > 0 || pick.kept.length > 0) scene.flashMask(bakePickFlash(after.cols, after.rows, changed, pick.kept));
     sfx.play('erase');
     refreshFrame();
-    app.toast(frames === 1 ? t('toast.colorRemovedFrame') : t('toast.colorRemovedFrames', { count: frames }), 'success');
+    if (pick.scope === 'all') app.toast(frames === 1 ? t('toast.colorRemovedInsideFrame') : t('toast.colorRemovedInsideFrames', { count: frames }), 'success');
+    else app.toast(frames === 1 ? t('toast.colorRemovedFrame') : t('toast.colorRemovedFrames', { count: frames }), 'success');
     updateMask();
   }
 
@@ -706,7 +743,7 @@
       </button>
 
       {#if frameMode}
-        <RemoveColors picking={app.tool === 'remove'} ontogglepick={() => selectTool(app.tool === 'remove' ? 'pencil' : 'remove')} onchange={refreshFrame} />
+        <RemoveColors picking={app.tool === 'remove'} inside={pickInside} ontogglepick={() => selectTool(app.tool === 'remove' ? 'pencil' : 'remove')} onchange={refreshFrame} />
       {/if}
 
       {#if !frameMode}

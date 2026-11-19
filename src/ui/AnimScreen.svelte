@@ -1,13 +1,12 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte';
-  import { CELL_MODES, type AnimFrame } from '../app/animation.svelte.ts';
+  import { CELL_MODES, type AnimFrame, type RemovalPick } from '../app/animation.svelte.ts';
   import { app, prefersReducedMotion } from '../app/state.svelte.ts';
   import { t, type TextKey } from '../app/i18n.ts';
   import * as sfx from '../app/sfx.ts';
   import { TUNING } from '../app/tuning.ts';
   import type { CellMode } from '../core/frames.ts';
   import { TRANSPARENT } from '../core/color.ts';
-  import { colorMatches } from '../core/sprite.ts';
   import { AnimScene, type AnimSource } from './anim-scene.ts';
   import AnimTimeline from './AnimTimeline.svelte';
   import type { PreviewBackground } from './clean-scene.ts';
@@ -19,7 +18,7 @@
   import RemoveColors from './RemoveColors.svelte';
   import { spriteThumb } from './sprite-thumb.ts';
   import Stage from './Stage.svelte';
-  import { bakeMask, PICKER_CURSOR, STAGE_COLORS, type StagePointer } from './stage-renderer.ts';
+  import { bakePickFlash, bakePickMask, PICKER_CURSOR, type StagePointer } from './stage-renderer.ts';
   import PanelSplitter from './PanelSplitter.svelte';
   import ToggleSwitch from './ToggleSwitch.svelte';
 
@@ -73,6 +72,8 @@
   /** The last pointer over the stage while picking, and what its mask was made from. */
   let pickPointer: StagePointer | null = null;
   let maskKey = '';
+  /** The pointer is on a spot that does not reach the border: a click there erases the color inside the drawing too. */
+  let pickInside = $state(false);
 
   scene.onframe = (index) => {
     current = index;
@@ -246,16 +247,38 @@
     return col >= 0 && row >= 0 && col < cols && row < rows ? row * cols + col : -1;
   }
 
-  /** The tiles of the shown frame that a click erases, over the frame. */
+  /** The shown entry and what a click on the tile under `p` does, in grid tiles of that entry. */
+  function pickUnder(p: StagePointer | null): { id: number; pick: RemovalPick } | null {
+    const entry = app.anim.timeline[scene.index];
+    const tile = entry ? tileAt(p) : -1;
+    const grid = tile >= 0 ? app.anim.gridTile(entry.id, tile) : -1;
+    const pick = grid >= 0 ? app.anim.pickAt(entry.id, grid) : null;
+    return pick ? { id: entry.id, pick } : null;
+  }
+
+  /** The tiles of the shown frame that a click erases and the ones that stay, over the frame. */
   function updateMask(): void {
     const frame = app.anim.built.frames[scene.index];
-    const tile = picking && frame ? tileAt(pickPointer) : -1;
-    const color = tile >= 0 && frame ? frame.pixels[tile] : TRANSPARENT;
-    const key = color === TRANSPARENT ? '' : `${color}|${app.anim.colorTolerance}|${app.anim.version}|${scene.index}`;
+    const under = picking && frame ? pickUnder(pickPointer) : null;
+    const pick = under && under.pick.action !== 'listed' ? under.pick : null;
+    pickInside = pick?.scope === 'all';
+    const key = under && pick ? `${pick.color}|${pick.scope}|${app.anim.colorTolerance}|${app.anim.version}|${scene.index}` : '';
     if (key === maskKey) return;
     maskKey = key;
-    scene.setMask(key === '' || !frame ? null : bakeMask(frame.cols, frame.rows, colorMatches(frame, [color], app.anim.colorTolerance), STAGE_COLORS.danger), scene.index);
+    if (!under || !pick || !frame) {
+      scene.setMask(null, scene.index);
+      return;
+    }
+    const cleared = app.anim.toCell(under.id, pick.cleared);
+    const kept = app.anim.toCell(under.id, pick.kept);
+    scene.setMask(bakePickMask(frame.cols, frame.rows, cleared, kept, pick.scope), scene.index);
   }
+
+  // The mask follows the tolerance slider while the pointer rests.
+  $effect(() => {
+    void app.anim.colorTolerance;
+    untrack(updateMask);
+  });
 
   function onStageHover(p: StagePointer | null): void {
     if (!picking) return;
@@ -267,25 +290,28 @@
     if (!picking) return;
     pickPointer = p;
     const frame = app.anim.built.frames[scene.index];
-    const tile = tileAt(p);
-    const color = frame && tile >= 0 ? frame.pixels[tile] : TRANSPARENT;
-    if (!frame || color === TRANSPARENT) {
+    const under = frame ? pickUnder(p) : null;
+    if (!frame || !under) {
       sfx.play('tick');
       return false;
     }
-    if (app.anim.hasRemovedColor(color)) {
+    const { id, pick } = under;
+    if (pick.action === 'listed') {
       app.toast(t('toast.colorAlreadyRemoved'), 'info');
       return false;
     }
-    const indices = colorMatches(frame, [color], app.anim.colorTolerance);
-    const frames = app.anim.addRemovedColor(color, 'all');
+    // In cell tiles before the build: the crop or the feet can move the cell.
+    const cleared = app.anim.toCell(id, pick.cleared);
+    const kept = app.anim.toCell(id, pick.kept);
+    const frames = app.anim.addRemovedColor(pick.color, pick.scope);
     if (frames === 0) {
       app.toast(t('toast.colorNotInFrames'), 'info');
       return false;
     }
-    scene.shatter(indices, frame.pixels, bakeMask(frame.cols, frame.rows, indices, STAGE_COLORS.white));
+    scene.shatter(cleared, frame.pixels, bakePickFlash(frame.cols, frame.rows, cleared, kept));
     sfx.play('erase');
-    app.toast(frames === 1 ? t('toast.colorRemovedFrame') : t('toast.colorRemovedFrames', { count: frames }), 'success');
+    if (pick.scope === 'all') app.toast(frames === 1 ? t('toast.colorRemovedInsideFrame') : t('toast.colorRemovedInsideFrames', { count: frames }), 'success');
+    else app.toast(frames === 1 ? t('toast.colorRemovedFrame') : t('toast.colorRemovedFrames', { count: frames }), 'success');
     return false;
   }
 
@@ -521,7 +547,7 @@
       </div>
 
       <div class="anim-section">
-        <RemoveColors {picking} ontogglepick={() => setPicking(!picking)} />
+        <RemoveColors {picking} inside={pickInside} ontogglepick={() => setPicking(!picking)} />
       </div>
 
       <section class="anim-section field" aria-labelledby="anim-cell-title">

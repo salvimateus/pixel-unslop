@@ -107,6 +107,8 @@ export const TUNING = {
     removeToleranceStep: 0.005,
     /** The opacity of the tiles that a click of "Remove color" erases, under the pointer. */
     removeMaskAlpha: 0.75,
+    /** The opacity of the tiles of the picked color that the border rule keeps, under the pointer: fainter than the erased ones. */
+    protectMaskAlpha: 0.5,
   },
   set: {
     maxObjects: 24,

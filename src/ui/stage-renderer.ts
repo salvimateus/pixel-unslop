@@ -1,6 +1,6 @@
 import { TRANSPARENT, blue, green, red } from '../core/color.ts';
 import { TUNING } from '../app/tuning.ts';
-import { borderBackground, opaqueBox, trimOrNull } from '../core/sprite.ts';
+import { borderBackground, opaqueBox, trimOrNull, type RemoveScope } from '../core/sprite.ts';
 import type { Sprite } from '../core/types.ts';
 import type { Camera } from './camera.ts';
 import type { ParticleField } from './particles.ts';
@@ -177,26 +177,61 @@ export const PICKER_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
   '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke-linecap="square"><path d="M14 4l6 6M12.5 6.5l5 5M15 9L6 18H4v-2l9-9" stroke="#000" stroke-width="4"/><path d="M14 4l6 6M12.5 6.5l5 5M15 9L6 18H4v-2l9-9" stroke="#fff" stroke-width="2"/></svg>',
 )}") 3 20, crosshair`;
 
-/** One canvas pixel per tile: the tiles at `indices` in a CSS color, every other tile clear. */
-export function bakeMask(cols: number, rows: number, indices: ArrayLike<number>, color: string): HTMLCanvasElement {
+/** The tiles of one layer of a mask bake, in a CSS color at an opacity from 0 to 1. */
+interface MaskLayer {
+  indices: ArrayLike<number>;
+  color: string;
+  alpha?: number;
+}
+
+/** One canvas pixel per tile: each layer paints its tiles in its color, a later layer over an earlier one, every other tile clear. */
+function bakeLayers(cols: number, rows: number, layers: readonly MaskLayer[]): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, cols);
   canvas.height = Math.max(1, rows);
   const ctx = canvas.getContext('2d');
   if (!ctx) return canvas;
   const image = ctx.createImageData(canvas.width, canvas.height);
-  const [r, g, b] = cssRgb(color);
   const data = image.data;
-  for (let i = 0; i < indices.length; i++) {
-    const o = indices[i] * 4;
-    if (o < 0 || o >= data.length) continue;
-    data[o] = r;
-    data[o + 1] = g;
-    data[o + 2] = b;
-    data[o + 3] = 255;
+  for (const { indices, color, alpha = 1 } of layers) {
+    const [r, g, b] = cssRgb(color);
+    const a = Math.round(Math.min(1, Math.max(0, alpha)) * 255);
+    for (let i = 0; i < indices.length; i++) {
+      const o = indices[i] * 4;
+      if (o < 0 || o >= data.length) continue;
+      data[o] = r;
+      data[o + 1] = g;
+      data[o + 2] = b;
+      data[o + 3] = a;
+    }
   }
   ctx.putImageData(image, 0, 0);
   return canvas;
+}
+
+/** One canvas pixel per tile: the tiles at `indices` in a CSS color, every other tile clear. */
+export function bakeMask(cols: number, rows: number, indices: ArrayLike<number>, color: string): HTMLCanvasElement {
+  return bakeLayers(cols, rows, [{ indices, color }]);
+}
+
+/**
+ * The hover preview of a "Remove color" pick, drawn at `TUNING.clean.removeMaskAlpha`: the tiles that go, in the
+ * danger color for 'border' and in yellow for 'all', and the tiles of that color that stay, in a fainter teal.
+ */
+export function bakePickMask(cols: number, rows: number, cleared: ArrayLike<number>, kept: ArrayLike<number>, scope: RemoveScope): HTMLCanvasElement {
+  const { removeMaskAlpha, protectMaskAlpha } = TUNING.clean;
+  return bakeLayers(cols, rows, [
+    { indices: kept, color: STAGE_COLORS.teal, alpha: protectMaskAlpha / removeMaskAlpha },
+    { indices: cleared, color: scope === 'all' ? STAGE_COLORS.yellow : STAGE_COLORS.danger },
+  ]);
+}
+
+/** The flash of a "Remove color" click: the cleared tiles in white and the tiles that the border rule kept in teal. */
+export function bakePickFlash(cols: number, rows: number, cleared: ArrayLike<number>, kept: ArrayLike<number>): HTMLCanvasElement {
+  return bakeLayers(cols, rows, [
+    { indices: kept, color: STAGE_COLORS.teal },
+    { indices: cleared, color: STAGE_COLORS.white },
+  ]);
 }
 
 /** Erased tiles fall as particles in their old color; `cols` is the content width in tiles. Nothing under reduced motion. */

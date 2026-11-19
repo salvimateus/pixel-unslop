@@ -193,6 +193,83 @@ export function removedMatches(sprite: Sprite, removed: readonly RemovedColor[])
   return indices;
 }
 
+/** What a "Remove color" click erases: its scope, the tiles that go (sorted) and the matching tiles that stay (sorted). */
+export interface Removal {
+  scope: RemoveScope;
+  cleared: Int32Array;
+  kept: Int32Array;
+  /** The sorted tiles that the 'border' flood of the list plus this color takes: a click on any of them gives 'border'. */
+  reach: Int32Array;
+}
+
+/** The sorted tiles of `after` that are not in `before`; both are sorted. */
+function newTiles(after: Int32Array, before: Int32Array): Int32Array {
+  if (before.length === 0) return after;
+  const out = new Int32Array(after.length);
+  let n = 0;
+  let j = 0;
+  for (let i = 0; i < after.length; i++) {
+    const tile = after[i];
+    while (j < before.length && before[j] < tile) j++;
+    if (j >= before.length || before[j] !== tile) out[n++] = tile;
+  }
+  return out.slice(0, n);
+}
+
+/** A sorted array holds `tile`. */
+export function holdsTile(sorted: Int32Array, tile: number): boolean {
+  let lo = 0;
+  let hi = sorted.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const value = sorted[mid];
+    if (value === tile) return true;
+    if (value < tile) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return false;
+}
+
+/**
+ * The tiles that a "Remove color" click on `tile` erases, beyond what `list` and `extra` already erase. The click takes
+ * 'border' when the 'border' flood of the list plus this color reaches the tile (or with `forceBorder`): it then
+ * erases the color where it joins the border, and `kept` holds the tiles of that color that stay. Else it takes 'all'
+ * and erases every tile of that color. An entry of `list` with the same color is replaced.
+ */
+export function removalAt(
+  sprite: Sprite,
+  list: readonly RemovedColor[],
+  color: number,
+  tolerance: number,
+  tile: number,
+  options: { extra?: readonly RemovedColor[]; forceBorder?: boolean } = {},
+): Removal {
+  const extra = options.extra ?? [];
+  const others = list.filter((entry) => entry.color !== color);
+  const before = removedMatches(sprite, [...list, ...extra]);
+  const border = removedMatches(sprite, [...others, { color, tolerance, scope: 'border' }, ...extra]);
+  if (options.forceBorder || holdsTile(border, tile)) {
+    const test = colorTest([{ color, tolerance, scope: 'border' }]);
+    const { pixels } = sprite;
+    const kept: number[] = [];
+    let last = TRANSPARENT;
+    let lastHit = false;
+    for (let i = 0, j = 0; i < pixels.length; i++) {
+      const value = pixels[i];
+      if (value !== last) {
+        last = value;
+        lastHit = value !== TRANSPARENT && (test?.(value) ?? false);
+      }
+      if (!lastHit) continue;
+      while (j < border.length && border[j] < i) j++;
+      if (j >= border.length || border[j] !== i) kept.push(i);
+    }
+    return { scope: 'border', cleared: newTiles(border, before), kept: Int32Array.from(kept), reach: border };
+  }
+  const all = removedMatches(sprite, [...others, { color, tolerance, scope: 'all' }, ...extra]);
+  return { scope: 'all', cleared: newTiles(all, before), kept: new Int32Array(0), reach: border };
+}
+
 /** Floods the passable tiles from the border, marks each REACHABLE tile that it finds as REACHED, and returns how many. */
 function floodFromBorder(state: Uint8Array, cols: number, rows: number): number {
   const total = cols * rows;

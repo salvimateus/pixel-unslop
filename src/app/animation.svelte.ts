@@ -4,7 +4,7 @@ import { PARAMS } from '../core/params.ts';
 import { CoreError } from '../core/errors.ts';
 import { clearFrames, placeFrames, unifyFrames, type BuiltFrames, type CellMode, type FrameOffset, type PreparedFrames, type RemovedColor, type RemoveScope } from '../core/frames.ts';
 import { combinedColors } from '../core/palette.ts';
-import { borderBackground, eraseTiles, listPalette, opaqueBox, type TileBox } from '../core/sprite.ts';
+import { borderBackground, borderColors, eraseTiles, holdsTile, listPalette, opaqueBox, removalAt, type Removal, type TileBox } from '../core/sprite.ts';
 import { track } from './analytics.ts';
 import { EditSession } from './edit-session.ts';
 import { readStored, writeStored } from './storage.ts';
@@ -48,15 +48,37 @@ export interface FrameStoreStats {
 /** The cell modes in the order of the UI: the container first, then the automatic ones. */
 export const CELL_MODES: readonly CellMode[] = ['box', 'crop', 'feet', 'full'];
 
-const EMPTY_BUILD: BuiltFrames = { frames: [], cell: { cols: 0, rows: 0 }, kept: [] };
+const EMPTY_BUILD: BuiltFrames = { frames: [], cell: { cols: 0, rows: 0 }, kept: [], origins: [] };
+const NO_TILES = new Int32Array(0);
 const EMPTY_PREPARED: PreparedFrames = { frames: [], kept: [], cleared: [] };
 const ZERO: FrameOffset = { x: 0, y: 0 };
 const UNDO_LIMIT = 100;
+
+/**
+ * What a "Remove color" click on one tile of a frame does, in grid tiles of that frame: 'add' a new color, 'widen' a
+ * listed 'border' color to 'all', or nothing for a color that is 'listed' already. `cleared` and `kept` leave out the
+ * tiles with a pixel edit.
+ */
+export interface RemovalPick {
+  color: number;
+  scope: RemoveScope;
+  action: 'add' | 'widen' | 'listed';
+  cleared: Int32Array;
+  kept: Int32Array;
+}
 
 /** The container and the offsets at one moment, for undo and redo. */
 interface PlaceSnapshot {
   container: TileBox | null;
   offsets: ReadonlyMap<number, FrameOffset>;
+}
+
+/** The tiles that hold no pixel edit: where the edited frame shows the prepared frame. */
+function unedited(tiles: Int32Array, shown: Sprite, prepared: Sprite): Int32Array {
+  const out = new Int32Array(tiles.length);
+  let n = 0;
+  for (let i = 0; i < tiles.length; i++) if (shown.pixels[tiles[i]] === prepared.pixels[tiles[i]]) out[n++] = tiles[i];
+  return n === tiles.length ? tiles : out.slice(0, n);
 }
 
 function sameOffset(a: FrameOffset, b: FrameOffset): boolean {
@@ -196,6 +218,10 @@ export class Animation {
   /** The unified frames after the erase and the removed colors, made again when those change or the unified frames change. */
   private prepared: PreparedFrames = EMPTY_PREPARED;
   private clearKey = '';
+  /** Changes with each new `prepared`, so a cached pick knows its stage. */
+  private preparedVersion = 0;
+  /** The last picks of one frame, color and tolerance: the hover asks again on each pointer move. */
+  private pickCache: { key: string; border?: Removal; all?: Removal } | null = null;
   private undoStack: PlaceSnapshot[] = [];
   private redoStack: PlaceSnapshot[] = [];
   /** The state before the edit in progress (a drag), or null. */
@@ -856,6 +882,80 @@ export class Animation {
     return frames;
   }
 
+  /**
+   * What a "Remove color" click on `gridTile` of the entry `id` does, with the same flood as the build: the unified
+   * frame of the entry, the list and the erase colors. The color is the shown one, with the edits; an edited tile
+   * forces 'border'. Null for a TRANSPARENT tile, a tile outside the grid, an unknown entry or a stage that is not
+   * built yet. Call it from an event handler: it caches, so it must not run in a derived.
+   */
+  pickAt(id: number, gridTile: number): RemovalPick | null {
+    if (!this.stageCurrent()) return null;
+    const timeline = this.liveTimeline();
+    const at = timeline.findIndex((frame) => frame.id === id);
+    const unified = this.unified[at];
+    const prepared = this.prepared.frames[at];
+    if (at < 0 || !unified || !prepared || !Number.isInteger(gridTile) || gridTile < 0 || gridTile >= unified.pixels.length) return null;
+    const shown = this.frameAt(at, timeline) ?? prepared;
+    const color = shown.pixels[gridTile];
+    if (color === TRANSPARENT) return null;
+    const listed = this.removedColors.find((entry) => entry.color === color);
+    if (listed?.scope === 'all') return { color, scope: 'all', action: 'listed', cleared: NO_TILES, kept: NO_TILES };
+    const tolerance = listed?.tolerance ?? this.colorTolerance;
+    const edited = shown !== prepared && shown.pixels[gridTile] !== prepared.pixels[gridTile];
+    const key = `${this.preparedVersion}|${at}|${this.frameEditsVersion}|${color}|${tolerance}`;
+    if (this.pickCache?.key !== key) this.pickCache = { key };
+    const cache = this.pickCache;
+    const known = cache.border ?? cache.all;
+    const scope: RemoveScope | null = known ? (edited || holdsTile(known.reach, gridTile) ? 'border' : 'all') : null;
+    let removal = scope ? cache[scope] : undefined;
+    if (!removal) {
+      const extra = this.eraseBackground ? borderColors(unified).map((background): RemovedColor => ({ color: background, tolerance: 0, scope: 'border' })) : [];
+      const found = removalAt(unified, this.removedColors, color, tolerance, gridTile, { extra, forceBorder: edited });
+      removal = shown === prepared ? found : { ...found, cleared: unedited(found.cleared, shown, prepared), kept: unedited(found.kept, shown, prepared) };
+      cache[removal.scope] = removal;
+    }
+    const action = !listed ? 'add' : removal.scope === 'all' ? 'widen' : 'listed';
+    if (action === 'listed') return { color, scope: removal.scope, action, cleared: NO_TILES, kept: NO_TILES };
+    return { color, scope: removal.scope, action, cleared: removal.cleared, kept: removal.kept };
+  }
+
+  /** The grid tile of the entry `id` under one tile of its output cell; -1 outside the grid, for an unknown entry or a stale build. */
+  gridTile(id: number, cellTile: number): number {
+    const place = this.placeOf(id);
+    if (!place) return -1;
+    const { origin, cell, grid } = place;
+    if (!Number.isInteger(cellTile) || cellTile < 0 || cellTile >= cell.cols * cell.rows) return -1;
+    const col = origin.col + (cellTile % cell.cols);
+    const row = origin.row + Math.floor(cellTile / cell.cols);
+    return col >= 0 && row >= 0 && col < grid.cols && row < grid.rows ? row * grid.cols + col : -1;
+  }
+
+  /** The tiles of the output cell of the entry `id` at some of its grid tiles; a grid tile outside the cell is left out. */
+  toCell(id: number, gridTiles: ArrayLike<number>): Int32Array {
+    const place = this.placeOf(id);
+    if (!place) return NO_TILES;
+    const { origin, cell, grid } = place;
+    const tiles = new Int32Array(gridTiles.length);
+    let n = 0;
+    for (let i = 0; i < gridTiles.length; i++) {
+      const c = (gridTiles[i] % grid.cols) - origin.col;
+      const r = Math.floor(gridTiles[i] / grid.cols) - origin.row;
+      if (c >= 0 && r >= 0 && c < cell.cols && r < cell.rows) tiles[n++] = r * cell.cols + c;
+    }
+    return tiles.slice(0, n);
+  }
+
+  /** Where the output cell of an entry sits on its grid; null for an unknown entry or a build that the live timeline left behind. */
+  private placeOf(id: number): { origin: { col: number; row: number }; cell: { cols: number; rows: number }; grid: { cols: number; rows: number } } | null {
+    if (!this.stageCurrent()) return null;
+    const timeline = this.liveTimeline();
+    const at = timeline.findIndex((frame) => frame.id === id);
+    const origin = this.built.origins[at];
+    const prepared = this.prepared.frames[at];
+    if (at < 0 || !origin || !prepared || this.built.origins.length !== timeline.length) return null;
+    return { origin, cell: this.built.cell, grid: { cols: prepared.cols, rows: prepared.rows } };
+  }
+
   restoreRemovedColor(color: number): void {
     if (!this.hasRemovedColor(color)) return;
     this.removedColors = this.removedColors.filter((entry) => entry.color !== color);
@@ -1114,6 +1214,8 @@ export class Animation {
   private setPrepared(prepared: PreparedFrames, clearKey: string): void {
     this.prepared = prepared;
     this.clearKey = clearKey;
+    this.preparedVersion++;
+    this.pickCache = null;
     this.liveTimeline().forEach((frame, at) => {
       const base = prepared.frames[at];
       if (base) this.sessions.get(frame.id)?.setBase(base);
@@ -1142,14 +1244,14 @@ export class Animation {
     const timeline = this.liveTimeline();
     const prepared = this.prepared;
     if (prepared.frames.length === 0 || prepared.frames.length !== timeline.length) {
-      this.built = prepared.frames.length === 0 ? EMPTY_BUILD : this.built;
+      this.built = prepared.frames.length === 0 ? EMPTY_BUILD : { ...this.built, origins: [] };
       this.version++;
       return;
     }
     const cell = this.cell === 'box' && !this.container ? 'crop' : this.cell;
     const frames = prepared.frames.map((frame, at) => this.sessions.get(timeline[at].id)?.composed() ?? frame);
     const placed = placeFrames(frames, { cell, offsets: timeline.map((frame) => frame.offset), box: this.container });
-    this.built = { frames: placed.frames, cell: placed.cell, kept: prepared.kept };
+    this.built = { frames: placed.frames, cell: placed.cell, kept: prepared.kept, origins: placed.origins };
     this.version++;
   }
 
@@ -1203,6 +1305,8 @@ export class Animation {
     this.unifiedKey = '';
     this.prepared = EMPTY_PREPARED;
     this.clearKey = '';
+    this.preparedVersion++;
+    this.pickCache = null;
     this.built = EMPTY_BUILD;
     this.version++;
     this.editVersion++;

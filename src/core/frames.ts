@@ -57,6 +57,21 @@ export interface BuiltFrames {
   cell: { cols: number; rows: number };
   /** Per frame: the erase kept a scenery background. Always false when eraseBackground is off. */
   kept: boolean[];
+  /** Per frame: the grid tile under the upper-left tile of the cell. Cell tile (c, r) is grid tile (col + c, row + r). */
+  origins: CellOrigin[];
+}
+
+/** A grid tile position, which may be outside the grid. */
+export interface CellOrigin {
+  col: number;
+  row: number;
+}
+
+/** What placeFrames gives: equal cells and, per frame, the grid tile under the upper-left tile of its cell. */
+export interface PlacedFrames {
+  frames: Sprite[];
+  cell: { cols: number; rows: number };
+  origins: CellOrigin[];
 }
 
 function checkSameSize(frames: readonly Sprite[]): { cols: number; rows: number } {
@@ -192,22 +207,21 @@ function pivotColumn(sprite: Sprite, box: TileBox): number {
 }
 
 /** `limited`: the cell is a user box or holds moved frames, so its size is checked against the export limit. */
-function windows(
-  frames: readonly Sprite[],
-  box: TileBox,
-  shifts: readonly FrameOffset[],
-  limited: boolean,
-): { frames: Sprite[]; cell: { cols: number; rows: number } } {
+function windows(frames: readonly Sprite[], box: TileBox, shifts: readonly FrameOffset[], limited: boolean): PlacedFrames {
   if (limited) checkCell(box.cols, box.rows);
-  return { frames: frames.map((sprite, i) => windowOf(sprite, box, shifts[i].x, shifts[i].y)), cell: { cols: box.cols, rows: box.rows } };
+  return {
+    frames: frames.map((sprite, i) => windowOf(sprite, box, shifts[i].x, shifts[i].y)),
+    cell: { cols: box.cols, rows: box.rows },
+    origins: shifts.map((shift) => ({ col: box.col - shift.x, row: box.row - shift.y })),
+  };
 }
 
 /**
  * The cell step of an animation: equal cells from prepared frames, each moved by its offset. It does no palette
  * work, so a drag can call it on every pointer move.
  */
-export function placeFrames(frames: readonly Sprite[], placement: Placement): { frames: Sprite[]; cell: { cols: number; rows: number } } {
-  if (frames.length === 0) return { frames: [], cell: { cols: 0, rows: 0 } };
+export function placeFrames(frames: readonly Sprite[], placement: Placement): PlacedFrames {
+  if (frames.length === 0) return { frames: [], cell: { cols: 0, rows: 0 }, origins: [] };
   const { cols, rows } = checkSameSize(frames);
   const offsets = offsetsOf(frames.length, placement.offsets);
   const grid: TileBox = { col: 0, row: 0, cols, rows };
@@ -242,8 +256,8 @@ export function placeFrames(frames: readonly Sprite[], placement: Placement): { 
 
 /** The frames of one animation as equal cells with one palette: prepareFrames, then placeFrames. */
 export function buildFrames(owns: readonly Sprite[], options: FrameOptions): BuiltFrames {
-  if (owns.length === 0) return { frames: [], cell: { cols: 0, rows: 0 }, kept: [] };
+  if (owns.length === 0) return { frames: [], cell: { cols: 0, rows: 0 }, kept: [], origins: [] };
   const prepared = prepareFrames(owns, options);
   const placed = placeFrames(prepared.frames, { cell: options.cell, offsets: options.offsets, box: options.box });
-  return { frames: placed.frames, cell: placed.cell, kept: prepared.kept };
+  return { frames: placed.frames, cell: placed.cell, kept: prepared.kept, origins: placed.origins };
 }
