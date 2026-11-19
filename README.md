@@ -155,7 +155,8 @@ The program shows the clean sprite. To compare it with the source, move the divi
 - To pick the color below the cursor, click the right mouse button. This works in all tools.
 - To replace a color in all the sprite, right-click it in the color list. You can also click the "..." button. You can also erase the color there.
 - To make the background transparent, click "Remove background". This changes the background that touches the border.
-- To erase a color in all the sprite, select "Remove color" (R) and click the color. Near shades go too: set how near with "Tolerance". Use it for the halo of a chroma key, or for background inside the drawing, such as between an arm and the body.
+- To erase a background color, select "Remove color" (R) and click the color. Near shades go too: set how near with "Tolerance". The click erases the color only where it connects to the border of the sprite, through the background or through transparent areas. The drawing keeps the same color. Before the click, red shows the squares that go and teal shows the squares of that color that stay. Use it for the halo of a chroma key.
+- To erase background inside the drawing, such as between an arm and the body, click a spot of it that does not touch the border. The preview is yellow, and the click erases that color everywhere in the sprite, in the drawing too. To erase only some pixels, use the Eraser: it erases any pixel.
 - When the sprite has an empty border, a faint dashed box shows the part that the export writes.
 - To paint the sprite with the colors of another image, use "Reference colors" and click "Choose a reference". The reference can be a clean sprite or AI pixel art. First the app corrects the lightness difference between the two images. Then each color changes to the nearest color of the reference. Your manual corrections stay. Turn off the "Use the colors of" switch to get the original colors back.
 - You can change the "Color cleanup" level at any time. Your manual corrections stay.
@@ -273,7 +274,7 @@ A video from an AI tool can have stray pixels or a watermark. You can correct ea
 
 - Select a frame in the timeline. Click "Edit frame", push E, or double-click the frame.
 - Use the pencil, the eraser, the bucket and the dropper, as on the Clean screen. The palette shows the colors of all the frames.
-- "Remove color" (R) erases the clicked color in all the frames, not only in this frame.
+- "Remove color" (R) erases the clicked color in all the frames, not only in this frame, with the same border rule as on the Animation screen. The Eraser erases any pixel of this frame only.
 - Push "," and "." to go to the previous or the next frame. Push O to show the previous frame over this one.
 - Click "Back to the animation" to go back to the screen that you came from.
 
@@ -289,7 +290,7 @@ The Animation screen plays the frames in a loop.
 - The "Color cleanup" level applies to all the frames. All the frames share one palette.
 - Turn on "Use only the colors of one frame" to give all the frames the colors of the reference frame.
 - Turn on "Remove the frame backgrounds" to make the background transparent.
-- If the background leaves a halo or stays inside the drawing, click "Pick a color" under "Remove color", or push R. Then click each color to erase on the frame. The color goes from all the frames, with its near shades. Set how near with "Tolerance". The tolerance applies only to the next colors that you pick. Each removed color keeps its own tolerance, and its chip shows it when it is not the current value. To use a new tolerance on a color, click × on it and pick it again. Click × on a color to bring it back, or click "Clear". Push Esc to stop.
+- If the background leaves a halo or stays inside the drawing, click "Pick a color" under "Remove color", or push R. Then click each color to erase on the frame. The color goes from all the frames, with its near shades. Set how near with "Tolerance". In each frame, the color goes only where it connects to the frame border, through the background or through transparent areas, so the character keeps the same color in its eyes or its clothes. Before the click, red shows the squares that go and teal shows the squares of that color that stay. To erase background inside the drawing, such as between an arm and the body, click a spot of it that does not touch the border: the preview is yellow, the hint warns you, and the color goes everywhere, in the character too. Its chip then shows "inside". A later click on such a spot of a color that is in the list also takes it inside the drawing. The tolerance applies only to the next colors that you pick. Each removed color keeps its own tolerance, and its chip shows it when it is not the current value. To use a new tolerance on a color, click × on it and pick it again. Click × on a color to bring it back, or click "Clear". Push Esc to stop.
 - Under "Frame size", select the size of each frame:
   - "Container": the container that you set on the first frame, with the alignment of each frame.
   - "Crop": the smallest box that holds all the frames. The motion stays exact.
@@ -472,6 +473,10 @@ To build only the CLI for Linux or WSL, run `npm run build:cli`. This command wr
 
 ## Known limits
 
+- "Remove color" stops at the outline of the drawing. In these cases the color gets into the drawing, and you correct those pixels with the Pencil:
+  - The outline has the background color and touches the background.
+  - A part of the character touches the frame border.
+  - The outline has a gap of one pixel.
 - The background removal works only for a flat background of one color or for a fake checkerboard. It does not remove a scenery, such as a sky, grass or a gradient. Generate each object on a flat background of one color.
 - A small, blurred image gives little edge evidence. Thus the automatic grid can be incorrect.
   - In the app, set the size of 1 pixel, or drag a square over one pixel of the art.
