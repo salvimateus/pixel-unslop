@@ -1,3 +1,4 @@
+import type { FrameOffset } from '../core/frames.ts';
 import type { Sprite } from '../core/types.ts';
 import { TUNING } from '../app/tuning.ts';
 import type { Camera } from './camera.ts';
@@ -9,12 +10,15 @@ import {
   drawFrame,
   easeOutBack,
   easeOutCubic,
+  ghostTint,
   intersect,
   progress,
   shatterTiles,
   sparkColors,
   STAGE_COLORS,
   viewRect,
+  type GhostKind,
+  type Rect,
   type Scene,
   type StageHost,
 } from './stage-renderer.ts';
@@ -57,12 +61,15 @@ export class AnimScene implements Scene {
   background: PreviewBackground = 'checker';
   onion = false;
   ghostOf: (index: number) => number | null = (index) => (this.source.count < 2 ? null : (index - 1 + this.source.count) % this.source.count);
+  /** The move in whole tiles of the ghost over shown frame `index`; null or no function draws it in place. */
+  ghostShift: ((index: number) => FrameOffset | null) | null = null;
   onframe: ((index: number) => void) | null = null;
 
   protected host: StageHost | null = null;
   private source: AnimSource;
   private baked = new Map<number, HTMLCanvasElement>();
   private ghosts = new Map<number, HTMLCanvasElement>();
+  private ghostKind: GhostKind = 'previous';
   /** The last frame drawn, kept on screen while the next one is on its way. */
   private lastDrawn: HTMLCanvasElement | null = null;
   private current = 0;
@@ -177,6 +184,14 @@ export class AnimScene implements Scene {
     host.invalidate();
   }
 
+  /** The tint of the ghost. The ghost bakes are kept by frame only, so a new kind bakes them again. */
+  setGhostKind(kind: GhostKind): void {
+    if (kind === this.ghostKind) return;
+    this.ghostKind = kind;
+    this.ghosts.clear();
+    this.host?.invalidate();
+  }
+
   /** Tiles over frame `index` at `TUNING.clean.removeMaskAlpha`, or null. */
   setMask(canvas: HTMLCanvasElement | null, index = this.current): void {
     if (canvas === this.mask?.canvas && index === this.mask?.index) return;
@@ -212,9 +227,27 @@ export class AnimScene implements Scene {
     if (known) return known;
     const sprite = this.source.frameOf(index);
     if (!sprite || sprite.cols !== this.contentW || sprite.rows !== this.contentH) return null;
-    const canvas = bakeSprite(sprite, { color: STAGE_COLORS.ghostPrevious, strength: TUNING.anim.ghostTint });
+    const canvas = bakeSprite(sprite, ghostTint(this.ghostKind));
     remember(this.ghosts, index, canvas, GHOST_LIMIT);
     return canvas;
+  }
+
+  /** The ghost over the frame box, moved by its shift and cut to the box. `rect` is scaled during a pop. */
+  private drawGhost(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, rect: Rect): void {
+    const shift = this.ghostShift?.(this.current) ?? null;
+    ctx.globalAlpha = TUNING.anim.ghostAlpha;
+    if (!shift || (shift.x === 0 && shift.y === 0)) {
+      ctx.drawImage(canvas, rect.x, rect.y, rect.w, rect.h);
+    } else {
+      const zoom = rect.w / this.contentW;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(rect.x, rect.y, rect.w, rect.h);
+      ctx.clip();
+      ctx.drawImage(canvas, rect.x + shift.x * zoom, rect.y + shift.y * zoom, rect.w, rect.h);
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
   }
 
   draw(ctx: CanvasRenderingContext2D, fx: CanvasRenderingContext2D, now: number): boolean {
@@ -259,11 +292,7 @@ export class AnimScene implements Scene {
     if (this.onion) {
       const ghost = this.ghostOf(this.current);
       const canvas = ghost === null || ghost === this.current ? null : this.ghostCanvasOf(ghost);
-      if (canvas) {
-        ctx.globalAlpha = TUNING.anim.ghostAlpha;
-        ctx.drawImage(canvas, rect.x, rect.y, rect.w, rect.h);
-        ctx.globalAlpha = 1;
-      }
+      if (canvas) this.drawGhost(ctx, canvas, rect);
     }
     const mask = this.mask;
     if (mask && mask.index === this.current && mask.canvas.width === this.contentW && mask.canvas.height === this.contentH) {

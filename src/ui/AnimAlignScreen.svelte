@@ -15,6 +15,7 @@
   import Icon from './Icon.svelte';
   import KeyText from './KeyText.svelte';
   import LoopPreview from './LoopPreview.svelte';
+  import LoopSeam from './LoopSeam.svelte';
   import ProgressPill from './ProgressPill.svelte';
   import Stage from './Stage.svelte';
   import PanelSplitter from './PanelSplitter.svelte';
@@ -240,6 +241,17 @@
     if (anim.timeline.length === 0) void app.goTo('anim-frames');
   }
 
+  /** Shows the last frame with the first one as its ghost, to judge the loop seam. */
+  function compareSeam(): void {
+    chooseGhost('first');
+    goTo(count - 1);
+  }
+
+  function removeLastEntry(): void {
+    const last = anim.timeline.at(-1);
+    if (last) onRemove(last.id);
+  }
+
   function onDuplicate(id: number): void {
     endDrag();
     if (anim.duplicate(id)) sfx.play('tick');
@@ -309,6 +321,9 @@
     } else if (key.toLowerCase() === 'g') {
       event.preventDefault();
       if (!event.repeat) toggleGuides();
+    } else if (key.toLowerCase() === 'l') {
+      event.preventDefault();
+      if (!event.repeat) compareSeam();
     } else if ((key === 'Delete' || key === 'Backspace') && selected !== null) {
       event.preventDefault();
       if (!event.repeat) onRemove(selected);
@@ -454,6 +469,16 @@
       <section class="align-section" aria-labelledby="align-loop-title">
         <h2 class="section-title" id="align-loop-title">{t('align.loopTitle')}</h2>
         <LoopPreview frames={anim.built.frames} version={anim.version} fps={anim.fps} background={app.previewBg} label={t('anim.loopLabel')} />
+        <LoopSeam
+          frames={anim.built.frames}
+          version={anim.version}
+          waiting={anim.pendingCount > 0}
+          background={app.previewBg}
+          firstLabel={t('anim.frameNumber', { n: (anim.timeline[0]?.index ?? 0) + 1 })}
+          lastLabel={t('anim.frameNumber', { n: (anim.timeline.at(-1)?.index ?? 0) + 1 })}
+          oncompare={compareSeam}
+          onremovelast={removeLastEntry}
+        />
       </section>
 
       <details class="align-section keys">
@@ -469,6 +494,8 @@
           <dd>{t('align.keyEnds')}</dd>
           <dt><kbd class="keycap">G</kbd></dt>
           <dd>{t('align.guides')}</dd>
+          <dt><kbd class="keycap">L</kbd></dt>
+          <dd>{t('align.keyLoop')}</dd>
           <dt><span class="keycap-group"><KeyText text="Ctrl" /><kbd class="keycap">Z</kbd></span></dt>
           <dd>{t('clean.undo')}</dd>
           <dt><span class="keycap-group"><KeyText text="Ctrl" /><kbd class="keycap">Y</kbd></span></dt>

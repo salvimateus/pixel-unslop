@@ -1763,15 +1763,15 @@ class AppState {
   }
 
   /**
-   * "Adicionar intervalo": adds one frame every `every` from `from`, as many as fit, then samples the ones that are
-   * not in the store with progress and cancel. A cancel removes the entries that are still pending. Returns the
-   * entries that stay.
+   * "Adicionar intervalo": adds one frame every `every` from `from` up to `until` (exclusive, the end of the video
+   * by default), as many as fit, then samples the ones that are not in the store with progress and cancel. A cancel
+   * removes the entries that are still pending. Returns the entries that stay.
    */
-  async addAnimRange(from: number, every: number): Promise<AnimFrame[]> {
+  async addAnimRange(from: number, every: number, until?: number): Promise<AnimFrame[]> {
     const anim = this.anim;
     const video = anim.video;
     if (!video || !anim.locked) return [];
-    const { added, limited } = anim.addRange(from, every);
+    const { added, limited } = anim.addRange(from, every, until);
     if (limited) this.toastFrameLimit();
     else if (added.length === 0) this.toast(t('frames.rangeNone'), 'info');
     const missing = [...new Set(added.map((frame) => frame.index))].filter((index) => !anim.has(index));

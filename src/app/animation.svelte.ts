@@ -1,6 +1,7 @@
 import type { CellGrid, Sprite } from '../core/types.ts';
 import { TRANSPARENT } from '../core/color.ts';
 import { PARAMS } from '../core/params.ts';
+import { CoreError } from '../core/errors.ts';
 import { placeFrames, prepareFrames, type BuiltFrames, type CellMode, type FrameOffset, type PreparedFrames, type RemovedColor } from '../core/frames.ts';
 import { borderBackground, colorMatches, eraseTiles, listPalette, opaqueBox, type TileBox } from '../core/sprite.ts';
 import { track } from './analytics.ts';
@@ -157,6 +158,8 @@ export class Animation {
   cell = $state<CellMode>(storedCell());
   fps = $state(storedNumber('animFps', TUNING.anim.minFps, TUNING.anim.maxFps, TUNING.anim.defaultFps));
   onion = $state(readStored('animOnion') === 'on');
+  /** The Frames screen shows the first entry as a ghost over the cursor frame. Session only, not stored. */
+  loopCheck = $state(false);
   /** Export options, kept between sessions. */
   sheetJson = $state(readStored('animJson') !== 'off');
   loopInGame = $state(readStored('animLoop') !== 'off');
@@ -647,6 +650,22 @@ export class Animation {
     return sprite;
   }
 
+  /**
+   * `displayFrame(index)` cut to the container and moved by `offset`, as the output places a frame. Null with no
+   * container, with the frame not sampled yet, or when the container does not fit the placement.
+   */
+  boxedFrame(index: number, offset: FrameOffset): Sprite | null {
+    const box = this.container;
+    const sprite = box ? this.displayFrame(index) : null;
+    if (!box || !sprite) return null;
+    try {
+      return placeFrames([sprite], { cell: 'box', offsets: [offset], box }).frames[0] ?? null;
+    } catch (error) {
+      if (error instanceof CoreError) return null;
+      throw error;
+    }
+  }
+
   /** Moves the cursor of the Frames screen. Returns false when it did not move. */
   seek(index: number): boolean {
     if (this.count === 0) return false;
@@ -684,14 +703,16 @@ export class Animation {
   }
 
   /**
-   * "Adicionar intervalo": every `every` video frames from `from` to the last one that is not in the timeline yet,
-   * as many as the budget allows. `limited` is true when the budget cut the range.
+   * "Adicionar intervalo": every `every` video frames from `from` up to `until` (exclusive, the end of the video by
+   * default) that are not in the timeline yet, as many as the budget allows. `limited` is true when the budget cut
+   * the range.
    */
-  addRange(from: number, every: number): { added: AnimFrame[]; limited: boolean } {
+  addRange(from: number, every: number, until = this.count): { added: AnimFrame[]; limited: boolean } {
     const step = Math.max(1, Math.round(every));
+    const end = Math.min(this.count, until);
     const present = new Set(this.timeline.map((frame) => frame.index));
     const wanted: number[] = [];
-    for (let index = Math.max(0, from); index < this.count; index += step) if (!present.has(index)) wanted.push(index);
+    for (let index = Math.max(0, from); index < end; index += step) if (!present.has(index)) wanted.push(index);
     const fit = this.room(wanted);
     const limited = fit < wanted.length;
     const added: AnimFrame[] = [];
@@ -806,6 +827,11 @@ export class Animation {
     this.changed();
   }
 
+  /** The color is in the list of "Remove color", at any tolerance. */
+  hasRemovedColor(color: number): boolean {
+    return this.removedColors.some((entry) => entry.color === color);
+  }
+
   /**
    * Adds a color, at the current tolerance, to the colors that every frame loses. Returns how many timeline frames
    * have tiles of it within that tolerance; with 0 (no frame has it, it is in the list, or it is TRANSPARENT) the
@@ -827,11 +853,6 @@ export class Animation {
     this.removedColors = this.removedColors.filter((entry) => entry.color !== color);
     track('option_change', { kind: 'anim_remove_color', detail: 'restore', count: this.removedColors.length });
     this.changed();
-  }
-
-  /** The color is in the list of "Remove color", at any tolerance. */
-  hasRemovedColor(color: number): boolean {
-    return this.removedColors.some((entry) => entry.color === color);
   }
 
   clearRemovedColors(): void {
@@ -1001,6 +1022,12 @@ export class Animation {
     track('option_change', { kind: 'anim_onion', detail: on });
   }
 
+  setLoopCheck(on: boolean): void {
+    if (on === this.loopCheck) return;
+    this.loopCheck = on;
+    track('option_change', { kind: 'anim_loop_check', detail: on });
+  }
+
   setSheetJson(on: boolean): void {
     this.sheetJson = on;
     writeStored('animJson', on ? 'on' : 'off');
@@ -1129,6 +1156,7 @@ export class Animation {
     this.referenceChosen = false;
     this.referenceColors = false;
     this.removedColors = [];
+    this.loopCheck = false;
     this.container = null;
     this.containerWaits = false;
     this.clearHistory();

@@ -166,6 +166,10 @@ export const TUNING = {
     /** Side of the thumbnails of the timeline and of the small loop, in CSS pixels. */
     timelineThumbPx: 56,
     loopPreviewPx: 120,
+    /** The loop seam and the median step are measured this long after the last change, so a drag does not measure on each move. */
+    seamCheckMs: 160,
+    /** The opacity of the first frame under the changed tiles in the difference picture of the loop seam. */
+    seamDiffBaseAlpha: 0.35,
     /** The automatic GIF scale makes the long side about this size, up to the largest scale. */
     gifTargetPx: 384,
     gifMaxScale: 16,

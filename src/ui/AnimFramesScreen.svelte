@@ -7,14 +7,20 @@
   import { activeLocale } from '../app/locale.svelte.ts';
   import * as sfx from '../app/sfx.ts';
   import { TUNING } from '../app/tuning.ts';
+  import type { FrameOffset } from '../core/frames.ts';
+  import { diffShare, diffSprites, loopReturn, matchLevel, medianStep, type MatchLevel } from '../core/loop.ts';
+  import { PARAMS } from '../core/params.ts';
   import type { TileBox } from '../core/sprite.ts';
+  import type { Sprite } from '../core/types.ts';
   import type { AnimSource } from './anim-scene.ts';
   import AnimTimeline from './AnimTimeline.svelte';
   import type { PreviewBackground } from './clean-scene.ts';
   import { holdRepeat } from './hold-repeat.ts';
   import Icon from './Icon.svelte';
   import KeyText from './KeyText.svelte';
+  import LoopMeter from './LoopMeter.svelte';
   import LoopPreview from './LoopPreview.svelte';
+  import LoopSeam from './LoopSeam.svelte';
   import ProgressPill from './ProgressPill.svelte';
   import Stage from './Stage.svelte';
   import PanelSplitter from './PanelSplitter.svelte';
@@ -68,12 +74,30 @@
 
   const scene = new ContainerScene(lastSource, videoFps(), untrack(() => sceneLabels()));
   scene.onframe = (index) => anim.seek(index);
-  /** The ghost is the nearest picked frame before the shown one. */
+  /** The ghost is the nearest picked frame before the shown one; the loop check shows the first entry instead. */
   scene.ghostOf = (index) => {
+    if (anim.loopCheck) {
+      const first = anim.first;
+      return first && first.index !== index ? first.index : null;
+    }
     let best: number | null = null;
     for (const frame of anim.timeline) if (frame.index < index && (best === null || frame.index > best)) best = frame.index;
     return best;
   };
+  /** The first entry sits where the output places it, relative to the shown frame. */
+  scene.ghostShift = (index) => {
+    const first = anim.first;
+    if (!anim.loopCheck || !first) return null;
+    const shown = shownOffsetOf(index);
+    return { x: first.offset.x - shown.x, y: first.offset.y - shown.y };
+  };
+
+  /** The offset of a video frame on the stage: the selected entry when it shows the frame, else its entry, else the inherited one. */
+  function shownOffsetOf(index: number): FrameOffset {
+    const selected = anim.selected;
+    if (selected && selected.index === index) return selected.offset;
+    return anim.entryOf(index)?.offset ?? anim.inheritedOffset(index);
+  }
 
   /** The timeline entry that the container edits on the shown frame: the selected one when it shows this frame. */
   const entry = $derived.by((): AnimFrame | null => {
@@ -140,10 +164,116 @@
 
   $effect(() => {
     scene.background = app.previewBg;
-    scene.onion = anim.onion;
+    scene.onion = anim.onion || anim.loopCheck;
+    scene.setGhostKind(anim.loopCheck ? 'first' : 'previous');
+    void anim.first;
+    void anim.selectedId;
     void anim.timeline;
     stage?.invalidate();
   });
+
+  /** The live entries placed in the container as the output places them, each with its entry. */
+  function boxedTimeline(): { entries: AnimFrame[]; frames: Sprite[] } {
+    const entries: AnimFrame[] = [];
+    const frames: Sprite[] = [];
+    for (const frame of anim.timeline) {
+      if (!anim.has(frame.index)) continue;
+      const sprite = anim.boxedFrame(frame.index, frame.offset);
+      if (!sprite) continue;
+      entries.push(frame);
+      frames.push(sprite);
+    }
+    return { entries, frames };
+  }
+
+  /** The median change between neighbor entries, the unit of the match meter; measured after the changes rest. */
+  let loopStep = $state<number | null>(null);
+  /** The video frame that "Find the loop end" picked, for its scrub mark. */
+  let loopFound = $state<number | null>(null);
+
+  $effect(() => {
+    if (!anim.loopCheck) {
+      loopStep = null;
+      return;
+    }
+    void anim.storeVersion;
+    void anim.framesVersion;
+    void anim.timeline;
+    void anim.container;
+    void anim.eraseBackground;
+    const timer = setTimeout(() => {
+      const { frames } = boxedTimeline();
+      try {
+        loopStep = frames.length >= PARAMS.loop.minFrames ? medianStep(frames) : null;
+      } catch {
+        loopStep = null;
+      }
+    }, TUNING.anim.seamCheckMs);
+    return () => clearTimeout(timer);
+  });
+
+  /** How much the shown frame matches the first entry, both placed in the container. */
+  const loopMatch = $derived.by((): { percent: number; level: MatchLevel | null } | null => {
+    const first = anim.first;
+    const at = anim.cursor;
+    if (!anim.loopCheck || !first || at === first.index) return null;
+    void anim.storeVersion;
+    void anim.framesVersion;
+    void anim.container;
+    const shown = anim.boxedFrame(at, shownOffsetOf(at));
+    const base = anim.boxedFrame(first.index, first.offset);
+    if (!shown || !base) return null;
+    try {
+      const share = diffShare(diffSprites(shown, base));
+      let step = loopStep;
+      if (step === null) {
+        const back = at - anim.stepSize;
+        const before = back >= 0 && anim.has(back) ? anim.boxedFrame(back, shownOffsetOf(back)) : null;
+        if (before) step = diffShare(diffSprites(shown, before));
+      }
+      return { percent: Math.round((1 - share) * 100), level: step === null ? null : matchLevel(share, step) };
+    } catch {
+      // The container changed between the two frames: the next change measures again.
+      return null;
+    }
+  });
+
+  let lastMatchLevel: MatchLevel | null = null;
+
+  $effect(() => {
+    const level = loopMatch?.level ?? null;
+    untrack(() => {
+      const before = lastMatchLevel;
+      lastMatchLevel = level;
+      if (level !== 'match' || before === 'match' || playing) return;
+      scene.flash();
+      sfx.play('lock');
+    });
+  });
+
+  /** The largest video index of the timeline below `at`, or null. */
+  function lastIndexBefore(at: number): number | null {
+    let best: number | null = null;
+    for (const frame of anim.timeline) if (frame.index < at && (best === null || frame.index > best)) best = frame.index;
+    return best;
+  }
+
+  /** The action of the meter at the cursor: close the loop on a later entry, or fill the gap up to the cursor. */
+  const loopAction = $derived.by(() => {
+    const first = anim.first;
+    const at = anim.cursor;
+    if (!anim.loopCheck || !first || at <= first.index) return null;
+    if (anim.timeline.some((frame) => frame.index >= at)) {
+      return { label: t('frames.loopClose'), hint: t('frames.loopCloseHint'), primary: loopMatch?.level === 'match', run: () => void closeLoopHere() };
+    }
+    const before = lastIndexBefore(at);
+    const every = rangeStep();
+    if (before === null || before + every >= at) return null;
+    return { label: t('frames.loopFill'), hint: t('frames.loopFillHint', { every }), primary: false, run: () => void fillLoopToHere() };
+  });
+
+  const loopNote = $derived(anim.first && anim.cursor === anim.first.index ? t('frames.loopOnFirst') : loopMatch ? null : t('loop.waiting'));
+  const lastEntry = $derived(anim.timeline.at(-1) ?? null);
 
   $effect(() => {
     rangeEvery = anim.stepSize;
@@ -278,18 +408,90 @@
     if (!prefersReducedMotion()) popped = new Set([index]);
   }
 
-  async function addRange(): Promise<void> {
+  function rangeStep(): number {
+    return Math.max(1, Math.round(rangeEvery) || 1);
+  }
+
+  /** Adds 1 frame every range step from `from`, up to `until` (exclusive, default the video end). Returns the count added. */
+  async function addFrames(from: number, until?: number): Promise<number> {
     setPlaying(false);
-    const every = Math.max(1, Math.round(rangeEvery) || 1);
     const before = anim.timeline.length;
     // The entries join before the first wait; their frames arrive after it.
-    const done = app.addAnimRange(anim.cursor, every);
-    if (anim.timeline.length === before) return;
+    const done = app.addAnimRange(from, rangeStep(), until);
+    if (anim.timeline.length === before) return 0;
     sfx.play('sweep');
     const added = await done;
-    if (added.length === 0) return;
+    if (added.length === 0) return 0;
     if (!prefersReducedMotion()) popped = new Set(added.map((frame) => frame.index));
     app.toast(added.length === 1 ? t('frames.rangeAddedOne') : t('frames.rangeAdded', { count: added.length }), 'success');
+    return added.length;
+  }
+
+  /** Removes every entry at or after the cursor in the video, so the loop ends on the frame before it. */
+  async function closeLoopHere(): Promise<void> {
+    setPlaying(false);
+    const at = anim.cursor;
+    const leaving = () => anim.timeline.filter((frame) => frame.index >= at);
+    if (leaving().length === 0) return;
+    if (leaving().some((frame) => anim.isEdited(frame.id))) {
+      if (!(await app.confirm(t('frames.loopConfirmTitle'), t('frames.loopConfirmBody'), t('frames.loopConfirmOk')))) return;
+    }
+    const ids = new Set(leaving().map((frame) => frame.id));
+    if (ids.size === 0) return;
+    anim.removeMany(ids);
+    const last = anim.timeline.at(-1);
+    if (last) anim.select(last.id);
+    sfx.play('erase');
+    const count = ids.size;
+    app.toast(count === 1 ? t('frames.loopClosedOne') : t('frames.loopClosed', { count }), 'success');
+    track('anim_loop', { kind: 'close', count });
+  }
+
+  async function fillLoopToHere(): Promise<void> {
+    const at = anim.cursor;
+    const before = lastIndexBefore(at);
+    if (before === null) return;
+    const count = await addFrames(before + rangeStep(), at);
+    if (count > 0) track('anim_loop', { kind: 'fill', count });
+  }
+
+  function findLoopEnd(): void {
+    setPlaying(false);
+    const { entries, frames } = boxedTimeline();
+    let found: { position: number } | null = null;
+    try {
+      found = loopReturn(frames);
+    } catch {
+      found = null;
+    }
+    anim.setLoopCheck(true);
+    const target = found ? entries[found.position] : undefined;
+    if (!target) {
+      app.toast(t('frames.loopNotFound'), 'info');
+      track('anim_loop', { kind: 'find', detail: false });
+      return;
+    }
+    anim.select(target.id);
+    seekTo(target.index);
+    scene.pop();
+    sfx.play('sweep');
+    loopFound = target.index;
+    app.toast(t('frames.loopFound', { n: target.index + 1 }), 'success');
+    track('anim_loop', { kind: 'find', detail: true });
+  }
+
+  /** Shows the last entry on the stage with the first entry as its ghost. */
+  function compareSeam(): void {
+    const last = anim.timeline.at(-1);
+    if (!last) return;
+    anim.setLoopCheck(true);
+    anim.select(last.id);
+    seekTo(last.index);
+  }
+
+  function removeLast(): void {
+    const last = anim.timeline.at(-1);
+    if (last) removeEntry(last.id);
   }
 
   function setReference(): void {
@@ -464,6 +666,9 @@
       if (event.repeat) return;
       anim.setOnion(!anim.onion);
       sfx.play('tick');
+    } else if (key.toLowerCase() === 'l') {
+      event.preventDefault();
+      if (!event.repeat) anim.setLoopCheck(!anim.loopCheck);
     } else if ((key === 'Delete' || key === 'Backspace') && selected !== null) {
       event.preventDefault();
       removeEntry(selected);
@@ -504,6 +709,9 @@
               <span class="counter-cleaning"><span class="cleaning-dot" aria-hidden="true"></span>{t('frames.cleaning')}</span>
             {/if}
           </p>
+          {#if anim.loopCheck && anim.first}
+            <LoopMeter percent={loopMatch?.percent ?? null} level={loopMatch?.level ?? null} note={loopNote} action={loopAction} />
+          {/if}
           {#if hasContainer}
             <div class="container-bar">
               <p class="container-hint">
@@ -633,7 +841,7 @@
           />
           <span class="scrub-marks" aria-hidden="true">
             {#each marks as index (index)}
-              <span class="scrub-mark" class:is-new={popped.has(index)} class:is-ref={index === anim.referenceIndex} style:--at={lastIndex > 0 ? index / lastIndex : 0}></span>
+              <span class="scrub-mark" class:is-new={popped.has(index)} class:is-ref={index === anim.referenceIndex} class:is-first={anim.loopCheck && index === anim.first?.index} class:is-loop={index === loopFound} style:--at={lastIndex > 0 ? index / lastIndex : 0}></span>
             {/each}
           </span>
         </div>
@@ -696,7 +904,7 @@
         {/if}
 
         <div class="range-row">
-          <button type="button" class="btn range-btn" onclick={addRange}>
+          <button type="button" class="btn range-btn" onclick={() => void addFrames(anim.cursor)}>
             <Icon name="sparkle" size={18} />
             {t('frames.addRange')}
           </button>
@@ -705,7 +913,7 @@
             <input id="frames-every" name="frames-every" class="every-input" type="number" min="1" max={Math.max(1, anim.count)} step="1" bind:value={rangeEvery} />
           </label>
         </div>
-        <p class="hint">{t('frames.addRangeHint', { every: Math.max(1, Math.round(rangeEvery) || 1) })}</p>
+        <p class="hint">{t('frames.addRangeHint', { every: rangeStep() })}</p>
 
         <div class="ref-row">
           <button type="button" class="btn btn-quiet ref-btn" aria-pressed={isReference} onclick={setReference}>
@@ -737,6 +945,18 @@
                 ? t('frames.countOne')
                 : t('frames.count', { count: anim.timeline.length })}
         </p>
+        <LoopSeam
+          frames={anim.built.frames}
+          version={anim.version}
+          waiting={anim.pendingCount > 0}
+          background={app.previewBg}
+          firstLabel={anim.first ? t('anim.frameNumber', { n: anim.first.index + 1 }) : ''}
+          lastLabel={lastEntry ? t('anim.frameNumber', { n: lastEntry.index + 1 }) : ''}
+          oncompare={compareSeam}
+          onremovelast={removeLast}
+          onfind={findLoopEnd}
+        />
+        <ToggleSwitch id="frames-loop-check" label={t('frames.loopCheck')} hint={t('frames.loopCheckHint')} checked={anim.loopCheck} onchange={(on) => anim.setLoopCheck(on)} />
       </section>
 
       <details class="frames-block keys">
@@ -752,6 +972,8 @@
           <dd>{t('frames.stepSize')}</dd>
           <dt><kbd class="keycap">O</kbd></dt>
           <dd>{t('anim.onion')}</dd>
+          <dt><kbd class="keycap">L</kbd></dt>
+          <dd>{t('frames.loopCheck')}</dd>
           <dt><KeyText text="Delete" /></dt>
           <dd>{t('frames.keyRemove')}</dd>
           <dt><span class="keycap-group"><KeyText text="Alt" /><kbd class="keycap">←</kbd><kbd class="keycap">→</kbd></span></dt>
@@ -1129,6 +1351,15 @@
         background: var(--yellow);
       }
 
+      &.is-first {
+        background: var(--stage-ghost-first);
+      }
+
+      &.is-loop {
+        background: var(--primary);
+        animation: mark-pop var(--dur-pop) var(--ease-spring);
+      }
+
       &.is-new {
         animation: mark-pop var(--dur-pop) var(--ease-spring);
       }
@@ -1358,7 +1589,8 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
-      .scrub-mark.is-new {
+      .scrub-mark.is-new,
+      .scrub-mark.is-loop {
         animation: none;
       }
     }

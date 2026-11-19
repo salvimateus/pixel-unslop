@@ -3,10 +3,9 @@ import type { Sprite } from '../core/types.ts';
 import { TUNING } from '../app/tuning.ts';
 import type { Camera } from './camera.ts';
 import type { PreviewBackground } from './clean-scene.ts';
-import { bakeSprite, checkerPattern, drawFrame, intersect, progress, snap, STAGE_COLORS, strokeGrid, viewRect, type Rect, type Scene, type StageHost } from './stage-renderer.ts';
+import { bakeSprite, checkerPattern, drawFrame, ghostTint, intersect, progress, snap, STAGE_COLORS, strokeGrid, viewRect, type GhostKind, type Rect, type Scene, type StageHost } from './stage-renderer.ts';
 
-/** Which frame the ghost shows: it sets the tint of the ghost. */
-export type GhostKind = 'previous' | 'first';
+export type { GhostKind };
 
 /** What the Align stage shows: the current frame, the ghost over it, and the cell inside both. */
 export interface AlignLayers {
@@ -75,8 +74,7 @@ export class AlignScene implements Scene {
     this.contentH = height;
     this.current = sprite ? bakeSprite(sprite) : null;
     const ghost = layers.ghost;
-    const tint = { color: layers.ghostKind === 'first' ? STAGE_COLORS.ghostFirst : STAGE_COLORS.ghostPrevious, strength: TUNING.anim.ghostTint };
-    this.ghost = ghost && ghost.cols === width && ghost.rows === height ? bakeSprite(ghost, tint) : null;
+    this.ghost = ghost && ghost.cols === width && ghost.rows === height ? bakeSprite(ghost, ghostTint(layers.ghostKind)) : null;
     this.inner = layers.inner;
     const key = `${width}x${height}|${layers.inner.col},${layers.inner.row},${layers.inner.cols},${layers.inner.rows}`;
     if (key !== this.maskKey) {

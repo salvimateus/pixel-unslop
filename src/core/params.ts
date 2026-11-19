@@ -184,4 +184,27 @@ export const PARAMS = {
     /** Largest side of a grid preview. */
     maxSide: 4096,
   },
+  loop: {
+    /** Two opaque tiles match at this OKLab distance or less, so palette drift between frames is not motion. */
+    tolerance: 0.06,
+    /** Fewest frames that a loop check measures. */
+    minFrames: 3,
+    /** Neighbor frames with this changed share or less are a held pose; the median step skips them. */
+    holdDiff: 0.005,
+    /** Smallest median step, so a nearly still animation does not inflate every ratio. */
+    minStep: 0.01,
+    /** A seam within repeatRatio median steps shows the first pose twice... */
+    repeatRatio: 0.3,
+    /** ...up to smoothRatio reference steps (stepQuantile) it is a normal step... */
+    smoothRatio: 1.6,
+    /** ...up to bumpRatio it is a visible bump, and above it a jump. */
+    bumpRatio: 3,
+    /** The seam grades against this quantile of the moving neighbor shares, so alternating small and large steps both count as normal. */
+    stepQuantile: 0.75,
+    /** A frame is back at the first pose up to this many median steps from it. */
+    matchRatio: 0.6,
+    /** The motion left the first pose past the lower of leaveRatio median steps and leaveShare of the farthest frame. */
+    leaveRatio: 3,
+    leaveShare: 0.5,
+  },
 } as const;

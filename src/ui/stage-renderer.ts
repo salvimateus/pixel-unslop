@@ -127,6 +127,14 @@ function ghostBackground(sprite: Sprite): Int32Array {
   return tiles;
 }
 
+/** Which frame an onion ghost shows: it sets the tint of the ghost. */
+export type GhostKind = 'previous' | 'first';
+
+/** The tint of a ghost of this kind for bakeSprite. Read at call time: the colors load after the module. */
+export function ghostTint(kind: GhostKind): { color: string; strength: number } {
+  return { color: kind === 'first' ? STAGE_COLORS.ghostFirst : STAGE_COLORS.ghostPrevious, strength: TUNING.anim.ghostTint };
+}
+
 /**
  * A sprite baked into a canvas of one pixel per tile. With a tint, the bake is a ghost: the background that
  * touches the edge of its opaque box is dropped (scenery stays whole), and every other visible pixel moves toward the tint color
