@@ -241,6 +241,16 @@ The first frame of the timeline shows a crop container. Drag it over the charact
 
 In the timeline, push Delete to remove the selected frame, D to repeat it, and Alt with an arrow key to move it.
 
+A good loop does not end on a copy of the first frame. The last frame must be one normal step before the first, or the pose shows twice and the loop stutters. To find the end of the loop:
+
+- Push L, or turn on "Compare with the first frame". The first frame of the timeline shows over the current video frame, tinted blue, aligned as in the output.
+- Read the meter at the top: "Same as the first: N%". When the frame matches the first frame, the container flashes and a sound plays.
+- Click "Close the loop here" to remove this video frame and the frames after it from the timeline. The loop then ends on the frame before.
+- Click "Complete the loop up to here" to add one frame every N, from the last frame of the timeline to the frame before the cursor.
+- Under the loop preview, the "Loop seam" card shows the last frame, the first frame and their difference. It tells you if the loop closes smoothly, has a small bump or jumps.
+- If the card shows "The last frame repeats the first", click "Remove the last frame".
+- Click "Find the loop end" to move the cursor to the frame of the timeline where the motion comes back to the first pose.
+
 <img src="docs/images/pixel-unslop-video-frames-screen.png" width="900" alt="Frames screen of the video journey: a clean pixel art character in a green crop container of 15 by 28 pixels, the original video and the step size buttons on the right, and a timeline of 8 frames at the bottom">
 
 ### 4. Align the frames
@@ -253,6 +263,7 @@ The Align step shows each frame in its container. The onion skin shows the previ
 - Push G to show or hide the guides.
 - Click "Copy previous" to use the offset of the previous frame. Click "Reset" to put the frame back at its video position.
 - Push Ctrl+Z to undo and Ctrl+Y to redo.
+- Push L to see the last frame with the first frame over it. The "Loop seam" card also shows on this screen.
 
 <img src="docs/images/pixel-unslop-video-align-screen.png" width="900" alt="Align step of the video journey: the current frame of the character under the transparent, blue tinted onion skin of the first frame, 2 pixels to the left, with a vertical middle line, the frame offset x +2, y 0, the Onion skin choice with the Previous and First buttons, a loop preview and the list of shortcuts">
 
@@ -278,7 +289,7 @@ The Animation screen plays the frames in a loop.
 - The "Color cleanup" level applies to all the frames. All the frames share one palette.
 - Turn on "Use only the colors of one frame" to give all the frames the colors of the reference frame.
 - Turn on "Remove the frame backgrounds" to make the background transparent.
-- If the background leaves a halo or stays inside the drawing, click "Pick a color" under "Remove color", or push R. Then click each color to erase on the frame. The color goes from all the frames, with its near shades. Set how near with "Tolerance". Click × on a color to bring it back, or click "Clear". Push Esc to stop.
+- If the background leaves a halo or stays inside the drawing, click "Pick a color" under "Remove color", or push R. Then click each color to erase on the frame. The color goes from all the frames, with its near shades. Set how near with "Tolerance". The tolerance applies only to the next colors that you pick. Each removed color keeps its own tolerance, and its chip shows it when it is not the current value. To use a new tolerance on a color, click × on it and pick it again. Click × on a color to bring it back, or click "Clear". Push Esc to stop.
 - Under "Frame size", select the size of each frame:
   - "Container": the container that you set on the first frame, with the alignment of each frame.
   - "Crop": the smallest box that holds all the frames. The motion stays exact.
@@ -290,7 +301,7 @@ The Animation screen plays the frames in a loop.
 Click "Export animation", or push Ctrl+S. Select a format:
 
 - "Sprite sheet": all the frames in one PNG, for the game. Each frame is one cell of a grid, with no padding. The PNG has 1 image pixel for each art pixel. You can change the number of columns. Turn on "JSON file" to also get a JSON file that tells where each frame is, with the duration of each frame. "Loop in game" writes in the JSON if the animation loops. With the JSON, the desktop app saves the PNG and the JSON in a folder that you select, and a browser gives you one ZIP file with the two files.
-- "GIF": an animated GIF to share. Select the scale and the background. A GIF plays at 50 fps or less. Do not use the GIF in a game engine.
+- "GIF": an animated GIF to share. Select the scale and the background. A GIF plays at 50 fps or less. The preview plays the GIF in a loop, at its speed and on its background. Click the play button to play or pause it. The preview starts paused when your system asks for reduced motion. Do not use the GIF in a game engine.
 
 The JSON uses the TexturePacker "JSON hash" format. The frame names are the file name with the frame number, for example `walk-0`, `walk-1` and so on, when the file name is `walk`. The JSON also has the `animations` key of Pixi and the `frameTags` key of Aseprite exports.
 
@@ -319,7 +330,7 @@ The export dialog shows the frame size, the number of columns and the number of 
 - The smallest PNG size: each export is cropped to its visible pixels, and no visible pixel is cut.
 - Lossless PNG optimization: smaller files with exactly the same pixels.
 - A set mode for several sprites in three steps: a Grid step for all the pieces, one pixel grid for all the pieces or one for each piece, a visual resize with a snap to clean sizes, a comparison with the originals, one shared palette, locked reference pieces, and an export of the selected files.
-- A video to sprite animation journey: one pixel grid for all frames, a crop container, frame alignment with an onion skin, one shared palette, and an export as a sprite sheet PNG with a TexturePacker JSON or as an animated GIF.
+- A video to sprite animation journey: one pixel grid for all frames, a crop container, frame alignment with an onion skin, a loop check that finds where the loop closes, one shared palette, and an export as a sprite sheet PNG with a TexturePacker JSON or as an animated GIF.
 - An interface in English and in Brazilian Portuguese, with a language selector in the header, and an interface zoom from 50% to 200% in the desktop app.
 - A desktop window that keeps its size, its position and its zoom for the next start.
 - No account and no upload: your image never leaves your computer. The desktop app and the command line tool work offline and send no data. The web version sends anonymous usage events to Google Analytics, with no image and no file name.
