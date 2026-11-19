@@ -126,14 +126,6 @@ export interface RemovedColor {
   scope: RemoveScope;
 }
 
-/**
- * Sorted tile indices whose color is within `tolerance` (OKLab distance, inclusive) of any of `colors`. A tolerance
- * of 0, or one that is not a finite number above 0, matches the exact colors only. TRANSPARENT never matches.
- */
-export function colorMatches(sprite: Sprite, colors: readonly number[], tolerance: number): Int32Array {
-  return removedMatches(sprite, colors.map((color) => ({ color, tolerance, scope: 'all' })));
-}
-
 /** The color test of some entries, with one distance test per distinct color; null when no entry is given. */
 function colorTest(entries: readonly RemovedColor[]): ((color: number) => boolean) | null {
   if (entries.length === 0) return null;
