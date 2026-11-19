@@ -615,9 +615,29 @@
     return target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
   }
 
+  /** The arrows belong to this screen with any focus: a focused input, slider or select never gets them. */
+  function onArrowKey(event: KeyboardEvent): void {
+    const direction = event.key === 'ArrowLeft' ? -1 : 1;
+    if (event.altKey) {
+      const selected = anim.selectedId;
+      if (selected === null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      moveEntry(selected, direction);
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    stepBy(direction, event.shiftKey);
+  }
+
   /** Capture phase: the arrows and Space drive the frames before the stage pans with them. */
   function onKeyDown(event: KeyboardEvent): void {
     if (app.animExportOpen || app.confirmRequest || app.aboutOpen) return;
+    if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && !event.ctrlKey && !event.metaKey) {
+      onArrowKey(event);
+      return;
+    }
     if (isEditable(event.target)) return;
     if (event.ctrlKey || event.metaKey) {
       if (event.altKey) return;
@@ -634,18 +654,11 @@
     const onButton = event.target instanceof HTMLButtonElement;
     const key = event.key;
     const selected = anim.selectedId;
-    if (event.altKey) {
-      if ((key === 'ArrowLeft' || key === 'ArrowRight') && selected !== null) {
-        event.preventDefault();
-        event.stopPropagation();
-        moveEntry(selected, key === 'ArrowLeft' ? -1 : 1);
-      }
-      return;
-    }
-    if (key === 'ArrowLeft' || key === 'ArrowRight' || key === ',' || key === '.' || key === '<' || key === '>') {
+    if (event.altKey) return;
+    if (key === ',' || key === '.' || key === '<' || key === '>') {
       event.preventDefault();
       event.stopPropagation();
-      stepBy(key === 'ArrowLeft' || key === ',' || key === '<' ? -1 : 1, event.shiftKey);
+      stepBy(key === ',' || key === '<' ? -1 : 1, event.shiftKey);
     } else if (key === 'Home' || key === 'End') {
       event.preventDefault();
       seekTo(key === 'Home' ? 0 : lastIndex);
