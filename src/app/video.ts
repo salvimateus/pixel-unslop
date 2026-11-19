@@ -83,6 +83,20 @@ interface Frame {
 
 type Cancel = (error: VideoError) => void;
 
+export interface CaptureOptions {
+  /** Aborted before its turn or before its thumb, the capture rejects with an `AbortError` and seeks no further. */
+  signal?: AbortSignal;
+}
+
+/** The rejection of a capture whose signal aborted. */
+export function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
+}
+
+function abortedError(): DOMException {
+  return new DOMException('The capture was aborted.', 'AbortError');
+}
+
 /**
  * Frame-exact access to one video file through a hidden `<video>` element. Every capture seeks to the middle of
  * its frame, so the same index always gives the same picture.
@@ -147,11 +161,17 @@ export class VideoSource {
     }
   }
 
-  /** The full-size frame and a thumb `thumbWidth` wide. Captures run one at a time, in call order. */
-  capture(index: number, thumbWidth: number): Promise<Frame> {
+  /**
+   * The full-size frame and a thumb `thumbWidth` wide. Captures run one at a time, in call order. A capture whose
+   * signal aborts while it waits for its turn starts no seek, so a newer capture never waits for a stale one.
+   */
+  capture(index: number, thumbWidth: number, options: CaptureOptions = {}): Promise<Frame> {
+    const { signal } = options;
     return this.enqueue(async () => {
+      if (signal?.aborted) throw abortedError();
       const frame = await this.grab(index);
       try {
+        if (signal?.aborted) throw abortedError();
         const width = Math.max(1, Math.round(thumbWidth));
         const height = Math.max(1, Math.round((width * frame.height) / frame.width));
         const thumb = await createImageBitmap(frame, { resizeWidth: width, resizeHeight: height, resizeQuality: 'medium' });
@@ -167,9 +187,11 @@ export class VideoSource {
     });
   }
 
-  /** The PNG bytes of the full-size frame. */
-  framePng(index: number): Promise<ArrayBuffer> {
+  /** The PNG bytes of the full-size frame. The signal works as in `capture`. */
+  framePng(index: number, options: CaptureOptions = {}): Promise<ArrayBuffer> {
+    const { signal } = options;
     return this.enqueue(async () => {
+      if (signal?.aborted) throw abortedError();
       const frame = await this.grab(index);
       try {
         const canvas = new OffscreenCanvas(frame.width, frame.height);

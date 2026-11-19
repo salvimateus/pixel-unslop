@@ -69,6 +69,8 @@
   let onion = $state(false);
 
   const result = $derived(app.result);
+  /** The frame editor shows a stand-in before view until the worker loads the real one: the compare waits. */
+  const beforeWaiting = $derived(frameMode && !app.frameBeforeReady);
   const palette = $derived.by(() => {
     void app.editVersion;
     if (!result) return [];
@@ -276,7 +278,7 @@
 
   /** "Ver" drags the divider from its line and its knob; a drawing tool only from the knob, so the border stays paintable. */
   function splitHit(p: StagePointer): boolean {
-    if (!scene) return false;
+    if (!scene || beforeWaiting) return false;
     return app.tool === 'view' ? scene.hitSplit(p.sx, p.sy) : scene.hitSplitKnob(p.sx, p.sy);
   }
 
@@ -551,10 +553,13 @@
           onaltclick={(p) => pickAt(tileOf(p))}
           onhover={onHover}
         >
-          <label class="compare">
+          <label class="compare" class:is-waiting={beforeWaiting}>
             <span class="compare-end">{t('clean.before')}</span>
-            <input id="compare-split" name="compare-split" class="compare-range" type="range" min="0" max="100" step="1" value={splitPercent} aria-label={t('clean.compare')} oninput={onCompareInput} />
+            <input id="compare-split" name="compare-split" class="compare-range" type="range" min="0" max="100" step="1" value={splitPercent} aria-label={t('clean.compare')} disabled={beforeWaiting} oninput={onCompareInput} />
             <span class="compare-end">{t('clean.after')}</span>
+            {#if beforeWaiting}
+              <span class="compare-wait" role="status">{t('animEdit.beforeLoading')}</span>
+            {/if}
           </label>
         </Stage>
       {/if}
@@ -867,6 +872,17 @@
       width: 140px;
       accent-color: var(--primary);
       cursor: pointer;
+
+      &:disabled {
+        cursor: progress;
+        opacity: 0.45;
+      }
+    }
+
+    .compare-wait {
+      font: 600 0.75rem/1 var(--font-display);
+      color: var(--text-muted);
+      white-space: nowrap;
     }
 
     .clean-panel {

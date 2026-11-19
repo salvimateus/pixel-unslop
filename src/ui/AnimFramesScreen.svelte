@@ -31,8 +31,17 @@
   const anim = app.anim;
 
   function sourceOf(): AnimSource {
-    const first = anim.owns[0];
-    return { count: anim.count, cols: first?.cols ?? 0, rows: first?.rows ?? 0, frameOf: (index) => anim.displayFrame(index) };
+    const { cols, rows } = anim.gridSize;
+    return {
+      count: anim.count,
+      cols,
+      rows,
+      frameOf: (index) => anim.displayFrame(index),
+      previewOf: (index) => {
+        const preview = anim.preview;
+        return preview && preview.index === index ? preview.tiles : null;
+      },
+    };
   }
 
   function videoFps(): number {
@@ -82,6 +91,10 @@
   let drag: ContainerDrag | null = null;
 
   const lastIndex = $derived(Math.max(0, anim.count - 1));
+  const cursorReady = $derived(anim.has(anim.cursor));
+  /** The count of the timeline; "of max" shows only near the limit. */
+  const budget = $derived(anim.budget);
+  const nearLimit = $derived(budget.max > 0 && budget.used >= budget.max * TUNING.anim.limitNearShare);
   const uses = $derived(anim.uses(anim.cursor));
   const marks = $derived([...new Set(anim.timeline.map((frame) => frame.index))].sort((a, b) => a - b));
   const isReference = $derived(anim.referenceIndex === anim.cursor);
@@ -98,6 +111,13 @@
 
   $effect(() => {
     scene.setFps(videoFps());
+  });
+
+  /** A frame or a preview arrived: the stage looks for the frame of the cursor again. */
+  $effect(() => {
+    void anim.storeVersion;
+    void anim.preview;
+    scene.invalidate();
   });
 
   /** New sampled frames: the same grid repaints; another grid size or count gives the scene a new source. */
@@ -179,9 +199,70 @@
   }
 
   function setStepSize(size: number): void {
-    if (size === anim.stepSize) return;
-    anim.setStepSize(size);
-    sfx.play('tick');
+    if (anim.setStepSize(size)) sfx.play('tick');
+    stepDraft = String(anim.stepSize);
+  }
+
+  /** The typed step: a good number takes effect; anything else goes back to the step. */
+  let stepDraft = $state(untrack(() => String(anim.stepSize)));
+  let stepFocused = false;
+
+  $effect(() => {
+    const size = anim.stepSize;
+    if (!stepFocused) stepDraft = String(size);
+  });
+
+  function commitStepDraft(): void {
+    const value = Number(stepDraft.trim());
+    if (stepDraft.trim() !== '' && Number.isFinite(value) && value >= 1) setStepSize(value);
+    stepDraft = String(anim.stepSize);
+  }
+
+  function onStepKey(event: KeyboardEvent): void {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      commitStepDraft();
+    } else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      event.preventDefault();
+      setStepSize(anim.stepSize + (event.key === 'ArrowUp' ? 1 : -1) * (event.shiftKey ? TUNING.anim.stepWheelShift : 1));
+    } else if (event.key === 'Escape') {
+      stepDraft = String(anim.stepSize);
+    }
+  }
+
+  /**
+   * The wheel over the step control: up adds 1 and down takes 1, with Shift 5. Not passive, so the panel does not
+   * scroll; trackpad deltas add up, so one notch is one step.
+   */
+  function stepWheel(node: HTMLElement) {
+    let total = 0;
+    let last = 0;
+    const onWheel = (event: WheelEvent): void => {
+      // Shift turns a vertical wheel into a horizontal one on some systems.
+      const delta = event.deltaY !== 0 ? event.deltaY : event.deltaX;
+      if (delta === 0) return;
+      event.preventDefault();
+      const now = performance.now();
+      if (now - last > 200) total = 0;
+      last = now;
+      let direction = 0;
+      if (event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL || Math.abs(delta) >= TUNING.anim.stepWheelPx) {
+        direction = Math.sign(delta);
+        total = 0;
+      } else {
+        total += delta;
+        if (Math.abs(total) >= TUNING.anim.stepWheelPx) {
+          direction = Math.sign(total);
+          total = 0;
+        }
+      }
+      if (direction === 0) return;
+      setStepSize(anim.stepSize - direction * (event.shiftKey ? TUNING.anim.stepWheelShift : 1));
+    };
+    node.addEventListener('wheel', onWheel, { passive: false });
+    return {
+      destroy: () => node.removeEventListener('wheel', onWheel),
+    };
   }
 
   function toggleFrame(): void {
@@ -191,21 +272,22 @@
       if (anim.removeIndex(index)) sfx.play('erase');
       return;
     }
-    if (!anim.add(index)) return;
+    if (!app.addAnimFrame(index)) return;
     scene.pop();
     sfx.play('paint');
     if (!prefersReducedMotion()) popped = new Set([index]);
   }
 
-  function addRange(): void {
+  async function addRange(): Promise<void> {
     setPlaying(false);
     const every = Math.max(1, Math.round(rangeEvery) || 1);
-    const added = anim.addRange(anim.cursor, every);
-    if (added.length === 0) {
-      app.toast(t('frames.rangeNone'), 'info');
-      return;
-    }
+    const before = anim.timeline.length;
+    // The entries join before the first wait; their frames arrive after it.
+    const done = app.addAnimRange(anim.cursor, every);
+    if (anim.timeline.length === before) return;
     sfx.play('sweep');
+    const added = await done;
+    if (added.length === 0) return;
     if (!prefersReducedMotion()) popped = new Set(added.map((frame) => frame.index));
     app.toast(added.length === 1 ? t('frames.rangeAddedOne') : t('frames.rangeAdded', { count: added.length }), 'success');
   }
@@ -374,7 +456,7 @@
       if (onButton || event.repeat) return;
       event.preventDefault();
       toggleFrame();
-    } else if (/^[1-4]$/.test(key)) {
+    } else if (/^[1-9]$/.test(key)) {
       event.preventDefault();
       setStepSize(Number(key));
     } else if (key.toLowerCase() === 'o') {
@@ -417,6 +499,9 @@
             <span class="counter-time">{t('frames.time', { time: seconds })}</span>
             {#if playing}
               <span class="counter-playing"><Icon name="play" size={14} />{t('frames.playing')}</span>
+            {/if}
+            {#if !cursorReady}
+              <span class="counter-cleaning"><span class="cleaning-dot" aria-hidden="true"></span>{t('frames.cleaning')}</span>
             {/if}
           </p>
           {#if hasContainer}
@@ -468,7 +553,8 @@
       <AnimTimeline
         frames={anim.timeline}
         thumbOf={(frame) => anim.editsOf(frame.id) ?? anim.displayFrame(frame.index)}
-        version={anim.framesVersion}
+        version={anim.framesVersion + anim.storeVersion}
+        pending={(frame) => anim.isPending(frame.index)}
         selectedId={anim.selectedId}
         referenceIndex={anim.referenceIndex}
         background={app.previewBg}
@@ -553,11 +639,48 @@
         </div>
 
         <div class="field">
-          <span class="field-label" id="frames-step-label">{t('frames.stepSize')}</span>
-          <div class="segmented" role="group" aria-labelledby="frames-step-label">
-            {#each TUNING.anim.stepSizes as size (size)}
-              <button type="button" aria-pressed={anim.stepSize === size} aria-keyshortcuts={String(size)} onclick={() => setStepSize(size)}>{size}</button>
-            {/each}
+          <label class="field-label" for="frames-step">{t('frames.stepSize')}</label>
+          <div class="step-control" title={t('frames.stepWheel')} use:stepWheel>
+            <button
+              type="button"
+              class="icon-btn small"
+              aria-label={t('frames.stepDown')}
+              title={t('frames.stepDown')}
+              disabled={anim.stepSize <= 1}
+              use:holdRepeat={{ step: (shift) => setStepSize(anim.stepSize - (shift ? TUNING.anim.stepWheelShift : 1)) }}
+            >
+              <span aria-hidden="true">−</span>
+            </button>
+            <input
+              id="frames-step"
+              name="frames-step"
+              class="step-input"
+              type="text"
+              inputmode="numeric"
+              role="spinbutton"
+              autocomplete="off"
+              aria-valuemin="1"
+              aria-valuemax={anim.maxStep}
+              aria-valuenow={anim.stepSize}
+              aria-keyshortcuts="1 2 3 4 5 6 7 8 9"
+              bind:value={stepDraft}
+              onfocus={() => (stepFocused = true)}
+              onblur={() => {
+                stepFocused = false;
+                commitStepDraft();
+              }}
+              onkeydown={onStepKey}
+            />
+            <button
+              type="button"
+              class="icon-btn small"
+              aria-label={t('frames.stepUp')}
+              title={t('frames.stepUp')}
+              disabled={anim.stepSize >= anim.maxStep}
+              use:holdRepeat={{ step: (shift) => setStepSize(anim.stepSize + (shift ? TUNING.anim.stepWheelShift : 1)) }}
+            >
+              <span aria-hidden="true">+</span>
+            </button>
           </div>
         </div>
       </section>
@@ -605,7 +728,15 @@
       <section class="frames-block" aria-labelledby="frames-loop-label">
         <h2 class="section-title" id="frames-loop-label">{t('frames.loopTitle')}</h2>
         <LoopPreview frames={anim.built.frames} version={anim.version} fps={anim.fps} background={app.previewBg} label={t('anim.loopLabel')} />
-        <p class="hint">{anim.timeline.length === 0 ? t('anim.timelineEmpty') : anim.timeline.length === 1 ? t('frames.countOne') : t('frames.count', { count: anim.timeline.length })}</p>
+        <p class="hint" class:is-near={nearLimit}>
+          {anim.timeline.length === 0
+            ? t('anim.timelineEmpty')
+            : nearLimit
+              ? t('frames.countOf', { count: budget.used, max: budget.max })
+              : anim.timeline.length === 1
+                ? t('frames.countOne')
+                : t('frames.count', { count: anim.timeline.length })}
+        </p>
       </section>
 
       <details class="frames-block keys">
@@ -617,7 +748,7 @@
           <dd>{t('frames.keyPlay')}</dd>
           <dt><KeyText text="Enter" /></dt>
           <dd>{t('frames.keyToggle')}</dd>
-          <dt><span class="keycap-group"><kbd class="keycap">1</kbd>–<kbd class="keycap">4</kbd></span></dt>
+          <dt><span class="keycap-group"><kbd class="keycap">1</kbd>–<kbd class="keycap">9</kbd></span></dt>
           <dd>{t('frames.stepSize')}</dd>
           <dt><kbd class="keycap">O</kbd></dt>
           <dd>{t('anim.onion')}</dd>
@@ -1006,6 +1137,74 @@
     .field-label {
       color: var(--text-muted);
       font-size: 0.8125rem;
+      font-weight: 600;
+    }
+
+    .step-control {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      width: max-content;
+      padding: 3px;
+      background: var(--surface-1);
+      border: 2px solid var(--line);
+      border-radius: var(--radius-m);
+
+      & .icon-btn.small {
+        width: 30px;
+        height: 30px;
+        font: 700 1.125rem/1 var(--font-mono);
+      }
+    }
+
+    .step-input {
+      width: 5ch;
+      min-height: 30px;
+      padding: 0 var(--space-1);
+      color: var(--text);
+      font: 600 0.9375rem/1 var(--font-mono);
+      font-variant-numeric: tabular-nums;
+      text-align: center;
+      background: var(--surface-sunken);
+      border: 2px solid var(--line-strong);
+      border-radius: var(--radius-s);
+
+      &:focus-visible {
+        outline: 2px solid var(--focus);
+        outline-offset: 1px;
+      }
+    }
+
+    .counter-cleaning {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    .cleaning-dot {
+      width: 8px;
+      height: 8px;
+      background: var(--teal);
+      border-radius: 50%;
+      animation: cleaning-pulse 0.9s ease-in-out infinite alternate;
+    }
+
+    @keyframes cleaning-pulse {
+      from {
+        opacity: 0.25;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .cleaning-dot {
+        animation: none;
+      }
+    }
+
+    .is-near {
+      color: var(--text);
       font-weight: 600;
     }
 

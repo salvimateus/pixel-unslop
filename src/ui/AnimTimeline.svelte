@@ -27,9 +27,11 @@
     onedit: (id: number) => void;
     /** The entry has pixel edits: its thumbnail gets a pencil badge. */
     edited: (frame: AnimFrame) => boolean;
+    /** The frame of the entry is on its way: its thumbnail waits. */
+    pending?: (frame: AnimFrame) => boolean;
   }
 
-  let { frames, thumbOf, version, selectedId, current = null, referenceIndex = null, background, onselect, onremove, onduplicate, onmove, onedit, edited }: Props = $props();
+  let { frames, thumbOf, version, selectedId, current = null, referenceIndex = null, background, onselect, onremove, onduplicate, onmove, onedit, edited, pending = () => false }: Props = $props();
 
   let strip: HTMLOListElement | undefined = $state();
   /** The entries that arrived after the strip opened: they pop in once. */
@@ -127,8 +129,10 @@
             class="timeline-frame bg-{background}"
             class:is-selected={frame.id === selectedId}
             class:is-current={position === current}
+            class:is-pending={pending(frame)}
             aria-pressed={frame.id === selectedId}
-            aria-label="{position + 1}: {t('anim.frameNumber', { n: frame.index + 1 })}{edited(frame) ? ` · ${t('animEdit.edited')}` : ''}"
+            aria-busy={pending(frame)}
+            aria-label="{position + 1}: {t('anim.frameNumber', { n: frame.index + 1 })}{pending(frame) ? ` · ${t('frames.pending')}` : ''}{edited(frame) ? ` · ${t('animEdit.edited')}` : ''}"
             title={t('animEdit.dblclick')}
             onclick={() => onselect(frame.id)}
             ondblclick={() => onedit(frame.id)}
@@ -268,6 +272,33 @@
       height: 100%;
       object-fit: contain;
       image-rendering: pixelated;
+    }
+
+    /* A frame on its way: a soft shine moves over the empty thumbnail. */
+    .is-pending::after {
+      content: '';
+      position: absolute;
+      inset: 3px;
+      border-radius: 2px;
+      background: linear-gradient(100deg, transparent 30%, color-mix(in srgb, var(--teal) 35%, transparent) 50%, transparent 70%) 0 0 / 250% 100%;
+      animation: pending-shine 1.1s linear infinite;
+      pointer-events: none;
+    }
+
+    @keyframes pending-shine {
+      from {
+        background-position: 100% 0;
+      }
+      to {
+        background-position: -150% 0;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .is-pending::after {
+        animation: none;
+        background: color-mix(in srgb, var(--teal) 18%, transparent);
+      }
     }
 
     .timeline-position {

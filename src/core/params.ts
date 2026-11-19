@@ -9,10 +9,13 @@ export const PARAMS = {
     maxExportSide: 16_384,
     /** Largest number of tiles in one fit. */
     maxCells: 4_000_000,
-    /** Largest number of frames that one video gives to an animation. */
+    /** Largest number of timeline entries of one animation. */
     maxFrames: 600,
-    /** Largest number of raw plus own tiles of all sampled frames together. */
-    maxFrameTiles: 8_000_000,
+    /**
+     * Largest number of raw plus own tiles of the distinct video frames that the timeline and the reference pin.
+     * At 4 bytes a tile this is 192 MB of sprite data, safe in a WebView2 tab: about 160 frames of a 512 x 288 grid.
+     */
+    maxTimelineTiles: 48_000_000,
   },
   edges: {
     /** Histogram bins per source pixel for the sub-pixel edge positions. */

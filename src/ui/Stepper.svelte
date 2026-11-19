@@ -32,8 +32,8 @@
   function reachable(screen: Screen): boolean {
     if (screen === 'drop') return true;
     if (screen === 'anim-grid') return app.anim.active;
-    if (screen === 'anim-frames') return app.anim.extracted || app.screen === 'anim-grid';
-    if (screen === 'anim' || screen === 'anim-align') return app.anim.extracted && app.anim.timeline.length > 0;
+    if (screen === 'anim-frames') return app.anim.locked || app.screen === 'anim-grid';
+    if (screen === 'anim' || screen === 'anim-align') return app.anim.locked && app.anim.timeline.length > 0;
     if (screen === 'set-grid') return app.set.active;
     if (screen === 'set') return app.set.active && (app.setCleaned || app.screen === 'set-grid');
     if (screen === 'grid') return app.source !== null;

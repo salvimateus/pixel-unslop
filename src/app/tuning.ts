@@ -127,9 +127,24 @@ export const TUNING = {
     minFps: 1,
     maxFps: 60,
     fpsChips: [6, 8, 10, 12, 15, 24],
-    /** The step sizes of the Frames screen; Shift steps this many frames. */
-    stepSizes: [1, 2, 3, 4],
+    /** The step of the Frames screen at first use; Shift steps this many frames, and so does Shift on the wheel of the step. */
+    defaultStep: 4,
     shiftStep: 10,
+    stepWheelShift: 5,
+    /** Trackpad wheel pixels that make one step of the step control; a mouse notch is one step. */
+    stepWheelPx: 50,
+    /**
+     * The cache of the Frames screen: unpinned frames that were shown or fetched ahead, at most this many and this
+     * many raw plus own tiles (4 bytes each). Ahead of the cursor, it fetches this many steps once the user rests this long.
+     */
+    cacheFrames: 24,
+    cacheTiles: 6_000_000,
+    prefetchSteps: 3,
+    prefetchIdleMs: 220,
+    /** While pinned frames arrive one by one, the timeline builds at most once in this time. */
+    arrivalBuildMs: 400,
+    /** The frame count of the Frames screen shows its limit from this share of it. */
+    limitNearShare: 0.8,
     /** Width of the small picture of each video frame, in pixels. */
     monitorPx: 192,
     maxZoom: 96,

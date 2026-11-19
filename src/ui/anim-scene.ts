@@ -10,6 +10,24 @@ export interface AnimSource {
   cols: number;
   rows: number;
   frameOf(index: number): Sprite | null;
+  /**
+   * A stand-in for a frame that is not there yet, drawn over the frame box: the video frame at one pixel per tile.
+   * Without a frame and a stand-in, the scene keeps the last frame it drew.
+   */
+  previewOf?(index: number): CanvasImageSource | null;
+}
+
+/** Baked frames that a scene keeps; the oldest go first. */
+const BAKED_LIMIT = 48;
+const GHOST_LIMIT = 8;
+
+function remember<T>(map: Map<number, T>, index: number, value: T, limit: number): void {
+  map.set(index, value);
+  while (map.size > limit) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
 }
 
 /**
@@ -28,8 +46,10 @@ export class AnimScene implements Scene {
 
   protected host: StageHost | null = null;
   private source: AnimSource;
-  private baked = new Map<number, HTMLCanvasElement | null>();
-  private ghosts = new Map<number, HTMLCanvasElement | null>();
+  private baked = new Map<number, HTMLCanvasElement>();
+  private ghosts = new Map<number, HTMLCanvasElement>();
+  /** The last frame drawn, kept on screen while the next one is on its way. */
+  private lastDrawn: HTMLCanvasElement | null = null;
   private current = 0;
   private fps: number;
   private isPlaying = false;
@@ -66,6 +86,7 @@ export class AnimScene implements Scene {
     this.source = source;
     this.baked.clear();
     this.ghosts.clear();
+    this.lastDrawn = null;
     if (this.current >= source.count) this.current = Math.max(0, source.count - 1);
     const width = Math.max(1, source.cols);
     const height = Math.max(1, source.rows);
@@ -81,6 +102,12 @@ export class AnimScene implements Scene {
   refresh(): void {
     this.baked.clear();
     this.ghosts.clear();
+    this.lastDrawn = null;
+    this.host?.invalidate();
+  }
+
+  /** Frames arrived or left: the frames that were missing are read again on the next draw. */
+  invalidate(): void {
     this.host?.invalidate();
   }
 
@@ -136,19 +163,22 @@ export class AnimScene implements Scene {
   }
 
   private canvasOf(index: number): HTMLCanvasElement | null {
-    if (this.baked.has(index)) return this.baked.get(index) ?? null;
+    const known = this.baked.get(index);
+    if (known) return known;
     const sprite = this.source.frameOf(index);
-    const canvas = sprite && sprite.cols === this.contentW && sprite.rows === this.contentH ? bakeSprite(sprite) : null;
-    this.baked.set(index, canvas);
+    if (!sprite || sprite.cols !== this.contentW || sprite.rows !== this.contentH) return null;
+    const canvas = bakeSprite(sprite);
+    remember(this.baked, index, canvas, BAKED_LIMIT);
     return canvas;
   }
 
   private ghostCanvasOf(index: number): HTMLCanvasElement | null {
-    if (this.ghosts.has(index)) return this.ghosts.get(index) ?? null;
+    const known = this.ghosts.get(index);
+    if (known) return known;
     const sprite = this.source.frameOf(index);
-    const fits = sprite && sprite.cols === this.contentW && sprite.rows === this.contentH;
-    const canvas = fits ? bakeSprite(sprite, { color: STAGE_COLORS.ghostPrevious, strength: TUNING.anim.ghostTint }) : null;
-    this.ghosts.set(index, canvas);
+    if (!sprite || sprite.cols !== this.contentW || sprite.rows !== this.contentH) return null;
+    const canvas = bakeSprite(sprite, { color: STAGE_COLORS.ghostPrevious, strength: TUNING.anim.ghostTint });
+    remember(this.ghosts, index, canvas, GHOST_LIMIT);
     return canvas;
   }
 
@@ -183,7 +213,14 @@ export class AnimScene implements Scene {
     if (count === 0) return alive;
     ctx.imageSmoothingEnabled = false;
     const frame = this.canvasOf(this.current);
-    if (frame) ctx.drawImage(frame, rect.x, rect.y, rect.w, rect.h);
+    if (frame) {
+      ctx.drawImage(frame, rect.x, rect.y, rect.w, rect.h);
+      this.lastDrawn = frame;
+    } else {
+      const preview = this.source.previewOf?.(this.current) ?? null;
+      if (preview) ctx.drawImage(preview, rect.x, rect.y, rect.w, rect.h);
+      else if (this.lastDrawn) ctx.drawImage(this.lastDrawn, rect.x, rect.y, rect.w, rect.h);
+    }
     if (this.onion) {
       const ghost = this.ghostOf(this.current);
       const canvas = ghost === null || ghost === this.current ? null : this.ghostCanvasOf(ghost);

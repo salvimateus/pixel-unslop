@@ -1,4 +1,5 @@
 import type { CellGrid, Sprite } from '../core/types.ts';
+import { PARAMS } from '../core/params.ts';
 import { placeFrames, prepareFrames, type BuiltFrames, type CellMode, type FrameOffset, type PreparedFrames } from '../core/frames.ts';
 import { borderBackground, eraseTiles, listPalette, opaqueBox, type TileBox } from '../core/sprite.ts';
 import { track } from './analytics.ts';
@@ -14,6 +15,31 @@ export interface AnimFrame {
   readonly index: number;
   /** Whole tiles that the content of this frame moves by in the output. */
   readonly offset: FrameOffset;
+}
+
+/** One sampled video frame: its tiles before and after its own color merge, and a small picture of the video frame. */
+export interface SampledFrame {
+  readonly raw: Sprite;
+  readonly own: Sprite;
+  readonly thumb: ImageBitmap;
+}
+
+/** The video frame as it comes out of the video, while its clean tiles are on their way. Owned by the model: closed on replace. */
+export interface FramePreview {
+  readonly index: number;
+  /** The grid extent of the frame at one pixel per tile. */
+  readonly tiles: ImageBitmap;
+  readonly thumb: ImageBitmap;
+}
+
+/** What the frame store holds: distinct video frames, the pinned ones, and their raw plus own tiles. */
+export interface FrameStoreStats {
+  cached: number;
+  pinned: number;
+  tiles: number;
+  pinnedTiles: number;
+  /** Pinned frames that are not sampled yet. */
+  pending: number;
 }
 
 /** The cell modes in the order of the UI: the container first, then the automatic ones. */
@@ -51,11 +77,19 @@ function storedCell(): CellMode {
   return (CELL_MODES as readonly string[]).includes(value ?? '') ? (value as CellMode) : 'box';
 }
 
+/** The distinct video frames that `PARAMS.limits.maxTimelineTiles` holds at this many raw plus own tiles per frame. */
+export function pinnedLimit(tilesPerFrame: number): number {
+  return tilesPerFrame > 0 ? Math.floor(PARAMS.limits.maxTimelineTiles / tilesPerFrame) : 0;
+}
+
 function clampFps(fps: number): number {
   return Math.round(Math.min(TUNING.anim.maxFps, Math.max(TUNING.anim.minFps, fps)));
 }
 
-function sameGrid(a: CellGrid, b: CellGrid): boolean {
+/** A new key: the default step is 4 even where an older step was stored. */
+const STEP_KEY = 'animStepSize';
+
+export function sameGrid(a: CellGrid, b: CellGrid): boolean {
   if (a.x.length !== b.x.length || a.y.length !== b.y.length) return false;
   for (let i = 0; i < a.x.length; i++) if (a.x[i] !== b.x[i]) return false;
   for (let i = 0; i < a.y.length; i++) if (a.y[i] !== b.y[i]) return false;
@@ -63,9 +97,11 @@ function sameGrid(a: CellGrid, b: CellGrid): boolean {
 }
 
 /**
- * The model of one video animation: the sampled frames of the video, the ordered timeline and the output
- * rules (one palette, the reference frame, the background erase and the common cell). The app writes the
- * sampled frames; every option change builds the output frames again at once.
+ * The model of one video animation: the frame store of the video, the ordered timeline and the output rules (one
+ * palette, the reference frame, the background erase and the common cell). The store keeps the sampled frames by
+ * video index: the pinned ones (every frame of the timeline and the reference frame) stay while they are used, the
+ * others form a small cache that forgets the oldest frame first. The app samples the frames and puts them in; every
+ * option change builds the output frames again at once.
  */
 export class Animation {
   /** The open video. Plain field: nothing renders from the element. */
@@ -74,22 +110,27 @@ export class Animation {
   /** The video frame that the Grade step shows. */
   keyIndex = $state(0);
 
-  /** The tiles of every sampled video frame, before and after its own color merge. Replaced as a whole. */
-  raws = $state.raw<Sprite[]>([]);
-  owns = $state.raw<Sprite[]>([]);
-  /** A small picture of each sampled video frame, for the monitor. Closed on replace and on clear. */
-  thumbs = $state.raw<ImageBitmap[]>([]);
-  /** The merge strength of `owns`. */
+  /** The sampled frames by video index. Map order is the use order: the first unpinned frame is the next to go. */
+  private store = new Map<number, SampledFrame>();
+  /** Changes when a frame comes into the store or leaves it: views of missing frames look again. */
+  storeVersion = $state(0);
+  /** The video frame of the cursor before its clean tiles arrive. */
+  preview = $state.raw<FramePreview | null>(null);
+  /** The merge strength of the own tiles in the store. */
   ownStrength = Number.NaN;
-  /** The grid lines that sampled the frames, and the fit version of the Grade step at that time. */
+  /** The grid lines that sample the frames, and the fit version of the Grade step at that time. Null before the lock. */
   grid: CellGrid | null = null;
   sampledFitVersion = -1;
-  /** Changes when the sampled frames or their merge change: views of the video frames draw again. */
+  /** Changes with the grid and the merge strength: a sample made before the change does not go in the store. */
+  generation = 0;
+  /** Changes when the frames in the store change their pixels: views of the video frames draw again. */
   framesVersion = $state(0);
+  /** Called when the frames that the screen needs change: the cursor, the timeline, the reference, the grid. */
+  onneed: (() => void) | null = null;
 
   /** The video frame on the Frames screen. */
   cursor = $state(0);
-  stepSize = $state(storedNumber('animStep', 1, 4, 1));
+  stepSize = $state(storedNumber(STEP_KEY, 1, Number.MAX_SAFE_INTEGER, TUNING.anim.defaultStep));
   timeline = $state.raw<AnimFrame[]>([]);
   selectedId = $state<number | null>(null);
   /** The video frame whose colors the reference option uses; the key frame by default. */
@@ -121,6 +162,9 @@ export class Animation {
   exportedVersion = $state(-1);
 
   private nextId = 1;
+  private arrivalTimer = 0;
+  /** The container of the first add waits for the first frame to arrive. */
+  private containerWaits = false;
   /** The user picked the reference frame; until then it follows the key frame. */
   private referenceChosen = false;
   /** The per-frame erase of the Frames screen, per video frame, until the frames or the erase change. */
@@ -142,12 +186,19 @@ export class Animation {
     return this.info !== null;
   }
 
+  /** The video frames that the Frames screen can show: all of them once the grid is locked. */
   get count(): number {
-    return this.owns.length;
+    return this.grid && this.info ? this.info.frameCount : 0;
   }
 
-  get extracted(): boolean {
-    return this.owns.length > 0;
+  /** The grid is locked: the Frames screen can open. */
+  get locked(): boolean {
+    return this.grid !== null;
+  }
+
+  /** The largest step: one less than the video frames. */
+  get maxStep(): number {
+    return Math.max(1, (this.info?.frameCount ?? 2) - 1);
   }
 
   /** A timeline that no export has written yet. */
@@ -164,10 +215,204 @@ export class Animation {
     return this.timeline[0] ?? null;
   }
 
-  /** The tile size of the grid of the sampled frames. */
+  /** The tile size of the locked grid. */
   get gridSize(): { cols: number; rows: number } {
-    const own = this.owns[0];
-    return own ? { cols: own.cols, rows: own.rows } : { cols: 0, rows: 0 };
+    const grid = this.grid;
+    return grid ? { cols: Math.max(0, grid.x.length - 1), rows: Math.max(0, grid.y.length - 1) } : { cols: 0, rows: 0 };
+  }
+
+  /** The raw plus own tiles of one sampled frame on the locked grid. */
+  get tilesPerFrame(): number {
+    const { cols, rows } = this.gridSize;
+    return cols * rows * 2;
+  }
+
+  /** The distinct video frames that fit the timeline budget on the locked grid. */
+  get maxPinned(): number {
+    return pinnedLimit(this.tilesPerFrame);
+  }
+
+  /**
+   * How full the timeline is: the timeline entries against `PARAMS.limits.maxFrames`, or the distinct pinned frames
+   * against the tile budget, whichever is nearer to its limit.
+   */
+  get budget(): { used: number; max: number } {
+    void this.timeline;
+    const entries = { used: this.timeline.length, max: PARAMS.limits.maxFrames };
+    const frames = { used: this.pinnedIndices().size, max: this.maxPinned };
+    return frames.max > 0 && frames.used / frames.max > entries.used / entries.max ? frames : entries;
+  }
+
+  /** The video frames that the store keeps while they are used: every timeline frame and the reference frame. */
+  pinnedIndices(): Set<number> {
+    const pinned = new Set(this.timeline.map((frame) => frame.index));
+    if (this.locked) pinned.add(this.referenceIndex);
+    return pinned;
+  }
+
+  /** The sampled frame of a video index, or undefined. Reactive through `storeVersion`. */
+  sampled(index: number): SampledFrame | undefined {
+    void this.storeVersion;
+    return this.store.get(index);
+  }
+
+  /** The frame is in the store. Reactive through `storeVersion`. */
+  has(index: number): boolean {
+    void this.storeVersion;
+    return this.store.has(index);
+  }
+
+  /** A timeline frame that is not sampled yet. Reactive. */
+  isPending(index: number): boolean {
+    void this.storeVersion;
+    return !this.store.has(index);
+  }
+
+  /** The distinct timeline frames that are not sampled yet. Reactive. */
+  get pendingCount(): number {
+    void this.storeVersion;
+    let count = 0;
+    for (const index of new Set(this.timeline.map((frame) => frame.index))) if (!this.store.has(index)) count++;
+    return count;
+  }
+
+  /** The pinned frames that are not sampled yet: the timeline frames nearest to `near` first, then the reference. */
+  missingPinned(near: number): number[] {
+    const missing = [...new Set(this.timeline.map((frame) => frame.index))].filter((index) => !this.store.has(index));
+    missing.sort((a, b) => Math.abs(a - near) - Math.abs(b - near) || a - b);
+    if (this.locked && !this.store.has(this.referenceIndex) && !missing.includes(this.referenceIndex)) missing.push(this.referenceIndex);
+    return missing;
+  }
+
+  stats(): FrameStoreStats {
+    const pinned = this.pinnedIndices();
+    let pinnedCount = 0;
+    let pinnedTiles = 0;
+    let tiles = 0;
+    for (const [index, frame] of this.store) {
+      const size = frame.raw.pixels.length + frame.own.pixels.length;
+      tiles += size;
+      if (pinned.has(index)) {
+        pinnedCount++;
+        pinnedTiles += size;
+      }
+    }
+    let pending = 0;
+    for (const index of pinned) if (!this.store.has(index)) pending++;
+    return { cached: this.store.size - pinnedCount, pinned: pinnedCount, tiles, pinnedTiles, pending };
+  }
+
+  /**
+   * How many of these new timeline entries fit, in order: the entries stay within `PARAMS.limits.maxFrames`, and
+   * the distinct pinned frames within the tile budget of the grid.
+   */
+  room(indices: readonly number[]): number {
+    const pinned = this.pinnedIndices();
+    const maxPinned = this.maxPinned;
+    let entries = this.timeline.length;
+    let fit = 0;
+    for (const index of indices) {
+      if (entries + 1 > PARAMS.limits.maxFrames) break;
+      if (!pinned.has(index)) {
+        if (pinned.size + 1 > maxPinned) break;
+        pinned.add(index);
+      }
+      entries++;
+      fit++;
+    }
+    return fit;
+  }
+
+  /**
+   * A sampled frame comes into the store. It is refused (and its thumb closed) when the grid or the strength changed
+   * after the sample started, or when the frame is already there. Returns true when it went in.
+   */
+  put(index: number, frame: SampledFrame, generation: number): boolean {
+    if (generation !== this.generation || this.store.has(index) || !this.locked) {
+      frame.thumb.close();
+      return false;
+    }
+    this.store.set(index, frame);
+    this.storeVersion++;
+    const pinned = this.pinnedIndices();
+    if (pinned.has(index)) this.arrived();
+    this.trimCache(pinned);
+    return true;
+  }
+
+  /**
+   * A pinned frame arrived. The palette work of the timeline runs on the main thread over every frame, so while
+   * more pinned frames are on their way, the arrivals of a short time make one build.
+   */
+  private arrived(): void {
+    clearTimeout(this.arrivalTimer);
+    this.arrivalTimer = 0;
+    const build = () => {
+      this.arrivalTimer = 0;
+      this.rebuild();
+      this.settleContainer();
+    };
+    if (this.stats().pending === 0) build();
+    else this.arrivalTimer = window.setTimeout(build, TUNING.anim.arrivalBuildMs);
+  }
+
+  /** The frame was shown again: the cache forgets it last. */
+  touch(index: number): void {
+    const frame = this.store.get(index);
+    if (!frame) return;
+    this.store.delete(index);
+    this.store.set(index, frame);
+  }
+
+  /** The video frame of the cursor, before its clean tiles. The model owns the bitmaps and closes the ones it replaces. */
+  setPreview(index: number, tiles: ImageBitmap, thumb: ImageBitmap): void {
+    this.dropPreview();
+    this.preview = { index, tiles, thumb };
+  }
+
+  private dropPreview(): void {
+    const preview = this.preview;
+    if (!preview) return;
+    this.preview = null;
+    preview.tiles.close();
+    preview.thumb.close();
+  }
+
+  /** Forgets the oldest unpinned frames past the cache budget of `TUNING.anim`. The cursor frame stays. */
+  private trimCache(pinned = this.pinnedIndices()): void {
+    let count = 0;
+    let tiles = 0;
+    for (const [index, frame] of this.store) {
+      if (pinned.has(index)) continue;
+      count++;
+      tiles += frame.raw.pixels.length + frame.own.pixels.length;
+    }
+    if (count <= TUNING.anim.cacheFrames && tiles <= TUNING.anim.cacheTiles) return;
+    for (const [index, frame] of this.store) {
+      if (count <= TUNING.anim.cacheFrames && tiles <= TUNING.anim.cacheTiles) break;
+      if (pinned.has(index) || index === this.cursor) continue;
+      this.evict(index);
+      count--;
+      tiles -= frame.raw.pixels.length + frame.own.pixels.length;
+    }
+  }
+
+  private evict(index: number): void {
+    const frame = this.store.get(index);
+    if (!frame) return;
+    this.store.delete(index);
+    this.displayCache.delete(index);
+    frame.thumb.close();
+    this.storeVersion++;
+  }
+
+  /** Empties the store and the preview, and closes their bitmaps. */
+  private emptyStore(): void {
+    for (const frame of this.store.values()) frame.thumb.close();
+    this.store.clear();
+    this.displayCache.clear();
+    this.dropPreview();
+    this.storeVersion++;
   }
 
   /** Some timeline entry has pixel edits. */
@@ -287,30 +532,31 @@ export class Animation {
     this.info = video.info;
   }
 
-  /** True when the frames were sampled with exactly these grid lines. */
+  /** True when the grid is locked with exactly these grid lines. */
   sampledWith(grid: CellGrid, fitVersion: number): boolean {
-    if (!this.extracted || !this.grid) return false;
+    if (!this.grid) return false;
     return this.sampledFitVersion === fitVersion || sameGrid(this.grid, grid);
   }
 
   /**
-   * New sampled frames. The timeline keeps its video indices; entries past the new count go away. A grid of
-   * another tile size makes the container again on the first entry and resets every offset: returns true then.
+   * Locks a grid. `frames` holds the pinned frames sampled on it; the cache is cleared, and every other frame is
+   * sampled on demand. The timeline stays. A grid of another tile size makes the container again on the first entry,
+   * resets every offset and drops the pixel edits: returns true then.
    */
-  setFrames(raws: Sprite[], owns: Sprite[], thumbs: ImageBitmap[], strength: number, grid: CellGrid, fitVersion: number): boolean {
+  setGrid(grid: CellGrid, fitVersion: number, strength: number, frames: ReadonlyMap<number, SampledFrame>): boolean {
     const before = this.gridSize;
-    const sizeChanged = owns[0]?.cols !== before.cols || owns[0]?.rows !== before.rows;
-    const resized = this.container !== null && sizeChanged;
-    for (const thumb of this.thumbs) thumb.close();
-    this.raws = raws;
-    this.owns = owns;
-    this.thumbs = thumbs;
-    this.ownStrength = strength;
+    const wasLocked = this.locked;
+    this.emptyStore();
     this.grid = { x: grid.x.slice(), y: grid.y.slice() };
     this.sampledFitVersion = fitVersion;
-    this.displayCache.clear();
+    this.ownStrength = strength;
+    this.generation++;
+    const size = this.gridSize;
+    const sizeChanged = !wasLocked || size.cols !== before.cols || size.rows !== before.rows;
+    const resized = this.container !== null && sizeChanged;
+    for (const [index, frame] of frames) this.store.set(index, frame);
     this.framesVersion++;
-    const count = owns.length;
+    const count = this.count;
     this.cursor = Math.min(this.cursor, Math.max(0, count - 1));
     if (!this.referenceChosen || this.referenceIndex >= count) this.referenceIndex = Math.min(this.keyIndex, Math.max(0, count - 1));
     let kept = this.timeline.filter((frame) => frame.index < count);
@@ -328,27 +574,52 @@ export class Animation {
       this.container = this.initialContainer(this.prepared.frames[0]);
       this.place();
     }
+    this.onneed?.();
     return resized;
   }
 
-  /** The own merge of every frame at a new strength. */
-  setOwn(owns: Sprite[], strength: number): void {
-    if (owns.length !== this.owns.length) return;
-    this.owns = owns;
+  /**
+   * The own merge of the pinned frames at a new strength, by video index. Every other frame leaves the store: its
+   * own tiles are of the old strength, so it is sampled again when it is needed.
+   */
+  setOwns(owns: ReadonlyMap<number, Sprite>, strength: number): void {
+    for (const [index, frame] of [...this.store]) {
+      const own = owns.get(index);
+      if (own) this.store.set(index, { raw: frame.raw, own, thumb: frame.thumb });
+      else this.evict(index);
+    }
     this.ownStrength = strength;
+    this.generation++;
+    this.storeVersion++;
     this.displayCache.clear();
     this.framesVersion++;
     this.editVersion++;
     this.rebuild();
+    this.onneed?.();
   }
 
+  /** The raw tiles of the sampled pinned frames, by video index: the input of a new merge. */
+  pinnedRaws(): Map<number, Sprite> {
+    const raws = new Map<number, Sprite>();
+    for (const index of this.pinnedIndices()) {
+      const frame = this.store.get(index);
+      if (frame) raws.set(index, frame.raw);
+    }
+    return raws;
+  }
+
+  /** The small picture of a video frame: from the store, or from the preview of the cursor. Reactive. */
   thumbOf(index: number): ImageBitmap | null {
-    return this.thumbs[index] ?? null;
+    const frame = this.sampled(index);
+    if (frame) return frame.thumb;
+    const preview = this.preview;
+    return preview && preview.index === index ? preview.thumb : null;
   }
 
-  /** The clean video frame as the Frames screen shows it: its own merge, with its background erased when that is on. */
+  /** The clean video frame as the Frames screen shows it: its own merge, with its background erased when that is on. Reactive. */
   displayFrame(index: number): Sprite | null {
-    const own = this.owns[index];
+    void this.storeVersion;
+    const own = this.store.get(index)?.own;
     if (!own) return null;
     if (!this.eraseBackground) return own;
     const cached = this.displayCache.get(index);
@@ -365,14 +636,17 @@ export class Animation {
     const next = Math.min(this.count - 1, Math.max(0, Math.round(index)));
     if (next === this.cursor) return false;
     this.cursor = next;
+    this.onneed?.();
     return true;
   }
 
-  setStepSize(size: number): void {
-    const next = Math.min(4, Math.max(1, Math.round(size)));
-    if (next === this.stepSize) return;
+  /** The step of the Frames screen: 1 up to one less than the video frames. Returns false when it did not change. */
+  setStepSize(size: number): boolean {
+    const next = Math.min(this.maxStep, Math.max(1, Math.round(size) || 1));
+    if (next === this.stepSize) return false;
     this.stepSize = next;
-    writeStored('animStep', String(next));
+    writeStored(STEP_KEY, String(next));
+    return true;
   }
 
   /**
@@ -380,7 +654,7 @@ export class Animation {
    * picked out of order still play in video order. Returns the new entry.
    */
   add(index: number): AnimFrame | null {
-    if (index < 0 || index >= this.count) return null;
+    if (index < 0 || index >= this.count || this.room([index]) === 0) return null;
     const wasEmpty = this.timeline.length === 0;
     const frame: AnimFrame = { id: this.nextId++, index, offset: wasEmpty ? ZERO : this.inheritedOffset(index) };
     const list = this.timeline;
@@ -392,15 +666,21 @@ export class Animation {
     return frame;
   }
 
-  /** "Adicionar intervalo": every `every` video frames from `from` to the last one that is not in the timeline yet. */
-  addRange(from: number, every: number): AnimFrame[] {
+  /**
+   * "Adicionar intervalo": every `every` video frames from `from` to the last one that is not in the timeline yet,
+   * as many as the budget allows. `limited` is true when the budget cut the range.
+   */
+  addRange(from: number, every: number): { added: AnimFrame[]; limited: boolean } {
     const step = Math.max(1, Math.round(every));
     const present = new Set(this.timeline.map((frame) => frame.index));
+    const wanted: number[] = [];
+    for (let index = Math.max(0, from); index < this.count; index += step) if (!present.has(index)) wanted.push(index);
+    const fit = this.room(wanted);
+    const limited = fit < wanted.length;
     const added: AnimFrame[] = [];
     const wasEmpty = this.timeline.length === 0;
     const list = [...this.timeline];
-    for (let index = Math.max(0, from); index < this.count; index += step) {
-      if (present.has(index)) continue;
+    for (const index of wanted.slice(0, fit)) {
       let at = list.length;
       while (at > 0 && list[at - 1].index > index) at--;
       const offset = (list[at - 1] ?? list[at])?.offset ?? ZERO;
@@ -408,11 +688,20 @@ export class Animation {
       list.splice(at, 0, frame);
       added.push(frame);
     }
-    if (added.length === 0) return added;
+    if (added.length === 0) return { added, limited };
     this.setTimeline(list);
     this.selectedId = added[added.length - 1].id;
     if (wasEmpty) this.startContainer();
-    return added;
+    return { added, limited };
+  }
+
+  /** Removes several entries at once, for a cancelled range. */
+  removeMany(ids: ReadonlySet<number>): void {
+    if (ids.size === 0) return;
+    let edits = false;
+    for (const id of ids) edits = this.sessions.delete(id) || edits;
+    if (edits) this.frameEditsVersion++;
+    this.setTimeline(this.timeline.filter((frame) => !ids.has(frame.id)));
   }
 
   /** Removes the last timeline entry of a video frame. Returns the removed entry. */
@@ -479,6 +768,8 @@ export class Animation {
     this.referenceIndex = index;
     track('option_change', { kind: 'anim_reference_frame', detail: index });
     if (this.referenceColors) this.changed();
+    this.trimCache();
+    this.onneed?.();
   }
 
   setReferenceColors(on: boolean): void {
@@ -602,10 +893,26 @@ export class Animation {
     this.syncHistory();
   }
 
-  /** The first add makes the container from the prepared sprite of that frame. */
+  /**
+   * The first add makes the container from the prepared sprite of that frame. A frame that is not sampled yet gets
+   * the whole grid until it arrives, then the container from its sprite, unless the user changed it in between.
+   */
   private startContainer(): void {
-    this.container = this.initialContainer(this.prepared.frames[0]);
+    const first = this.timeline[0];
+    const live = first !== undefined && this.store.has(first.index);
+    this.container = this.initialContainer(live ? this.prepared.frames[0] : undefined);
+    this.containerWaits = !live;
     this.clearHistory();
+    this.place();
+  }
+
+  /** The first frame arrived after its add: the container fits it now. */
+  private settleContainer(): void {
+    const first = this.timeline[0];
+    if (!this.containerWaits || !first || !this.store.has(first.index)) return;
+    this.containerWaits = false;
+    if (this.canUndo) return;
+    this.container = this.initialContainer(this.prepared.frames[0]);
     this.place();
   }
 
@@ -666,15 +973,15 @@ export class Animation {
   rebuild(): void {
     const timeline = this.liveTimeline();
     const strength = Number.isFinite(this.ownStrength) ? this.ownStrength : 0;
-    const reference = this.referenceColors ? this.owns[this.referenceIndex] : undefined;
-    const key = `${this.framesVersion}|${strength}|${this.referenceColors ? this.referenceIndex : -1}|${this.eraseBackground}|${timeline.map((frame) => frame.index).join(',')}`;
+    const reference = this.referenceColors ? this.store.get(this.referenceIndex)?.own : undefined;
+    const key = `${this.framesVersion}|${strength}|${reference ? this.referenceIndex : -1}|${this.eraseBackground}|${timeline.map((frame) => frame.index).join(',')}`;
     if (key !== this.preparedKey) {
       this.preparedKey = key;
       this.prepared =
         timeline.length === 0
           ? EMPTY_PREPARED
           : prepareFrames(
-              timeline.map((frame) => this.owns[frame.index]),
+              timeline.map((frame) => this.store.get(frame.index)!.own),
               { strength, reference: reference ? listPalette(reference.pixels) : null, eraseBackground: this.eraseBackground },
             );
       // Same grid size: each session keeps its edits over the new base.
@@ -719,9 +1026,9 @@ export class Animation {
     this.version++;
   }
 
-  /** The timeline entries whose video frame was sampled: the ones that `prepared` holds, in order. */
+  /** The timeline entries whose video frame is in the store: the ones that `prepared` holds, in order. */
   private liveTimeline(): AnimFrame[] {
-    return this.timeline.filter((frame) => this.owns[frame.index] !== undefined);
+    return this.timeline.filter((frame) => this.store.has(frame.index));
   }
 
   /** The prepared frame at one timeline position, with the edits of its entry. */
@@ -739,18 +1046,17 @@ export class Animation {
 
   /** Forgets the video and its frames. The stored options stay. */
   clear(): void {
-    for (const thumb of this.thumbs) thumb.close();
+    clearTimeout(this.arrivalTimer);
+    this.arrivalTimer = 0;
+    this.emptyStore();
     this.video?.close();
     this.video = null;
     this.info = null;
     this.keyIndex = 0;
-    this.raws = [];
-    this.owns = [];
-    this.thumbs = [];
     this.ownStrength = Number.NaN;
     this.grid = null;
     this.sampledFitVersion = -1;
-    this.displayCache.clear();
+    this.generation++;
     this.framesVersion++;
     this.cursor = 0;
     this.timeline = [];
@@ -759,6 +1065,7 @@ export class Animation {
     this.referenceChosen = false;
     this.referenceColors = false;
     this.container = null;
+    this.containerWaits = false;
     this.clearHistory();
     this.sessions.clear();
     this.frameEditsVersion++;
@@ -775,6 +1082,8 @@ export class Animation {
     this.timeline = list;
     if (this.selectedId !== null && !list.some((frame) => frame.id === this.selectedId)) this.selectedId = list[list.length - 1]?.id ?? null;
     this.changed();
+    this.trimCache();
+    this.onneed?.();
   }
 
   private changed(): void {

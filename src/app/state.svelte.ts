@@ -13,7 +13,8 @@ import { formatOf, track as trackEvent } from './analytics.ts';
 import { EditSession } from './edit-session.ts';
 import { CleanEngine, EngineError, type FitSetResult, type LoadResult } from './engine.ts';
 import { DEFAULT_FIT_INPUTS, ImageSet, pixelSizeOf, type FitInputs, type SetGridMode, type SetGridState, type SetObject, type SetObjectInit } from './image-set.svelte.ts';
-import { Animation } from './animation.svelte.ts';
+import { Animation, pinnedLimit, type AnimFrame, type SampledFrame } from './animation.svelte.ts';
+import { FrameLoader } from './frame-loader.ts';
 import { isVideoFile, VideoError, VideoSource } from './video.ts';
 import { formatDecimal, t } from './i18n.ts';
 import * as sfx from './sfx.ts';
@@ -155,6 +156,8 @@ class AppState {
   readonly engine = new CleanEngine();
   readonly set = new ImageSet();
   readonly anim = new Animation();
+  /** Fills the frame store of the animation from its video. */
+  private readonly frameLoader = new FrameLoader(this.anim, this.engine, (error) => this.fail(error));
   /** The last file that the animation export wrote, for the dev hook. Plain field. */
   lastAnimExport: { name: string; bytes: Uint8Array } | null = null;
   private readonly singleSession = new EditSession();
@@ -236,6 +239,9 @@ class AppState {
   /** The entry that the frame editor should show; the loads follow the newest one. */
   private frameTarget: number | null = null;
   private frameLoop: Promise<boolean> | null = null;
+  /** The before view of the open entry came from the worker; until then the compare waits. */
+  frameBeforeReady = $state(false);
+  private beforeLoop: Promise<void> | null = null;
   /** A pixel edit happened since the frame editor opened. */
   private frameEditsMade = false;
 
@@ -1584,12 +1590,13 @@ class AppState {
     }
     if (target === 'anim-frames') {
       if (this.screen === 'anim-grid') await this.lockAnimGrid();
-      else if (this.anim.extracted) this.screen = 'anim-frames';
+      else if (this.anim.locked) this.screen = 'anim-frames';
       return;
     }
     if (target === 'anim' || target === 'anim-align') {
       if (this.screen === 'anim-grid' && !(await this.lockAnimGrid())) return;
-      if (this.anim.extracted && this.anim.timeline.length > 0) this.screen = target;
+      if (!this.anim.locked || this.anim.timeline.length === 0 || !(await this.animFramesReady())) return;
+      if (this.anim.timeline.length > 0) this.screen = target;
     }
   }
 
@@ -1663,16 +1670,16 @@ class AppState {
       return;
     }
     // Without a frame on the Grade step and without sampled frames, nothing of the video is left to show.
-    if (!this.source && !this.anim.extracted && this.anim.active) {
+    if (!this.source && !this.anim.locked && this.anim.active) {
       this.closeAnim();
       this.screen = 'drop';
     }
   }
 
   /**
-   * "Usar esta grade em todos os frames": samples every video frame with the exact grid lines of the Grade step
-   * and opens the Frames screen. The same grid samples nothing again. A long video or a fine grid takes only the
-   * first frames that fit the limits. Returns false when the frames are not ready.
+   * "Usar a grade": locks the grid of the Grade step and opens the Frames screen, where every video frame is sampled
+   * on demand. The same grid changes nothing. Another grid samples the pinned frames again (with progress and
+   * cancel) and keeps the timeline. Returns false when the grid is not locked.
    */
   async lockAnimGrid(): Promise<boolean> {
     const anim = this.anim;
@@ -1689,18 +1696,21 @@ class AppState {
       this.screen = 'anim-frames';
       return true;
     }
-    const size = anim.gridSize;
-    const resized = anim.extracted && (fit.cols !== size.cols || fit.rows !== size.rows);
-    if (resized && anim.hasFrameEdits && !(await this.confirm(t('confirm.animFrameGrid.title'), t('confirm.animFrameGrid.body'), t('confirm.animFrameGrid.ok')))) return false;
-    const info = video.info;
-    const tilesPerFrame = Math.max(1, fit.cols * fit.rows * 2);
-    const fitting = Math.floor(PARAMS.limits.maxFrameTiles / tilesPerFrame);
-    const count = Math.min(info.frameCount, PARAMS.limits.maxFrames, fitting);
-    if (count <= 0) {
+    const maxPinned = pinnedLimit(Math.max(1, fit.cols * fit.rows * 2));
+    if (maxPinned <= 0) {
       sfx.play('error');
       this.toast(t('toast.framesTooFine'), 'error');
       return false;
     }
+    const pinned = anim.locked ? [...anim.pinnedIndices()].sort((a, b) => a - b) : [];
+    if (pinned.length > maxPinned) {
+      sfx.play('error');
+      this.toast(t('toast.framesOverGrid', { count: pinned.length, max: maxPinned }), 'error');
+      return false;
+    }
+    const size = anim.gridSize;
+    const resized = anim.locked && (fit.cols !== size.cols || fit.rows !== size.rows);
+    if (resized && anim.hasFrameEdits && !(await this.confirm(t('confirm.animFrameGrid.title'), t('confirm.animFrameGrid.body'), t('confirm.animFrameGrid.ok')))) return false;
     const grid: CellGrid = { x: fit.grid.x.slice(), y: fit.grid.y.slice() };
     const fitVersion = this.fitVersion;
     const strength = this.strength;
@@ -1709,17 +1719,24 @@ class AppState {
     this.progressCancel = () => {
       cancelled = true;
     };
-    this.progress = { stage: 'frames', ratio: 0, done: 0, total: count };
+    const total = pinned.length;
+    this.progress = { stage: 'frames', ratio: 0, done: 0, total };
     try {
-      const frames = await this.track(this.extractFrames(video, count, grid, strength, () => cancelled));
+      const frames =
+        total === 0
+          ? new Map<number, SampledFrame>()
+          : await this.track(
+              this.frameLoader.sampleBatch(video, pinned, grid, strength, (done) => {
+                this.progress = { stage: 'frames', ratio: done / total, done, total };
+              }, () => cancelled),
+            );
       if (!frames || anim.video !== video) {
-        if (frames) for (const thumb of frames.thumbs) thumb.close();
+        if (frames) for (const frame of frames.values()) frame.thumb.close();
         else if (cancelled) this.toast(t('toast.framesCancelled'), 'info');
         return false;
       }
-      if (anim.setFrames(frames.raws, frames.owns, frames.thumbs, strength, grid, fitVersion)) this.toast(t('toast.containerReset'), 'info');
-      if (count < info.frameCount) this.toast(t('toast.framesLimited', { count, total: info.frameCount }), 'info');
-      trackEvent('clean_run', { kind: 'anim', detail: this.preset, width: fit.cols, height: fit.rows, count });
+      if (anim.setGrid(grid, fitVersion, strength, frames)) this.toast(t('toast.containerReset'), 'info');
+      trackEvent('clean_run', { kind: 'anim', detail: this.preset, width: fit.cols, height: fit.rows, count: total });
       sfx.play('sweep');
       this.screen = 'anim-frames';
       return true;
@@ -1733,57 +1750,96 @@ class AppState {
   }
 
   /**
-   * Samples the first `count` video frames on one grid. The seek of the next frame runs while the worker samples
-   * this one. Returns null when cancelled; the bitmaps of a cancelled or failed run are closed.
+   * Adds the cursor frame of the Frames screen. A frame of the store joins at once; another one joins with a pending
+   * thumbnail until its sample arrives. Past the budget it toasts how many frames fit. Returns the new entry.
    */
-  private async extractFrames(video: VideoSource, count: number, grid: CellGrid, strength: number, cancelled: () => boolean): Promise<{ raws: Sprite[]; owns: Sprite[]; thumbs: ImageBitmap[] } | null> {
-    const raws: Sprite[] = [];
-    const owns: Sprite[] = [];
-    const thumbs: ImageBitmap[] = [];
-    const merge = { strength };
-    let pending: Promise<{ raw: Sprite; own: Sprite }> | null = null;
-    try {
-      for (let i = 0; i <= count; i++) {
-        const shot = i < count && !cancelled() ? await video.capture(i, TUNING.anim.monitorPx) : null;
-        if (pending) {
-          const sample: { raw: Sprite; own: Sprite } = await pending;
-          pending = null;
-          raws.push(sample.raw);
-          owns.push(sample.own);
-          this.progress = { stage: 'frames', ratio: owns.length / count, done: owns.length, total: count };
-        }
-        if (!shot) break;
-        if (cancelled() || this.anim.video !== video) {
-          shot.frame.close();
-          shot.thumb.close();
-          break;
-        }
-        thumbs.push(shot.thumb);
-        pending = this.engine.sampleFrame(shot.frame, grid, merge);
-      }
-    } catch (error) {
-      for (const thumb of thumbs) thumb.close();
-      // A sample that is still on its way must not reject later with nobody to catch it.
-      pending?.catch(() => undefined);
-      throw error;
-    }
-    if (cancelled() || owns.length < count) {
-      for (const thumb of thumbs) thumb.close();
+  addAnimFrame(index: number): AnimFrame | null {
+    const anim = this.anim;
+    if (anim.room([index]) === 0) {
+      this.toastFrameLimit();
       return null;
     }
-    return { raws, owns, thumbs };
+    return anim.add(index);
   }
 
-  /** The frames of the animation merge again at the current cleanup level. */
+  /**
+   * "Adicionar intervalo": adds one frame every `every` from `from`, as many as fit, then samples the ones that are
+   * not in the store with progress and cancel. A cancel removes the entries that are still pending. Returns the
+   * entries that stay.
+   */
+  async addAnimRange(from: number, every: number): Promise<AnimFrame[]> {
+    const anim = this.anim;
+    const video = anim.video;
+    if (!video || !anim.locked) return [];
+    const { added, limited } = anim.addRange(from, every);
+    if (limited) this.toastFrameLimit();
+    else if (added.length === 0) this.toast(t('frames.rangeNone'), 'info');
+    const missing = [...new Set(added.map((frame) => frame.index))].filter((index) => !anim.has(index));
+    if (missing.length === 0) return added;
+    let cancelled = false;
+    const previousCancel = this.progressCancel;
+    this.progressCancel = () => {
+      cancelled = true;
+    };
+    const total = missing.length;
+    this.progress = { stage: 'frames', ratio: 0, done: 0, total };
+    try {
+      const ready = await this.track(
+        this.frameLoader.whenReady(missing, (done) => {
+          this.progress = { stage: 'frames', ratio: done / total, done, total };
+        }, () => cancelled),
+      );
+      if (ready || anim.video !== video) return added;
+      const pending = new Set(added.filter((frame) => !anim.has(frame.index)).map((frame) => frame.id));
+      anim.removeMany(pending);
+      if (cancelled) this.toast(t('toast.framesCancelled'), 'info');
+      return added.filter((frame) => !pending.has(frame.id));
+    } finally {
+      this.progressCancel = previousCancel;
+    }
+  }
+
+  private toastFrameLimit(): void {
+    sfx.play('error');
+    const { max } = this.anim.budget;
+    this.toast(t('toast.framesLimit', { max }), 'error');
+  }
+
+  /** The frames of the timeline are all sampled, with progress and cancel while some are on their way. */
+  private async animFramesReady(): Promise<boolean> {
+    const anim = this.anim;
+    const missing = [...new Set(anim.timeline.map((frame) => frame.index))].filter((index) => !anim.has(index));
+    if (missing.length === 0) return true;
+    let cancelled = false;
+    const previousCancel = this.progressCancel;
+    this.progressCancel = () => {
+      cancelled = true;
+    };
+    const total = missing.length;
+    this.progress = { stage: 'frames', ratio: 0, done: 0, total };
+    try {
+      return await this.track(
+        this.frameLoader.whenReady(missing, (done) => {
+          this.progress = { stage: 'frames', ratio: done / total, done, total };
+        }, () => cancelled),
+      );
+    } finally {
+      this.progressCancel = previousCancel;
+    }
+  }
+
+  /** The pinned frames of the animation merge again at the current cleanup level; the other frames are sampled again. */
   private async refreshAnim(): Promise<void> {
     const anim = this.anim;
     const strength = this.strength;
-    if (!anim.extracted || anim.ownStrength === strength) return;
+    if (!anim.locked || anim.ownStrength === strength) return;
     try {
-      const owns = await this.track(this.engine.mergeOwn(anim.raws, { strength }));
+      const raws = anim.pinnedRaws();
+      const indices = [...raws.keys()];
+      const owns = await this.track(this.engine.mergeOwn([...raws.values()], { strength }));
       // A newer level superseded this merge: its own refresh sets the frames.
-      if (!owns || strength !== this.strength || !anim.extracted) return;
-      anim.setOwn(owns, strength);
+      if (!owns || strength !== this.strength || !anim.locked) return;
+      anim.setOwns(new Map(indices.map((index, at) => [index, owns[at]])), strength);
       if (this.screen === 'anim-edit') {
         this.baseVersion++;
         this.editVersion++;
@@ -1804,8 +1860,8 @@ class AppState {
 
   /**
    * "Editar frame": opens one timeline entry in the frame editor, from the Frames, Align or Animation screen, or
-   * moves the open editor to another entry. The worker loads the video frame of the entry on the grid of the
-   * frames, for the before view; the session of the entry holds the edits. A burst of calls loads only the newest
+   * moves the open editor to another entry. The entry shows and takes edits at once, from the frame store; the
+   * before view of the compare loads in the background (see `runBeforeLoop`). A burst of calls opens only the newest
    * entry. Returns false on a failure.
    */
   editAnimFrame(id: number): Promise<boolean> {
@@ -1847,8 +1903,6 @@ class AppState {
   }
 
   private async runFrameLoop(): Promise<boolean> {
-    const wasLoading = this.loading;
-    this.loading = true;
     try {
       while (this.frameTarget !== null && (this.frameTarget !== this.editingFrameId || this.screen !== 'anim-edit')) {
         const id = this.frameTarget;
@@ -1860,58 +1914,47 @@ class AppState {
           this.frameTarget = null;
           return false;
         }
-        const png = await this.track(video.framePng(entry.index));
-        if (this.screen !== 'anim-edit' && this.source) {
-          // The worker image changes now: the Grade step must load its key frame again, even when this load fails.
-          this.source.bitmap.close();
-          this.result?.aligned.close();
-          this.source = null;
-          this.fit = null;
-          this.result = null;
-          this.baseVersion++;
+        if (!anim.has(entry.index)) {
+          // A pending entry: its frame comes first in the loads.
+          const ready = await this.frameLoader.whenReady([entry.index], () => undefined, () => this.frameTarget !== id);
+          if (!ready) {
+            if (this.frameTarget === id) this.frameTarget = null;
+            continue;
+          }
         }
-        const loaded = await this.track(this.engine.load(png));
-        let fit: GridFit;
-        let output: Awaited<ReturnType<CleanEngine['clean']>>;
-        try {
-          const manual = await this.track(this.engine.setGrid(grid));
-          if (!manual) throw new EngineError('internal', 'the grid of the frame did not arrive');
-          fit = manual;
-          output = await this.track(this.engine.clean({ strength: this.strength }));
-        } catch (error) {
-          loaded.bitmap.close();
-          throw error;
+        const sample = anim.sampled(entry.index);
+        const session = sample ? anim.sessionOf(id) : null;
+        if (!sample || !session) {
+          this.frameTarget = null;
+          return false;
         }
-        const session = anim.video === video && this.frameTarget === id ? anim.sessionOf(id) : null;
-        if (!session) {
-          loaded.bitmap.close();
-          output.aligned.close();
+        const before = await interimBefore(sample.thumb, grid, video.info.width);
+        if (this.frameTarget !== id || anim.video !== video || !anim.find(id)) {
+          before.close();
           continue;
         }
-        this.takeAnimFrame(id, session, loaded, fit, output);
+        this.takeAnimFrame(id, session, before);
+      }
+      if (this.screen === 'anim-edit' && !this.beforeLoop) {
+        this.beforeLoop = this.runBeforeLoop().finally(() => {
+          this.beforeLoop = null;
+        });
       }
       return this.screen === 'anim-edit';
     } catch (error) {
       this.frameTarget = null;
       this.fail(error);
       return false;
-    } finally {
-      this.loading = wasLoading;
     }
   }
 
-  /** A loaded video frame becomes the before view of the frame editor, and the session of its entry the after view. */
-  private takeAnimFrame(id: number, session: EditSession, loaded: LoadResult, fit: GridFit, output: Awaited<ReturnType<CleanEngine['clean']>>): void {
+  /** The entry of the frame editor shows with a stand-in before view, until the before view of the worker arrives. */
+  private takeAnimFrame(id: number, session: EditSession, before: ImageBitmap): void {
     const entering = this.screen !== 'anim-edit';
-    this.source?.bitmap.close();
     this.result?.aligned.close();
-    this.source = { name: this.anim.info?.name ?? 'video', width: loaded.width, height: loaded.height, bitmap: loaded.bitmap };
-    this.fit = fit;
-    this.fitVersion++;
-    this.profiles = loaded.profiles;
-    this.gridRejected = false;
     this.session = session;
-    this.result = { ...output, fitVersion: this.fitVersion };
+    this.result = { sprite: session.composed(), palette: new Uint32Array(0), aligned: before, fitVersion: this.fitVersion };
+    this.frameBeforeReady = false;
     this.editingFrameId = id;
     this.anim.select(id);
     this.baseVersion++;
@@ -1922,6 +1965,63 @@ class AppState {
       if (this.ink !== TRANSPARENT && !colors.some((entry) => entry.color === this.ink) && colors.length > 0) this.ink = colors[0].color;
       if (this.tool !== 'eraser' && this.tool !== 'bucket') this.tool = 'pencil';
       this.screen = 'anim-edit';
+    }
+  }
+
+  /**
+   * The before view of the frame editor: the worker loads the video frame of the open entry on the grid of the
+   * frames, in the background. The newest entry wins; an entry that is no longer open keeps nothing of its load.
+   */
+  private async runBeforeLoop(): Promise<void> {
+    const anim = this.anim;
+    const open = (id: number, video: VideoSource) => this.screen === 'anim-edit' && this.editingFrameId === id && anim.video === video;
+    try {
+      while (this.screen === 'anim-edit' && this.editingFrameId !== null && !this.frameBeforeReady) {
+        const id = this.editingFrameId;
+        const video = anim.video;
+        const entry = anim.find(id);
+        const grid = anim.grid;
+        if (!video || !entry || !grid) return;
+        const png = await video.framePng(entry.index);
+        if (!open(id, video)) continue;
+        if (this.source) {
+          // The worker image changes now: the Grade step must load its key frame again, even when this load fails.
+          this.source.bitmap.close();
+          this.source = null;
+          this.fit = null;
+        }
+        const loaded = await this.engine.load(png);
+        let fit: GridFit;
+        let output: Awaited<ReturnType<CleanEngine['clean']>>;
+        try {
+          if (!open(id, video)) throw new BeforeSkipped();
+          const manual = await this.engine.setGrid(grid);
+          if (!manual) throw new EngineError('internal', 'the grid of the frame did not arrive');
+          fit = manual;
+          output = await this.engine.clean({ strength: this.strength });
+        } catch (error) {
+          loaded.bitmap.close();
+          if (error instanceof BeforeSkipped) continue;
+          throw error;
+        }
+        const result = this.result;
+        if (!open(id, video) || !result) {
+          loaded.bitmap.close();
+          output.aligned.close();
+          continue;
+        }
+        this.source = { name: anim.info?.name ?? 'video', width: loaded.width, height: loaded.height, bitmap: loaded.bitmap };
+        this.fit = fit;
+        this.fitVersion++;
+        this.profiles = loaded.profiles;
+        this.gridRejected = false;
+        result.aligned.close();
+        this.result = { ...result, aligned: output.aligned, fitVersion: this.fitVersion };
+        this.frameBeforeReady = true;
+        this.baseVersion++;
+      }
+    } catch (error) {
+      if (this.screen === 'anim-edit') this.fail(error);
     }
   }
 
@@ -1941,6 +2041,7 @@ class AppState {
     this.profiles = null;
     this.session = this.singleSession;
     this.editingFrameId = null;
+    this.frameBeforeReady = false;
     this.baseVersion++;
     this.editVersion++;
   }
@@ -1965,7 +2066,7 @@ class AppState {
       this.fit = null;
       this.result = null;
       this.baseVersion++;
-      if (this.anim.extracted) this.screen = (this.screen === 'anim' || this.screen === 'anim-align') && this.anim.timeline.length > 0 ? this.screen : 'anim-frames';
+      if (this.anim.locked) this.screen = (this.screen === 'anim' || this.screen === 'anim-align') && this.anim.timeline.length > 0 ? this.screen : 'anim-frames';
       else void this.calibrateAt(this.anim.keyIndex);
       return;
     }
@@ -1994,6 +2095,21 @@ class AppState {
     this.exportOpen = false;
     this.screen = 'drop';
   }
+}
+
+/** A before view whose entry closed while the worker loaded it. */
+class BeforeSkipped extends Error {}
+
+/** The stand-in before view of the frame editor: the grid extent of the small picture of the frame. */
+function interimBefore(thumb: ImageBitmap, grid: CellGrid, videoWidth: number): Promise<ImageBitmap> {
+  const scale = thumb.width / Math.max(1, videoWidth);
+  const cols = grid.x.length - 1;
+  const rows = grid.y.length - 1;
+  const x = grid.x[0] * scale;
+  const y = grid.y[0] * scale;
+  const w = (grid.x[cols] - grid.x[0]) * scale;
+  const h = (grid.y[rows] - grid.y[0]) * scale;
+  return createImageBitmap(thumb, Math.floor(x), Math.floor(y), Math.max(1, Math.round(w)), Math.max(1, Math.round(h)));
 }
 
 export const app = new AppState();
@@ -2047,7 +2163,16 @@ interface DevAnim {
   screen: string;
   info: { name: string; width: number; height: number; fps: number; frameCount: number; exact: boolean } | null;
   keyIndex: number;
+  /** The video frames that the Frames screen can show. */
   sampled: number;
+  /** The frame store: unpinned (cached) and pinned frames, and their raw plus own tiles. */
+  store: { cached: number; pinned: number; tiles: number; pinnedTiles: number; pending: number };
+  /** How full the timeline is, and the distinct frames that fit the grid. */
+  budget: { used: number; max: number; maxPinned: number };
+  /** The video frames of the timeline entries that are not sampled yet. */
+  pending: number[];
+  /** The frame editor has the before view of the worker. */
+  beforeReady: boolean;
   cursor: number;
   stepSize: number;
   timeline: number[];
@@ -2149,6 +2274,10 @@ export function installDevHook(): void {
         info: info ? { name: info.name, width: info.width, height: info.height, fps: info.fps, frameCount: info.frameCount, exact: info.exact } : null,
         keyIndex: anim.keyIndex,
         sampled: anim.count,
+        store: anim.stats(),
+        budget: { ...anim.budget, maxPinned: anim.maxPinned },
+        pending: anim.timeline.filter((frame) => !anim.has(frame.index)).map((frame) => frame.index),
+        beforeReady: app.frameBeforeReady,
         cursor: anim.cursor,
         stepSize: anim.stepSize,
         timeline: anim.timeline.map((frame) => frame.index),

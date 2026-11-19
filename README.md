@@ -221,14 +221,14 @@ On the drop screen, click "A video" and select an MP4, MOV or WebM file. You can
 
 ### 2. Set the grid on one frame
 
-The Grid step shows one frame of the video. Move the "Video frame" slider to a sharp frame. Then set the size of 1 pixel with the same tools as for one image. The grid that you lock here applies to all the frames. Click "Read frames": the app reads every frame of the video with this grid.
+The Grid step shows one frame of the video. Move the "Video frame" slider to a sharp frame. Then set the size of 1 pixel with the same tools as for one image. The grid that you lock here applies to all the frames. Click "Use the grid" to go to the Frames screen. The app reads each frame of the video when you show it or add it, so you can use any frame of the video, also near the end.
 
 ### 3. Pick the frames
 
-The Frames screen shows the video frame by frame. A small player shows the original video.
+The Frames screen shows the video frame by frame. A small player shows the original video. A new frame shows the original video for a moment, with "Cleaning…" at the top, until its clean pixels arrive.
 
 - Push the left and right arrow keys to move one step. With Shift, you move 10 frames.
-- Set the step size with the 1 to 4 buttons, or push 1, 2, 3 or 4. For example, a step of 3 skips two frames.
+- Set the step size with the − and + buttons, type it, or scroll the mouse wheel over it (with Shift, 5 at a time). You can also push 1 to 9. The first step size is 4. For example, a step of 3 skips two frames.
 - Push Enter to add the frame to the timeline, or to remove it.
 - To add many frames at a time, set "every" and click "Add range". The app adds one frame every N frames, from the current frame to the end of the video.
 - Push Space to play or pause the video.
@@ -466,7 +466,7 @@ To build only the CLI for Linux or WSL, run `npm run build:cli`. This command wr
 - The desktop app needs Windows 10 or 11 with the Microsoft Edge WebView2 runtime. Windows 11 has it.
 - The video journey opens only the videos that your browser can decode. The desktop app uses WebView2, which decodes the same formats as Microsoft Edge. MP4 with H.264 works everywhere. HEVC (H.265) and some MOV files can fail. If a video does not open, export it again as MP4 (H.264).
 - The frame timing is exact for MP4 and MOV files. For WebM files, the app estimates the fps.
-- An animation takes at most the first 600 frames of a video. With a very fine grid, the limit is lower, and a message tells you how many frames the app kept.
+- The limit applies to the frames that you add, not to the length of the video: you can use any frame of a long video. A timeline holds at most 600 frames. With a fine grid, the limit is lower: for example, about 160 different frames on a grid of 512 by 288 pixels. When you reach the limit, a message tells you how many frames fit with this grid.
 - The command line tool has no command for video. Use the app for the video journey.
 
 ## Frequently asked questions

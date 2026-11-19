@@ -185,11 +185,11 @@
       <div class="screen">
         {#if app.screen === 'set' && app.set.active}
           <SetScreen />
-        {:else if app.screen === 'anim-frames' && app.anim.extracted}
+        {:else if app.screen === 'anim-frames' && app.anim.locked}
           <AnimFramesScreen />
-        {:else if app.screen === 'anim-align' && app.anim.extracted && app.anim.timeline.length > 0}
+        {:else if app.screen === 'anim-align' && app.anim.locked && app.anim.timeline.length > 0}
           <AnimAlignScreen />
-        {:else if app.screen === 'anim' && app.anim.extracted && app.anim.timeline.length > 0}
+        {:else if app.screen === 'anim' && app.anim.locked && app.anim.timeline.length > 0}
           <AnimScreen />
         {:else if (app.screen === 'grid' || app.screen === 'set-grid' || app.screen === 'anim-grid') && app.source}
           <GridScreen />

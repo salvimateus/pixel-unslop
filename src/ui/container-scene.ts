@@ -75,10 +75,6 @@ export class ContainerScene extends AnimScene {
     host.invalidate();
   }
 
-  invalidate(): void {
-    this.host?.invalidate();
-  }
-
   /** The part of the container under a screen point: a handle (resize mode only), the inside, or null. */
   hit(sx: number, sy: number): ContainerPart | null {
     const rect = this.screenBox();
