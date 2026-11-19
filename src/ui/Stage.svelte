@@ -2,7 +2,7 @@
   import { onMount, type Snippet } from 'svelte';
   import { app } from '../app/state.svelte.ts';
   import { TUNING } from '../app/tuning.ts';
-  import { Camera, type Point } from './camera.ts';
+  import { Camera, type Insets, type Point } from './camera.ts';
   import { ParticleField } from './particles.ts';
   import type { Scene, StageHost, StagePointer } from './stage-renderer.ts';
   import { watchCanvasBox, type CanvasBox } from './canvas-box.ts';
@@ -20,10 +20,12 @@
     onhover?: (p: StagePointer | null) => void;
     /** After a zoom or a pan, so the screen can update its hints. */
     onviewchange?: () => void;
+    /** Bands that the overlay covers: the fit keeps the content out of them. */
+    insets?: Insets;
     children?: Snippet;
   }
 
-  let { scene, label, cursor = 'default', onprimarydown, onprimarymove, onprimaryup, onaltclick, onhover, onviewchange, children }: Props = $props();
+  let { scene, label, cursor = 'default', onprimarydown, onprimarymove, onprimaryup, onaltclick, onhover, onviewchange, insets, children }: Props = $props();
 
   type DragMode = 'pan' | 'tool' | 'alt';
   interface Drag {
@@ -176,6 +178,18 @@
     }
     invalidate();
     return () => current.attach(null);
+  });
+
+  // A new overlay size frames the content again until the user zooms or pans.
+  $effect(() => {
+    const next = insets ?? { top: 0, right: 0, bottom: 0, left: 0 };
+    const now = camera.insets;
+    if (next.top === now.top && next.right === now.right && next.bottom === now.bottom && next.left === now.left) return;
+    camera.insets = { ...next };
+    if (!sized || userMoved) return;
+    camera.fit(scene.initialZoom(camera));
+    onviewchange?.();
+    invalidate();
   });
 
   onMount(() => {

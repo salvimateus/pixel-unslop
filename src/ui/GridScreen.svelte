@@ -69,6 +69,13 @@
 
   /** The Grade step of a set: the same tools, a piece list on the left and "Limpar tudo!" at the end. */
   const setMode = $derived(app.screen === 'set-grid');
+  /** The Grade step of a video animation: one video frame, and "Usar esta grade em todos os frames" at the end. */
+  const animMode = $derived(app.screen === 'anim-grid');
+  /** The frames were already sampled with the grid on screen: the primary button only goes back to them. */
+  const animKept = $derived(animMode && app.fit !== null && app.anim.sampledWith(app.fit.grid, app.fitVersion));
+  const frameCount = $derived(app.anim.info?.frameCount ?? 0);
+  /** The video frame of the picker; it follows the loaded frame while the user does not move it. */
+  let keyValue = $state(app.anim.keyIndex);
   const piece = $derived(setMode ? app.editingObject : null);
   /** A reference keeps its own automatic grid: the tools only show it. */
   const locked = $derived(piece?.reference ?? false);
@@ -659,8 +666,21 @@
     stage.zoomBy(TUNING.zoom.gridFirstCellPx / cellPx);
   }
 
+  $effect(() => {
+    keyValue = app.anim.keyIndex;
+  });
+
+  function pickKey(index: number): void {
+    const next = clamp(Math.round(index), 0, Math.max(0, frameCount - 1));
+    if (next === keyValue && next === app.anim.keyIndex) return;
+    keyValue = next;
+    sfx.play('tick');
+    void app.setKeyFrame(next);
+  }
+
   function primary(): void {
-    if (setMode) void app.cleanSet();
+    if (animMode) void app.lockAnimGrid();
+    else if (setMode) void app.cleanSet();
     else void app.clean();
   }
 </script>
@@ -734,8 +754,37 @@
       <header class="grid-head">
         {#if (setMode || app.editingId !== null) && source}<p class="piece-tag">{t('clean.piece', { name: source.name })}</p>{/if}
         <h1 class="grid-title">{t('grid.title')}</h1>
-        <p class="hint grid-goal">{t('grid.goal')}</p>
+        <p class="hint grid-goal">{animMode ? t('anim.gridGoal') : t('grid.goal')}</p>
       </header>
+
+      {#if animMode && frameCount > 0}
+        <section class="key-frame" aria-labelledby="key-frame-label">
+          <div class="key-frame-head">
+            <label class="key-frame-label" id="key-frame-label" for="key-frame-slider"><Icon name="film" size={16} />{t('anim.keyFrame')}</label>
+            <span class="key-frame-value">{t('anim.keyFrameValue', { n: keyValue + 1, total: frameCount })}</span>
+          </div>
+          <div class="key-frame-row">
+            <button type="button" class="icon-btn" aria-label={t('anim.prev')} title={t('anim.prev')} disabled={keyValue <= 0} use:holdRepeat={{ step: (large) => pickKey(keyValue - (large ? TUNING.anim.shiftStep : 1)) }}>
+              <Icon name="stepBack" size={18} />
+            </button>
+            <input
+              id="key-frame-slider"
+              class="key-frame-slider"
+              type="range"
+              min="0"
+              max={frameCount - 1}
+              step="1"
+              value={keyValue}
+              oninput={(event) => (keyValue = Number((event.currentTarget as HTMLInputElement).value))}
+              onchange={(event) => pickKey(Number((event.currentTarget as HTMLInputElement).value))}
+            />
+            <button type="button" class="icon-btn" aria-label={t('anim.next')} title={t('anim.next')} disabled={keyValue >= frameCount - 1} use:holdRepeat={{ step: (large) => pickKey(keyValue + (large ? TUNING.anim.shiftStep : 1)) }}>
+              <Icon name="stepForward" size={18} />
+            </button>
+          </div>
+          <p class="hint">{t('anim.keyFrameHint')}</p>
+        </section>
+      {/if}
 
       <fieldset class="tools" disabled={locked || !fit}>
         <legend class="visually-hidden">{t('grid.toolsLabel')}</legend>
@@ -888,16 +937,21 @@
       <CleanupPresets hint={t('cleanup.hintBefore')} />
       {#if app.gridRejected}
         <p class="footer-note is-error" role="alert"><Icon name="alert" size={16} />{t('grid.rejected')}</p>
+      {:else if animMode}
+        <p class="footer-note">{animKept ? t('anim.gridKept') : t('anim.gridNote', { count: frameCount })}</p>
       {:else if setMode}
         <p class="footer-note">{app.setGridPending ? t('setGrid.next', { count: pieceCount }) : t('setGrid.nextKeep')}</p>
       {/if}
       <div class="grid-actions">
-        <button type="button" class="btn btn-quiet" title={setMode ? t('setGrid.back') : t('grid.back')} onclick={() => app.goTo('drop')}>
+        <button type="button" class="btn btn-quiet" title={animMode ? t('anim.back') : setMode ? t('setGrid.back') : t('grid.back')} onclick={() => app.goTo('drop')}>
           <Icon name="back" size={18} />
-          {#if setMode}<span class="visually-hidden">{t('setGrid.back')}</span>{:else}{t('grid.back')}{/if}
+          {#if setMode || animMode}<span class="visually-hidden">{animMode ? t('anim.back') : t('setGrid.back')}</span>{:else}{t('grid.back')}{/if}
         </button>
         <button type="button" class="btn btn-primary btn-big" onclick={primary} disabled={!fit || app.cleaning || app.loading || app.gridRejected}>
-          {#if setMode && !app.setGridPending}
+          {#if animMode}
+            <Icon name="film" size={20} />
+            {animKept ? t('anim.toFrames') : t('anim.useGrid')}
+          {:else if setMode && !app.setGridPending}
             <Icon name="check" size={20} />
             {t('set.backToSet')}
           {:else}
@@ -1033,6 +1087,52 @@
 
     .grid-goal {
       color: var(--text-muted);
+    }
+
+    .key-frame {
+      display: grid;
+      gap: var(--space-2);
+      padding: var(--space-3);
+      background: var(--surface-sunken);
+      border: 2px solid var(--line);
+      border-radius: var(--radius-m);
+    }
+
+    .key-frame-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: var(--space-2);
+    }
+
+    .key-frame-label {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      font: 600 0.9375rem/1.2 var(--font-display);
+
+      & :global(.icon) {
+        color: var(--yellow);
+      }
+    }
+
+    .key-frame-value {
+      color: var(--text-muted);
+      font-size: 0.875rem;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .key-frame-row {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+      gap: var(--space-2);
+    }
+
+    .key-frame-slider {
+      width: 100%;
+      accent-color: var(--yellow);
     }
 
     .piece-tag {

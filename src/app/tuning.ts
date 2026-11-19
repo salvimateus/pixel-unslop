@@ -6,6 +6,8 @@ export const TUNING = {
     /** Fraction of the content that must stay inside the viewport while the user pans. */
     panKeepVisible: 0.15,
     keyPanPx: 48,
+    /** Space between an overlay of the stage and the fitted content. */
+    insetGap: 12,
   },
   zoom: {
     smoothing: 22,
@@ -118,6 +120,30 @@ export const TUNING = {
     moveThresholdPx: 4,
     /** The cross fade of "Ver original". */
     originalFadeMs: 120,
+  },
+  anim: {
+    /** Playback speed of a new animation, and its range. */
+    defaultFps: 12,
+    minFps: 1,
+    maxFps: 60,
+    fpsChips: [6, 8, 10, 12, 15, 24],
+    /** The step sizes of the Frames screen; Shift steps this many frames. */
+    stepSizes: [1, 2, 3, 4],
+    shiftStep: 10,
+    /** Width of the small picture of each video frame, in pixels. */
+    monitorPx: 192,
+    maxZoom: 96,
+    /** Opacity of the ghost of the frame before. */
+    onionAlpha: 0.3,
+    /** The pop of an added frame, and its sparks. */
+    popMs: 280,
+    addSparks: 12,
+    /** Side of the thumbnails of the timeline and of the small loop, in CSS pixels. */
+    timelineThumbPx: 56,
+    loopPreviewPx: 120,
+    /** The automatic GIF scale makes the long side about this size, up to the largest scale. */
+    gifTargetPx: 384,
+    gifMaxScale: 16,
   },
   particles: {
     budget: 900,

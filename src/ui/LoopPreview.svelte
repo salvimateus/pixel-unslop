@@ -1,0 +1,176 @@
+<script lang="ts">
+  import { onDestroy, untrack } from 'svelte';
+  import type { Sprite } from '../core/types.ts';
+  import { t } from '../app/i18n.ts';
+  import { prefersReducedMotion } from '../app/state.svelte.ts';
+  import { TUNING } from '../app/tuning.ts';
+  import type { PreviewBackground } from './clean-scene.ts';
+  import Icon from './Icon.svelte';
+
+  interface Props {
+    frames: readonly Sprite[];
+    /** A change bakes the frames again. */
+    version: number;
+    fps: number;
+    background: PreviewBackground;
+    label: string;
+  }
+
+  let { frames, version, fps, background, label }: Props = $props();
+
+  let canvas: HTMLCanvasElement | undefined = $state();
+  let playing = $state(!prefersReducedMotion());
+  let baked: HTMLCanvasElement[] = [];
+  let shown = -1;
+  let raf = 0;
+  let start = 0;
+
+  function bake(sprite: Sprite): HTMLCanvasElement {
+    const out = document.createElement('canvas');
+    out.width = sprite.cols;
+    out.height = sprite.rows;
+    const ctx = out.getContext('2d');
+    if (ctx) {
+      const image = ctx.createImageData(sprite.cols, sprite.rows);
+      new Uint32Array(image.data.buffer).set(sprite.pixels);
+      ctx.putImageData(image, 0, 0);
+    }
+    return out;
+  }
+
+  function paint(index: number): void {
+    const ctx = canvas?.getContext('2d');
+    const frame = baked[index];
+    if (!canvas || !ctx || !frame) return;
+    if (canvas.width !== frame.width || canvas.height !== frame.height) {
+      canvas.width = frame.width;
+      canvas.height = frame.height;
+    }
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(frame, 0, 0);
+    shown = index;
+  }
+
+  function tick(now: number): void {
+    raf = 0;
+    if (!playing || baked.length === 0) return;
+    const index = Math.floor(((now - start) * fps) / 1000) % baked.length;
+    if (index !== shown) paint(index);
+    raf = requestAnimationFrame(tick);
+  }
+
+  function run(): void {
+    cancelAnimationFrame(raf);
+    raf = 0;
+    if (playing && baked.length > 1) {
+      start = performance.now() - (Math.max(0, shown) * 1000) / Math.max(1, fps);
+      raf = requestAnimationFrame(tick);
+    }
+  }
+
+  $effect(() => {
+    void version;
+    const list = frames;
+    void canvas;
+    untrack(() => {
+      baked = list.map(bake);
+      if (shown >= baked.length) shown = 0;
+      paint(Math.max(0, shown));
+      run();
+    });
+  });
+
+  $effect(() => {
+    void fps;
+    void playing;
+    run();
+  });
+
+  onDestroy(() => cancelAnimationFrame(raf));
+</script>
+
+<figure class="loop" style:--loop-px="{TUNING.anim.loopPreviewPx}px">
+  <div class="loop-view bg-{background}">
+    {#if frames.length === 0}
+      <span class="loop-empty">{t('anim.loopEmpty')}</span>
+    {:else}
+      <canvas class="loop-canvas" bind:this={canvas} aria-hidden="true"></canvas>
+    {/if}
+  </div>
+  <figcaption class="loop-caption">
+    <span class="loop-label">{label}</span>
+    <button
+      type="button"
+      class="icon-btn loop-toggle"
+      aria-label={playing ? t('anim.pause') : t('anim.play')}
+      title={playing ? t('anim.pause') : t('anim.play')}
+      disabled={frames.length < 2}
+      onclick={() => (playing = !playing)}
+    >
+      <Icon name={playing ? 'pause' : 'play'} size={16} />
+    </button>
+  </figcaption>
+</figure>
+
+<style>
+  @layer components {
+    .loop {
+      display: grid;
+      grid-template-columns: var(--loop-px) minmax(0, 1fr);
+      align-items: center;
+      gap: var(--space-3);
+      margin: 0;
+    }
+
+    .loop-view {
+      display: grid;
+      grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+      place-items: center;
+      width: var(--loop-px);
+      height: var(--loop-px);
+      padding: var(--space-1);
+      border: 2px solid var(--line);
+      border-radius: var(--radius-m);
+
+      &.bg-checker {
+        background: repeating-conic-gradient(var(--checker-a) 0 25%, var(--checker-b) 0 50%) 0 0 / 12px 12px;
+      }
+
+      &.bg-dark {
+        background: var(--preview-dark);
+      }
+
+      &.bg-light {
+        background: var(--preview-light);
+      }
+    }
+
+    .loop-canvas {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      image-rendering: pixelated;
+    }
+
+    .loop-empty {
+      padding: var(--space-2);
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      text-align: center;
+    }
+
+    .loop-caption {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-2);
+      color: var(--text-muted);
+      font-size: 0.8125rem;
+    }
+
+    .loop-toggle {
+      width: 32px;
+      height: 32px;
+    }
+  }
+</style>

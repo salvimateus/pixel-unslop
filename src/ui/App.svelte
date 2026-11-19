@@ -4,9 +4,13 @@
   import { track } from '../app/analytics.ts';
   import { app, isImageFile } from '../app/state.svelte.ts';
   import { t } from '../app/i18n.ts';
+  import { isVideoFile } from '../app/video.ts';
   import { isDesktop, launchFile } from '../app/platform.ts';
   import { zoomMoveOf } from '../app/zoom.ts';
   import AboutDialog from './AboutDialog.svelte';
+  import AnimExportDialog from './AnimExportDialog.svelte';
+  import AnimFramesScreen from './AnimFramesScreen.svelte';
+  import AnimScreen from './AnimScreen.svelte';
   import CleanScreen from './CleanScreen.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import DropScreen from './DropScreen.svelte';
@@ -31,7 +35,7 @@
   }
 
   function dialogOpen(): boolean {
-    return app.exportOpen || app.setExportOpen || app.aboutOpen || app.confirmRequest !== null;
+    return app.exportOpen || app.setExportOpen || app.animExportOpen || app.aboutOpen || app.confirmRequest !== null;
   }
 
   // Without these guards the WebView navigates to a file dropped anywhere on the window.
@@ -73,7 +77,7 @@
     if (dialogOpen()) return;
     const items = Array.from(event.clipboardData?.items ?? []);
     const files = items.filter((item) => item.kind === 'file').map((item) => item.getAsFile()).filter((file): file is File => file !== null);
-    const images = files.filter(isImageFile);
+    const images = files.filter((file) => isImageFile(file) || isVideoFile(file));
     if (images.length > 0) {
       event.preventDefault();
       void app.openFiles(images);
@@ -180,7 +184,11 @@
       <div class="screen">
         {#if app.screen === 'set' && app.set.active}
           <SetScreen />
-        {:else if (app.screen === 'grid' || app.screen === 'set-grid') && app.source}
+        {:else if app.screen === 'anim-frames' && app.anim.extracted}
+          <AnimFramesScreen />
+        {:else if app.screen === 'anim' && app.anim.extracted && app.anim.timeline.length > 0}
+          <AnimScreen />
+        {:else if (app.screen === 'grid' || app.screen === 'set-grid' || app.screen === 'anim-grid') && app.source}
           <GridScreen />
         {:else if app.screen === 'clean' && app.result}
           <CleanScreen />
@@ -194,7 +202,7 @@
       <div class="drag-overlay" aria-hidden="true">
         <div class="drag-card">
           <Icon name="image" size={40} />
-          <span>{app.set.active ? t('drop.overlaySet') : t('drop.overlay')}</span>
+          <span>{app.set.active ? t('drop.overlaySet') : app.anim.active ? t('drop.overlayAnim') : t('drop.overlay')}</span>
         </div>
       </div>
     {/if}
@@ -207,6 +215,7 @@
 <AboutDialog />
 <ExportDialog />
 <SetExportDialog />
+<AnimExportDialog />
 
 <style>
   @layer components {

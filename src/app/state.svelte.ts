@@ -13,13 +13,27 @@ import { formatOf, track as trackEvent } from './analytics.ts';
 import { EditSession } from './edit-session.ts';
 import { CleanEngine, EngineError, type FitSetResult, type LoadResult } from './engine.ts';
 import { DEFAULT_FIT_INPUTS, ImageSet, pixelSizeOf, type FitInputs, type SetGridMode, type SetGridState, type SetObject, type SetObjectInit } from './image-set.svelte.ts';
+import { Animation } from './animation.svelte.ts';
+import { isVideoFile, VideoError, VideoSource } from './video.ts';
 import { formatDecimal, t } from './i18n.ts';
 import * as sfx from './sfx.ts';
 import { readStored, writeStored } from './storage.ts';
 import { TUNING } from './tuning.ts';
 
-/** `set-grid` is the Grade step of a set: one piece of the set is open on the Grade screen. */
-export type Screen = 'drop' | 'set-grid' | 'set' | 'grid' | 'clean';
+/**
+ * `set-grid` is the Grade step of a set: one piece of the set is open on the Grade screen. `anim-grid`,
+ * `anim-frames` and `anim` are the steps of a video animation: its grid on one video frame, the frame pick, and the loop.
+ */
+export type Screen = 'drop' | 'set-grid' | 'set' | 'grid' | 'clean' | 'anim-grid' | 'anim-frames' | 'anim';
+/** The stages of the progress pill: the worker stages, plus the frame extraction of a video. */
+export type ProgressStage = Stage | 'frames';
+export interface Progress {
+  stage: ProgressStage;
+  ratio: number;
+  /** Done and total items, for a counter. */
+  done?: number;
+  total?: number;
+}
 export type Tool = 'view' | 'pencil' | 'eraser' | 'bucket' | 'picker';
 /** The tools with a brush size. */
 export type BrushTool = 'pencil' | 'eraser';
@@ -137,6 +151,9 @@ const RAW_ATTEMPTS = 4;
 class AppState {
   readonly engine = new CleanEngine();
   readonly set = new ImageSet();
+  readonly anim = new Animation();
+  /** The last file that the animation export wrote, for the dev hook. Plain field. */
+  lastAnimExport: { name: string; bytes: Uint8Array } | null = null;
   private readonly singleSession = new EditSession();
   /** The session of the single image, or of the set object that is open on the Grade and Limpar screens. */
   session: EditSession = this.singleSession;
@@ -150,7 +167,9 @@ class AppState {
   cleaning = $state(false);
   busyCount = $state(0);
   showProgress = $state(false);
-  progress = $state.raw<{ stage: Stage; ratio: number } | null>(null);
+  progress = $state.raw<Progress | null>(null);
+  /** Stops the running job of the progress pill (the frame extraction); null when the job cannot stop. */
+  progressCancel = $state.raw<(() => void) | null>(null);
 
   source = $state.raw<SourceImage | null>(null);
   fit = $state.raw<GridFit | null>(null);
@@ -191,6 +210,7 @@ class AppState {
   dropSignal = $state.raw<DropSignal | null>(null);
   exportOpen = $state(false);
   setExportOpen = $state(false);
+  animExportOpen = $state(false);
   /** The set object that is open in the worker: on the Grade step of the set, or on the Limpar screen. Null otherwise. */
   editingId = $state<number | null>(null);
   /** The images of a new set are loading: the stepper already shows the steps of a set. */
@@ -208,6 +228,9 @@ class AppState {
   confirmRequest = $state.raw<ConfirmRequest | null>(null);
 
   private toastId = 0;
+  /** The video frame that the Grade step of an animation should show; the loads follow the newest one. */
+  private keyTarget = 0;
+  private keyLoop: Promise<boolean> | null = null;
   /** The desktop window controls its interface zoom; in a browser, the browser does. */
   zoomAvailable = $state(isDesktop);
   /** The interface zoom in percent, and the zoom of Ctrl + 0. */
@@ -391,6 +414,12 @@ class AppState {
   async openFiles(files: ArrayLike<File>, asSet = false): Promise<void> {
     const list = Array.from(files);
     if (list.length === 0) return;
+    const videos = list.filter(isVideoFile);
+    if (videos.length > 0) {
+      if (list.length === 1) await this.openVideo(videos[0]);
+      else this.rejectDrop(t('toast.videoAlone'));
+      return;
+    }
     const images = list.filter(isImageFile);
     if (images.length === 0) {
       this.rejectDrop(t('toast.notImage'));
@@ -419,26 +448,11 @@ class AppState {
       return;
     }
     if (this.unsavedEdits && !(await this.confirm(t('confirm.replace.title'), t('confirm.replace.body'), t('confirm.replace.ok')))) return;
+    if (!(await this.leaveAnimFor())) return;
     this.loading = true;
     try {
       const loaded = await this.track(this.engine.load(bytes));
-      this.source?.bitmap.close();
-      this.result?.aligned.close();
-      this.profiles = loaded.profiles;
-      this.manualGrid = null;
-      this.source = { name: baseName(fileName), width: loaded.width, height: loaded.height, bitmap: loaded.bitmap };
-      this.fit = loaded.fit;
-      this.fitVersion++;
-      this.elastic = 'auto';
-      this.fixedPeriod = null;
-      this.nudge = { x: 0, y: 0 };
-      this.selection = null;
-      this.stretched = false;
-      this.result = null;
-      this.session.clear();
-      this.baseVersion++;
-      this.editVersion++;
-      this.exportOpen = false;
+      this.adoptImage(loaded, baseName(fileName));
       trackEvent('image_open', { kind: 'single', format: formatOf(fileName), width: loaded.width, height: loaded.height });
       sfx.play('drop');
       this.dropSignal = { kind: 'ok', at: performance.now() };
@@ -449,6 +463,28 @@ class AppState {
     } finally {
       this.loading = false;
     }
+  }
+
+  /** A freshly loaded image becomes the open image, with the automatic grid and no result. */
+  private adoptImage(loaded: LoadResult, name: string): void {
+    this.source?.bitmap.close();
+    this.result?.aligned.close();
+    this.profiles = loaded.profiles;
+    this.manualGrid = null;
+    this.gridRejected = false;
+    this.source = { name, width: loaded.width, height: loaded.height, bitmap: loaded.bitmap };
+    this.fit = loaded.fit;
+    this.fitVersion++;
+    this.elastic = 'auto';
+    this.fixedPeriod = null;
+    this.nudge = { x: 0, y: 0 };
+    this.selection = null;
+    this.stretched = false;
+    this.result = null;
+    this.session.clear();
+    this.baseVersion++;
+    this.editVersion++;
+    this.exportOpen = false;
   }
 
   private rejectDrop(text: string): void {
@@ -643,6 +679,11 @@ class AppState {
     this.preset = name;
     writeStored('preset', name);
     trackEvent('option_change', { kind: 'preset', detail: name, screen: this.screen });
+    if (this.anim.active) {
+      // The Grade step of the animation only keeps the choice: the frames merge again at the next step.
+      if (this.screen !== 'anim-grid') await this.refreshAnim();
+      return;
+    }
     if (this.screen === 'set') {
       await this.refreshSet();
       return;
@@ -751,6 +792,10 @@ class AppState {
   /** Navigation of the stepper and the back buttons. */
   async goTo(target: Screen): Promise<void> {
     if (target === this.screen) return;
+    if (this.anim.active) {
+      await this.goToAnim(target);
+      return;
+    }
     if (target === 'drop') {
       if (this.set.active) {
         await this.leaveSet();
@@ -831,6 +876,7 @@ class AppState {
     if (this.editingId !== null && !(await this.leaveOpenObject())) return;
     const starting = !this.set.active;
     if (starting && this.unsavedEdits && !(await this.confirm(t('confirm.replace.title'), t('confirm.replace.body'), t('confirm.replace.ok')))) return;
+    if (starting && !(await this.leaveAnimFor())) return;
     const max = TUNING.set.maxObjects;
     const room = max - this.set.objects.length;
     if (room <= 0) {
@@ -1145,8 +1191,13 @@ class AppState {
   }
 
   /** Loads one set object in the worker and applies its grid inputs. The caller owns the returned bitmap. */
-  private async loadObject(object: SetObject, inputs: FitInputs): Promise<{ loaded: LoadResult; fit: GridFit }> {
-    const loaded = await this.track(this.engine.load(object.bytes.slice(0)));
+  private loadObject(object: SetObject, inputs: FitInputs): Promise<{ loaded: LoadResult; fit: GridFit }> {
+    return this.loadWithInputs(object.bytes.slice(0), inputs);
+  }
+
+  /** Loads image bytes in the worker (the buffer is detached) and applies grid inputs. The caller owns the returned bitmap. */
+  private async loadWithInputs(bytes: ArrayBuffer, inputs: FitInputs): Promise<{ loaded: LoadResult; fit: GridFit }> {
+    const loaded = await this.track(this.engine.load(bytes));
     try {
       let fit = loaded.fit;
       if (!isDefaultInputs(inputs)) {
@@ -1436,7 +1487,315 @@ class AppState {
     this.forgetImage();
   }
 
+  /**
+   * Opens a video as a new animation, on the Grade step of its first frame. Work that was not exported asks
+   * first; the work stays when the video fails to open.
+   */
+  async openVideo(file: File): Promise<void> {
+    if (this.loading || this.cleaning) return;
+    const unsaved = this.unsavedEdits || this.setUnexported || this.anim.unexported;
+    if (unsaved && !(await this.confirm(t('confirm.video.title'), t('confirm.video.body'), t('confirm.video.ok')))) return;
+    this.loading = true;
+    let video: VideoSource | null = null;
+    try {
+      video = await this.track(VideoSource.open(file));
+      const png = await this.track(video.framePng(0));
+      const loaded = await this.track(this.engine.load(png));
+      if (this.set.active) this.forgetSet();
+      this.anim.clear();
+      this.animExportOpen = false;
+      this.anim.start(video);
+      this.keyTarget = 0;
+      this.adoptImage(loaded, video.info.name);
+      const info = video.info;
+      video = null;
+      trackEvent('video_open', { kind: info.exact ? 'exact' : 'estimated', format: formatOf(file.name), width: info.width, height: info.height, count: info.frameCount, detail: info.fps });
+      sfx.play('drop');
+      this.dropSignal = { kind: 'ok', at: performance.now() };
+      if (this.screen === 'drop' && !prefersReducedMotion()) await wait(TUNING.ui.loadPopMs);
+      this.screen = 'anim-grid';
+      if (!info.exact) this.toast(t('toast.videoFpsGuess', { fps: info.fps }), 'info');
+    } catch (error) {
+      video?.close();
+      if (error instanceof VideoError) {
+        trackEvent('app_error', { kind: 'video_rejected', detail: error.problem, screen: this.screen });
+        sfx.play('error');
+        this.toast(t(`video.error.${error.problem}`, { min: PARAMS.limits.minSide }), 'error');
+        this.dropSignal = { kind: 'bad', at: performance.now() };
+      } else {
+        this.rejectDrop(this.errorText(error));
+      }
+    } finally {
+      this.loading = false;
+    }
+  }
+
+  /** Before an image replaces the animation: asks when the timeline was not exported, then closes the video. */
+  private async leaveAnimFor(): Promise<boolean> {
+    if (!this.anim.active) return true;
+    if (this.anim.unexported && !(await this.confirm(t('confirm.leaveAnim.title'), t('confirm.leaveAnim.body'), t('confirm.leaveAnim.ok')))) return false;
+    this.closeAnim();
+    this.screen = 'drop';
+    return true;
+  }
+
+  /** Back to the drop screen from the animation. */
+  private async leaveAnim(): Promise<void> {
+    if (this.cleaning) return;
+    if (!(await this.leaveAnimFor())) return;
+    this.screen = 'drop';
+  }
+
+  private closeAnim(): void {
+    this.progressCancel?.();
+    this.anim.clear();
+    this.animExportOpen = false;
+    this.forgetSingle();
+  }
+
+  /** The stepper and the back buttons inside the animation. */
+  private async goToAnim(target: Screen): Promise<void> {
+    if (this.cleaning) return;
+    if (target === 'drop') {
+      await this.leaveAnim();
+      return;
+    }
+    if (target === 'anim-grid') {
+      await this.calibrateAt(this.anim.keyIndex);
+      return;
+    }
+    if (target === 'anim-frames') {
+      if (this.screen === 'anim-grid') await this.lockAnimGrid();
+      else if (this.anim.extracted) this.screen = 'anim-frames';
+      return;
+    }
+    if (target === 'anim') {
+      if (this.screen === 'anim-grid' && !(await this.lockAnimGrid())) return;
+      if (this.anim.extracted && this.anim.timeline.length > 0) this.screen = 'anim';
+    }
+  }
+
+  /**
+   * The Grade step of the animation shows another video frame. The grid inputs stay, so the grid moves to the
+   * new frame as it is. A burst of calls loads only the newest frame. Returns false on a failure.
+   */
+  setKeyFrame(index: number): Promise<boolean> {
+    const info = this.anim.info;
+    if (!info) return Promise.resolve(false);
+    this.keyTarget = Math.min(info.frameCount - 1, Math.max(0, Math.round(index)));
+    if (!this.keyLoop) {
+      this.keyLoop = this.runKeyLoop().finally(() => {
+        this.keyLoop = null;
+      });
+    }
+    return this.keyLoop;
+  }
+
+  private async runKeyLoop(): Promise<boolean> {
+    const wasLoading = this.loading;
+    this.loading = true;
+    try {
+      while (this.anim.video && (this.keyTarget !== this.anim.keyIndex || !this.source)) {
+        const video = this.anim.video;
+        const index = this.keyTarget;
+        const inputs = this.fitInputs();
+        const png = await this.track(video.framePng(index));
+        const { loaded, fit } = await this.loadWithInputs(png, inputs);
+        if (this.anim.video !== video) {
+          loaded.bitmap.close();
+          return false;
+        }
+        this.takeKeyFrame(loaded, fit, inputs, index);
+      }
+      return this.source !== null;
+    } catch (error) {
+      this.keyTarget = this.anim.keyIndex;
+      this.fail(error);
+      return false;
+    } finally {
+      this.loading = wasLoading;
+    }
+  }
+
+  /** A loaded video frame becomes the image of the Grade step, with the grid inputs that were on screen. */
+  private takeKeyFrame(loaded: LoadResult, fit: GridFit, inputs: FitInputs, index: number): void {
+    this.source?.bitmap.close();
+    this.result?.aligned.close();
+    this.source = { name: this.anim.info?.name ?? 'video', width: loaded.width, height: loaded.height, bitmap: loaded.bitmap };
+    this.fit = fit;
+    this.fitVersion++;
+    this.selection = inputs.selection;
+    this.fixedPeriod = inputs.fixedPeriod;
+    this.manualGrid = inputs.grid;
+    this.nudge = inputs.nudge;
+    this.elastic = inputs.elastic;
+    this.profiles = loaded.profiles;
+    this.gridRejected = false;
+    this.result = null;
+    this.baseVersion++;
+    this.anim.keyIndex = index;
+  }
+
+  /** "Calibrar aqui": the Grade step on one video frame, with the grid of the frames. */
+  async calibrateAt(index: number): Promise<void> {
+    if (!this.anim.active || this.cleaning) return;
+    const ok = await this.setKeyFrame(index);
+    if (ok) {
+      this.screen = 'anim-grid';
+      return;
+    }
+    // Without a frame on the Grade step and without sampled frames, nothing of the video is left to show.
+    if (!this.source && !this.anim.extracted && this.anim.active) {
+      this.closeAnim();
+      this.screen = 'drop';
+    }
+  }
+
+  /**
+   * "Usar esta grade em todos os frames": samples every video frame with the exact grid lines of the Grade step
+   * and opens the Frames screen. The same grid samples nothing again. A long video or a fine grid takes only the
+   * first frames that fit the limits. Returns false when the frames are not ready.
+   */
+  async lockAnimGrid(): Promise<boolean> {
+    const anim = this.anim;
+    const video = anim.video;
+    const fit = this.fit;
+    if (!video || !fit || this.cleaning || this.loading) return false;
+    if (this.gridRejected) {
+      sfx.play('error');
+      this.toast(t('grid.rejected'), 'error');
+      return false;
+    }
+    if (anim.sampledWith(fit.grid, this.fitVersion)) {
+      if (anim.ownStrength !== this.strength) await this.refreshAnim();
+      this.screen = 'anim-frames';
+      return true;
+    }
+    const info = video.info;
+    const tilesPerFrame = Math.max(1, fit.cols * fit.rows * 2);
+    const fitting = Math.floor(PARAMS.limits.maxFrameTiles / tilesPerFrame);
+    const count = Math.min(info.frameCount, PARAMS.limits.maxFrames, fitting);
+    if (count <= 0) {
+      sfx.play('error');
+      this.toast(t('toast.framesTooFine'), 'error');
+      return false;
+    }
+    const grid: CellGrid = { x: fit.grid.x.slice(), y: fit.grid.y.slice() };
+    const fitVersion = this.fitVersion;
+    const strength = this.strength;
+    let cancelled = false;
+    this.cleaning = true;
+    this.progressCancel = () => {
+      cancelled = true;
+    };
+    this.progress = { stage: 'frames', ratio: 0, done: 0, total: count };
+    try {
+      const frames = await this.track(this.extractFrames(video, count, grid, strength, () => cancelled));
+      if (!frames || anim.video !== video) {
+        if (frames) for (const thumb of frames.thumbs) thumb.close();
+        else if (cancelled) this.toast(t('toast.framesCancelled'), 'info');
+        return false;
+      }
+      anim.setFrames(frames.raws, frames.owns, frames.thumbs, strength, grid, fitVersion);
+      if (count < info.frameCount) this.toast(t('toast.framesLimited', { count, total: info.frameCount }), 'info');
+      trackEvent('clean_run', { kind: 'anim', detail: this.preset, width: fit.cols, height: fit.rows, count });
+      sfx.play('sweep');
+      this.screen = 'anim-frames';
+      return true;
+    } catch (error) {
+      this.fail(error);
+      return false;
+    } finally {
+      this.cleaning = false;
+      this.progressCancel = null;
+    }
+  }
+
+  /**
+   * Samples the first `count` video frames on one grid. The seek of the next frame runs while the worker samples
+   * this one. Returns null when cancelled; the bitmaps of a cancelled or failed run are closed.
+   */
+  private async extractFrames(video: VideoSource, count: number, grid: CellGrid, strength: number, cancelled: () => boolean): Promise<{ raws: Sprite[]; owns: Sprite[]; thumbs: ImageBitmap[] } | null> {
+    const raws: Sprite[] = [];
+    const owns: Sprite[] = [];
+    const thumbs: ImageBitmap[] = [];
+    const merge = { strength };
+    let pending: Promise<{ raw: Sprite; own: Sprite }> | null = null;
+    try {
+      for (let i = 0; i <= count; i++) {
+        const shot = i < count && !cancelled() ? await video.capture(i, TUNING.anim.monitorPx) : null;
+        if (pending) {
+          const sample: { raw: Sprite; own: Sprite } = await pending;
+          pending = null;
+          raws.push(sample.raw);
+          owns.push(sample.own);
+          this.progress = { stage: 'frames', ratio: owns.length / count, done: owns.length, total: count };
+        }
+        if (!shot) break;
+        if (cancelled() || this.anim.video !== video) {
+          shot.frame.close();
+          shot.thumb.close();
+          break;
+        }
+        thumbs.push(shot.thumb);
+        pending = this.engine.sampleFrame(shot.frame, grid, merge);
+      }
+    } catch (error) {
+      for (const thumb of thumbs) thumb.close();
+      // A sample that is still on its way must not reject later with nobody to catch it.
+      pending?.catch(() => undefined);
+      throw error;
+    }
+    if (cancelled() || owns.length < count) {
+      for (const thumb of thumbs) thumb.close();
+      return null;
+    }
+    return { raws, owns, thumbs };
+  }
+
+  /** The frames of the animation merge again at the current cleanup level. */
+  private async refreshAnim(): Promise<void> {
+    const anim = this.anim;
+    const strength = this.strength;
+    if (!anim.extracted || anim.ownStrength === strength) return;
+    try {
+      const owns = await this.track(this.engine.mergeOwn(anim.raws, { strength }));
+      // A newer level superseded this merge: its own refresh sets the frames.
+      if (!owns || strength !== this.strength || !anim.extracted) return;
+      anim.setOwn(owns, strength);
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  /** Stops the job of the progress pill, when it can stop. */
+  cancelProgress(): void {
+    this.progressCancel?.();
+  }
+
+  markAnimExported(): void {
+    this.anim.markExported();
+  }
+
+  /** After an animation export: start again with a new file, with nothing left to confirm. */
+  startOverAnim(): void {
+    this.closeAnim();
+    this.screen = 'drop';
+  }
+
   private forgetImage(): void {
+    if (this.anim.active) {
+      // The worker lost the frame of the Grade step: the sampled frames stay, and the Grade step loads its frame again.
+      this.source?.bitmap.close();
+      this.result?.aligned.close();
+      this.source = null;
+      this.fit = null;
+      this.result = null;
+      this.baseVersion++;
+      if (this.anim.extracted) this.screen = this.screen === 'anim' && this.anim.timeline.length > 0 ? 'anim' : 'anim-frames';
+      else void this.calibrateAt(this.anim.keyIndex);
+      return;
+    }
     if (this.set.active) {
       // The worker lost the open object: it goes back to the set as it was before "Editar".
       const object = this.editingObject;
@@ -1503,6 +1862,37 @@ interface DevHook {
   setExportBytes(): Promise<{ name: string; base64: string } | null>;
   /** Shows the zoom indicator and the header chip at `percent`, with no zoom applied: the look of the desktop feature. */
   showZoom(percent: number): void;
+  /** The state of the video animation, or null without a video. */
+  anim(): DevAnim | null;
+  /** One output frame of the animation, by its timeline position. */
+  animFrame(position: number): { cols: number; rows: number; pixels: number[] } | null;
+  /** The exact bytes of the last animation export (the sheet, the ZIP of the browser, or the GIF). */
+  animExportBytes(): { name: string; base64: string } | null;
+}
+
+interface DevAnim {
+  screen: string;
+  info: { name: string; width: number; height: number; fps: number; frameCount: number; exact: boolean } | null;
+  keyIndex: number;
+  sampled: number;
+  cursor: number;
+  stepSize: number;
+  timeline: number[];
+  selectedId: number | null;
+  fps: number;
+  onion: boolean;
+  cell: string;
+  eraseBackground: boolean;
+  referenceColors: boolean;
+  referenceIndex: number;
+  built: { cols: number; rows: number; count: number; kept: boolean[] };
+  unexported: boolean;
+}
+
+function base64Of(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
 }
 
 declare global {
@@ -1566,11 +1956,40 @@ export function installDevHook(): void {
       const files = app.setExportSelection?.() ?? app.set.exportFiles().map((file) => ({ name: file.name, bytes: exportSprite(file.sprite, { optimize: app.optimizePng }) }));
       const file = setDownloadFile(files);
       if (!file) return null;
-      let binary = '';
-      for (let i = 0; i < file.bytes.length; i += 0x8000) binary += String.fromCharCode(...file.bytes.subarray(i, i + 0x8000));
-      return { name: file.name, base64: btoa(binary) };
+      return { name: file.name, base64: base64Of(file.bytes) };
     },
     showZoom: (percent) => app.previewZoom(percent),
+    anim: () => {
+      const anim = app.anim;
+      if (!anim.active) return null;
+      const info = anim.info;
+      return {
+        screen: app.screen,
+        info: info ? { name: info.name, width: info.width, height: info.height, fps: info.fps, frameCount: info.frameCount, exact: info.exact } : null,
+        keyIndex: anim.keyIndex,
+        sampled: anim.count,
+        cursor: anim.cursor,
+        stepSize: anim.stepSize,
+        timeline: anim.timeline.map((frame) => frame.index),
+        selectedId: anim.selectedId,
+        fps: anim.fps,
+        onion: anim.onion,
+        cell: anim.cell,
+        eraseBackground: anim.eraseBackground,
+        referenceColors: anim.referenceColors,
+        referenceIndex: anim.referenceIndex,
+        built: { cols: anim.built.cell.cols, rows: anim.built.cell.rows, count: anim.built.frames.length, kept: [...anim.built.kept] },
+        unexported: anim.unexported,
+      };
+    },
+    animFrame: (position) => {
+      const sprite = app.anim.built.frames[position];
+      return sprite ? { cols: sprite.cols, rows: sprite.rows, pixels: Array.from(sprite.pixels) } : null;
+    },
+    animExportBytes: () => {
+      const file = app.lastAnimExport;
+      return file ? { name: file.name, base64: base64Of(file.bytes) } : null;
+    },
     setObjectToScreen: (id) => {
       const box = setBox(id);
       return box && app.screen === 'set' ? toClient(box.x + box.w / 2, box.y + box.h / 2) : null;

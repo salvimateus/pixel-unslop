@@ -36,6 +36,17 @@
     arrows: 'M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3',
     globe: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18M3 12h18M12 3c-3.5 3-3.5 15 0 18M12 3c3.5 3 3.5 15 0 18',
     chevronDown: 'M6 9l6 6 6-6',
+    play: 'M7 4l12 8-12 8z',
+    pause: 'M7 5v14M17 5v14',
+    first: 'M5 5v14M19 5l-9 7 9 7z',
+    last: 'M19 5v14M5 5l9 7-9 7z',
+    stepBack: 'M8 5v14M19 6l-8 6 8 6',
+    stepForward: 'M16 5v14M5 6l8 6-8 6',
+    film: 'M3 4h18v16H3zM7 4v16M17 4v16M3 8h4M3 12h4M3 16h4M17 8h4M17 12h4M17 16h4',
+    onion: 'M3 7h11v11H3zM10 3h11v11h-4',
+    copy: 'M8 8h12v12H8zM4 16V4h12',
+    arrowLeft: 'M20 12H4M10 6l-6 6 6 6',
+    arrowRight: 'M4 12h16M14 6l6 6-6 6',
   } as const;
 
   export type IconName = keyof typeof PATHS;

@@ -2,13 +2,23 @@
   import { app, type Screen } from '../app/state.svelte.ts';
   import { t, type TextKey } from '../app/i18n.ts';
 
-  const LABELS: Record<Screen, TextKey> = { drop: 'step.drop', 'set-grid': 'step.grid', set: 'step.set', grid: 'step.grid', clean: 'step.clean' };
+  const LABELS: Record<Screen, TextKey> = {
+    drop: 'step.drop',
+    'set-grid': 'step.grid',
+    set: 'step.set',
+    grid: 'step.grid',
+    clean: 'step.clean',
+    'anim-grid': 'step.grid',
+    'anim-frames': 'step.frames',
+    anim: 'step.anim',
+  };
   const SINGLE: readonly Screen[] = ['drop', 'grid', 'clean'];
   const SET: readonly Screen[] = ['drop', 'set-grid', 'set'];
   const SET_OBJECT: readonly Screen[] = ['set-grid', 'set', 'clean'];
+  const ANIM: readonly Screen[] = ['drop', 'anim-grid', 'anim-frames', 'anim'];
 
   /** The single flow, the set, or one set object open on the Limpar screen. */
-  const steps = $derived(app.editingId !== null && app.screen === 'clean' ? SET_OBJECT : app.set.active || app.startingSet ? SET : SINGLE);
+  const steps = $derived(app.anim.active ? ANIM : app.editingId !== null && app.screen === 'clean' ? SET_OBJECT : app.set.active || app.startingSet ? SET : SINGLE);
   const current = $derived(steps.indexOf(app.screen));
 
   /**
@@ -17,6 +27,9 @@
    */
   function reachable(screen: Screen): boolean {
     if (screen === 'drop') return true;
+    if (screen === 'anim-grid') return app.anim.active;
+    if (screen === 'anim-frames') return app.anim.extracted || app.screen === 'anim-grid';
+    if (screen === 'anim') return app.anim.extracted && app.anim.timeline.length > 0;
     if (screen === 'set-grid') return app.set.active;
     if (screen === 'set') return app.set.active && (app.setCleaned || app.screen === 'set-grid');
     if (screen === 'grid') return app.source !== null;

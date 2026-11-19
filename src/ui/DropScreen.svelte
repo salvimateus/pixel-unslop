@@ -7,10 +7,11 @@
   import Icon from './Icon.svelte';
   import { sparkColors } from './stage-renderer.ts';
 
-  type Entry = 'single' | 'set';
+  type Entry = 'single' | 'set' | 'video';
 
   let singleInput: HTMLInputElement;
   let setInput: HTMLInputElement;
+  let videoInput: HTMLInputElement;
   let zone: HTMLDivElement;
   let burst = $state(0);
   let over = $state<Entry | null>(null);
@@ -102,6 +103,22 @@
         <span class="drop-card-sub">{t('drop.setSub')}</span>
         <span class="drop-card-pick">{t('drop.pick')}</span>
       </button>
+      <button
+        type="button"
+        class="drop-card is-video"
+        class:is-over={over === 'video'}
+        disabled={app.loading}
+        aria-describedby="drop-privacy"
+        onclick={() => videoInput.click()}
+        ondragenter={() => (over = 'video')}
+        ondragover={() => (over = 'video')}
+        ondragleave={leave}
+      >
+        <span class="drop-icon"><Icon name="film" size={36} /></span>
+        <span class="drop-card-title">{t('drop.video')}</span>
+        <span class="drop-card-sub">{t('drop.videoSub')}</span>
+        <span class="drop-card-pick">{t('drop.pick')}</span>
+      </button>
     </div>
 
     <span class="drop-formats">{t('drop.formats')}</span>
@@ -130,6 +147,18 @@
     aria-label={t('drop.setInputLabel')}
     tabindex="-1"
     onchange={() => onPick(setInput, true)}
+  />
+
+  <input
+    bind:this={videoInput}
+    id="video-file"
+    name="video-file"
+    class="visually-hidden"
+    type="file"
+    accept="video/mp4,video/webm,video/quicktime,.mp4,.m4v,.mov,.webm"
+    aria-label={t('drop.videoInputLabel')}
+    tabindex="-1"
+    onchange={() => onPick(videoInput, false)}
   />
 
   <p class="drop-privacy" id="drop-privacy">
@@ -184,7 +213,7 @@
       display: grid;
       justify-items: center;
       gap: var(--space-4);
-      width: min(720px, 100%);
+      width: min(960px, 100%);
       padding: var(--space-5);
       color: var(--text);
       background:
@@ -220,7 +249,7 @@
 
     .drop-choices {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: var(--space-4);
       width: 100%;
     }
@@ -305,6 +334,10 @@
       .is-set & {
         color: var(--teal);
       }
+
+      .is-video & {
+        color: var(--yellow);
+      }
     }
 
     .drop-card-title {
@@ -327,6 +360,11 @@
 
       .is-set & {
         background: var(--teal);
+      }
+
+      .is-video & {
+        color: var(--on-primary);
+        background: var(--yellow);
       }
     }
 

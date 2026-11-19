@@ -22,7 +22,17 @@ interface ZoomTarget {
  * Zoom and pan math between screen space (CSS pixels of the stage) and content space
  * (source pixels on the Grade screen, tiles on the Limpar screen). `zoom` is screen pixels per content unit.
  */
+/** Screen space that overlays cover on each side of the stage, in CSS pixels. */
+export interface Insets {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
 export class Camera {
+  /** The fit keeps the content out of these covered bands. */
+  insets: Insets = { top: 0, right: 0, bottom: 0, left: 0 };
   viewW = 1;
   viewH = 1;
   contentW = 1;
@@ -57,11 +67,17 @@ export class Camera {
     this.minZoom = Math.min(1, this.fitZoom() * TUNING.zoom.minFitRatio);
   }
 
-  /** The zoom that shows all the content with the stage padding. */
+  /** The margins of the fit: the stage padding, or a covered band plus a small gap. */
+  private fitMargins(): Insets {
+    const side = (inset: number) => (inset > 0 ? inset + TUNING.stage.insetGap : TUNING.stage.fitPadding);
+    return { top: side(this.insets.top), right: side(this.insets.right), bottom: side(this.insets.bottom), left: side(this.insets.left) };
+  }
+
+  /** The zoom that shows all the content with the stage padding, outside the covered bands. */
   fitZoom(): number {
-    const pad = TUNING.stage.fitPadding;
-    const zx = Math.max(1, this.viewW - pad * 2) / this.contentW;
-    const zy = Math.max(1, this.viewH - pad * 2) / this.contentH;
+    const m = this.fitMargins();
+    const zx = Math.max(1, this.viewW - m.left - m.right) / this.contentW;
+    const zy = Math.max(1, this.viewH - m.top - m.bottom) / this.contentH;
     return Math.min(zx, zy);
   }
 
@@ -70,8 +86,9 @@ export class Camera {
     this.minZoom = Math.min(1, this.fitZoom() * TUNING.zoom.minFitRatio);
     this.target = null;
     this.zoom = clamp(zoom, this.minZoom, this.maxZoom);
-    this.panX = (this.viewW - this.contentW * this.zoom) / 2;
-    this.panY = (this.viewH - this.contentH * this.zoom) / 2;
+    const m = this.fitMargins();
+    this.panX = m.left + (this.viewW - m.left - m.right - this.contentW * this.zoom) / 2;
+    this.panY = m.top + (this.viewH - m.top - m.bottom - this.contentH * this.zoom) / 2;
   }
 
   /** Zooms by `factor` and keeps the content point under (screenX, screenY) in place. */
