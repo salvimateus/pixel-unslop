@@ -1,7 +1,7 @@
 import type { CellGrid, Sprite } from '../core/types.ts';
 import { TRANSPARENT } from '../core/color.ts';
 import { PARAMS } from '../core/params.ts';
-import { placeFrames, prepareFrames, type BuiltFrames, type CellMode, type FrameOffset, type PreparedFrames } from '../core/frames.ts';
+import { placeFrames, prepareFrames, type BuiltFrames, type CellMode, type FrameOffset, type PreparedFrames, type RemovedColor } from '../core/frames.ts';
 import { borderBackground, colorMatches, eraseTiles, listPalette, opaqueBox, type TileBox } from '../core/sprite.ts';
 import { track } from './analytics.ts';
 import { EditSession } from './edit-session.ts';
@@ -150,8 +150,9 @@ export class Animation {
   referenceIndex = $state(0);
   referenceColors = $state(false);
   eraseBackground = $state(readStored('animErase') !== 'off');
-  /** The colors that "Remove color" erases from every frame, in the order of the picks, and their OKLab tolerance. */
-  removedColors = $state.raw<readonly number[]>([]);
+  /** The colors that "Remove color" erases from every frame, in the order of the picks, each with the tolerance of its pick. */
+  removedColors = $state.raw<readonly RemovedColor[]>([]);
+  /** The OKLab tolerance of the next pick. A removed color keeps the tolerance of its own pick. */
   colorTolerance = $state(storedTolerance(TOLERANCE_KEY));
   cell = $state<CellMode>(storedCell());
   fps = $state(storedNumber('animFps', TUNING.anim.minFps, TUNING.anim.maxFps, TUNING.anim.defaultFps));
@@ -188,8 +189,6 @@ export class Animation {
   /** The palette, reference and erase of the timeline frames: the slow part, made again only when its inputs change. */
   private prepared: PreparedFrames = EMPTY_PREPARED;
   private preparedKey = '';
-  /** The tolerance of the last build with removed colors. */
-  private builtTolerance = Number.NaN;
   private undoStack: PlaceSnapshot[] = [];
   private redoStack: PlaceSnapshot[] = [];
   /** The state before the edit in progress (a drag), or null. */
@@ -808,24 +807,31 @@ export class Animation {
   }
 
   /**
-   * Adds a color to the colors that every frame loses. Returns how many timeline frames have tiles of it within the
-   * tolerance; with 0 (no frame has it, it is in the list, or it is TRANSPARENT) the list does not change.
+   * Adds a color, at the current tolerance, to the colors that every frame loses. Returns how many timeline frames
+   * have tiles of it within that tolerance; with 0 (no frame has it, it is in the list, or it is TRANSPARENT) the
+   * list does not change.
    */
   addRemovedColor(color: number): number {
-    if (color === TRANSPARENT || this.removedColors.includes(color)) return 0;
-    const frames = this.prepared.frames.filter((frame) => colorMatches(frame, [color], this.colorTolerance).length > 0).length;
+    if (color === TRANSPARENT || this.hasRemovedColor(color)) return 0;
+    const tolerance = this.colorTolerance;
+    const frames = this.prepared.frames.filter((frame) => colorMatches(frame, [color], tolerance).length > 0).length;
     if (frames === 0) return 0;
-    this.removedColors = [...this.removedColors, color];
+    this.removedColors = [...this.removedColors, { color, tolerance }];
     track('option_change', { kind: 'anim_remove_color', detail: 'add', count: this.removedColors.length });
     this.changed();
     return frames;
   }
 
   restoreRemovedColor(color: number): void {
-    if (!this.removedColors.includes(color)) return;
-    this.removedColors = this.removedColors.filter((entry) => entry !== color);
+    if (!this.hasRemovedColor(color)) return;
+    this.removedColors = this.removedColors.filter((entry) => entry.color !== color);
     track('option_change', { kind: 'anim_remove_color', detail: 'restore', count: this.removedColors.length });
     this.changed();
+  }
+
+  /** The color is in the list of "Remove color", at any tolerance. */
+  hasRemovedColor(color: number): boolean {
+    return this.removedColors.some((entry) => entry.color === color);
   }
 
   clearRemovedColors(): void {
@@ -835,13 +841,15 @@ export class Animation {
     this.changed();
   }
 
-  /** A slider drag changes the tolerance with no build; `commit` stores it and builds the frames again. */
+  /**
+   * The tolerance of the next picks. It builds nothing: each removed color keeps the tolerance of its pick, until the
+   * user restores it and picks it again. `commit` (the end of a slider drag) stores it.
+   */
   setColorTolerance(value: number, commit = true): void {
     this.colorTolerance = clampTolerance(value);
     if (!commit) return;
     writeStored(TOLERANCE_KEY, String(this.colorTolerance));
     track('option_change', { kind: 'anim_remove_color', detail: 'tolerance', count: this.removedColors.length });
-    if (this.removedColors.length > 0 && this.builtTolerance !== this.colorTolerance) this.changed();
   }
 
   setCell(mode: CellMode): void {
@@ -1029,9 +1037,8 @@ export class Animation {
     const timeline = this.liveTimeline();
     const strength = Number.isFinite(this.ownStrength) ? this.ownStrength : 0;
     const reference = this.referenceColors ? this.store.get(this.referenceIndex)?.own : undefined;
-    const removed = this.removedColors.length > 0 ? { colors: this.removedColors, tolerance: this.colorTolerance } : null;
-    if (removed) this.builtTolerance = removed.tolerance;
-    const key = `${this.framesVersion}|${strength}|${reference ? this.referenceIndex : -1}|${this.eraseBackground}|${removed ? `${removed.colors.join(',')}@${removed.tolerance}` : ''}|${timeline.map((frame) => frame.index).join(',')}`;
+    const removed = this.removedColors.length > 0 ? this.removedColors : null;
+    const key = `${this.framesVersion}|${strength}|${reference ? this.referenceIndex : -1}|${this.eraseBackground}|${removed ? removed.map((entry) => `${entry.color}@${entry.tolerance}`).join(',') : ''}|${timeline.map((frame) => frame.index).join(',')}`;
     if (key !== this.preparedKey) {
       this.preparedKey = key;
       this.prepared =

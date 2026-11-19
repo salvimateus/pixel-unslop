@@ -273,7 +273,7 @@
       sfx.play('tick');
       return false;
     }
-    if (app.anim.removedColors.includes(color)) {
+    if (app.anim.hasRemovedColor(color)) {
       app.toast(t('toast.colorAlreadyRemoved'), 'info');
       return false;
     }

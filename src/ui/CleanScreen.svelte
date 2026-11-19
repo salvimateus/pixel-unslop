@@ -399,7 +399,6 @@
   function setTolerance(value: number, commit: boolean): void {
     if (frameMode) {
       app.anim.setColorTolerance(value, commit);
-      if (commit) refreshFrame();
     } else {
       singleTolerance = clampTolerance(value);
       if (commit) writeStored(TOLERANCE_KEY, String(singleTolerance));
@@ -440,7 +439,7 @@
 
   function removeColorInFrames(color: number): void {
     if (!scene) return;
-    if (app.anim.removedColors.includes(color)) {
+    if (app.anim.hasRemovedColor(color)) {
       app.toast(t('toast.colorAlreadyRemoved'), 'info');
       return;
     }

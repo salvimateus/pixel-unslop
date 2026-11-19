@@ -4,19 +4,24 @@
   import { t } from '../app/i18n.ts';
   import * as sfx from '../app/sfx.ts';
   import Icon from './Icon.svelte';
-  import ToleranceSlider from './ToleranceSlider.svelte';
+  import ToleranceSlider, { toleranceSteps } from './ToleranceSlider.svelte';
 
   interface Props {
     /** The picker of the stage is on: a click on the frame adds its color. */
     picking: boolean;
     ontogglepick: () => void;
-    /** After each change of the list or of the tolerance, for a view that does not follow `app.anim.version`. */
+    /** After each change of the list, for a view that does not follow `app.anim.version`. The tolerance builds nothing. */
     onchange?: () => void;
   }
 
   let { picking, ontogglepick, onchange }: Props = $props();
 
   const colors = $derived(app.anim.removedColors);
+  const currentSteps = $derived(toleranceSteps(app.anim.colorTolerance));
+
+  function chipLabel(color: number, tolerance: number): string {
+    return `${t('removeTolerance.chip', { value: toleranceSteps(tolerance) })}. ${t('removeColor.restore', { color: toHex(color) })}`;
+  }
 
   function restore(color: number): void {
     app.anim.restoreRemovedColor(color);
@@ -32,7 +37,6 @@
 
   function setTolerance(value: number, commit: boolean): void {
     app.anim.setColorTolerance(value, commit);
-    if (commit) onchange?.();
   }
 </script>
 
@@ -47,11 +51,14 @@
   <p class="hint">{picking ? t('removeColor.pickingHint') : t('removeColor.hint')}</p>
   {#if colors.length > 0}
     <ul class="chips" aria-label={t('removeColor.listLabel')}>
-      {#each colors as color (color)}
+      {#each colors as { color, tolerance } (color)}
+        {@const steps = toleranceSteps(tolerance)}
+        {@const label = chipLabel(color, tolerance)}
         <li>
-          <button type="button" class="chip" aria-label={t('removeColor.restore', { color: toHex(color) })} title={t('removeColor.restore', { color: toHex(color) })} onclick={() => restore(color)}>
+          <button type="button" class="chip" aria-label={label} title={label} onclick={() => restore(color)}>
             <span class="chip-swatch" style:background-color={toHex(color)} aria-hidden="true"></span>
             <span class="chip-hex">{toHex(color)}</span>
+            {#if steps !== currentSteps}<span class="chip-tolerance" aria-hidden="true">{steps}</span>{/if}
             <span class="chip-x" aria-hidden="true">×</span>
           </button>
         </li>
@@ -62,6 +69,7 @@
     <ToleranceSlider id="anim-remove-tolerance" value={app.anim.colorTolerance} onchange={setTolerance} />
     <button type="button" class="btn btn-quiet clear-btn" disabled={colors.length === 0} onclick={clear}>{t('removeColor.clear')}</button>
   </div>
+  <p class="hint">{t('removeTolerance.next')}</p>
 </section>
 
 <style>
@@ -150,6 +158,15 @@
       height: 18px;
       border: 1px solid var(--line-strong);
       border-radius: 50%;
+    }
+
+    .chip-tolerance {
+      padding: 2px 5px;
+      color: var(--text-muted);
+      font: 600 0.6875rem/1 var(--font-body);
+      font-variant-numeric: tabular-nums;
+      background: var(--surface-1);
+      border-radius: 999px;
     }
 
     .chip-x {

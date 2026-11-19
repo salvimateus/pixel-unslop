@@ -109,27 +109,40 @@ export function indicesOfColor(pixels: Uint32Array, color: number): Int32Array {
   return indices;
 }
 
+/** One color of "Remove color" with its own OKLab tolerance (see colorMatches). */
+export interface RemovedColor {
+  color: number;
+  tolerance: number;
+}
+
 /**
  * Sorted tile indices whose color is within `tolerance` (OKLab distance, inclusive) of any of `colors`. A tolerance
  * of 0, or one that is not a finite number above 0, matches the exact colors only. TRANSPARENT never matches.
  */
 export function colorMatches(sprite: Sprite, colors: readonly number[], tolerance: number): Int32Array {
+  return removedMatches(sprite, colors.map((color) => ({ color, tolerance })));
+}
+
+/** As colorMatches, with each color at its own tolerance. */
+export function removedMatches(sprite: Sprite, removed: readonly RemovedColor[]): Int32Array {
   const pixels = sprite.pixels;
-  const targets = colors.filter((color) => color !== TRANSPARENT);
+  const targets = removed.filter((entry) => entry.color !== TRANSPARENT);
   if (targets.length === 0 || pixels.length === 0) return new Int32Array(0);
-  const exact = new Set(targets);
-  const near = Number.isFinite(tolerance) && tolerance > 0 ? tolerance : 0;
-  const labs = near > 0 ? targets.map(toOklab) : [];
+  const exact = new Set(targets.map((entry) => entry.color));
+  const labs = targets.flatMap((entry) => {
+    const near = Number.isFinite(entry.tolerance) && entry.tolerance > 0 ? entry.tolerance : 0;
+    return near > 0 ? [{ lab: toOklab(entry.color), near }] : [];
+  });
   // One distance test per distinct color, not per tile.
   const verdict = new Map<number, boolean>();
   const matches = (color: number): boolean => {
     if (color === TRANSPARENT) return false;
     if (exact.has(color)) return true;
-    if (near === 0) return false;
+    if (labs.length === 0) return false;
     const known = verdict.get(color);
     if (known !== undefined) return known;
     const [l, a, b] = toOklab(color);
-    const hit = labs.some(([tl, ta, tb]) => Math.hypot(l - tl, a - ta, b - tb) <= near);
+    const hit = labs.some(({ lab: [tl, ta, tb], near }) => Math.hypot(l - tl, a - ta, b - tb) <= near);
     verdict.set(color, hit);
     return hit;
   };
@@ -147,9 +160,9 @@ export function colorMatches(sprite: Sprite, colors: readonly number[], toleranc
   return indices;
 }
 
-/** The sprite with every tile of `colorMatches` made TRANSPARENT. The same object when no tile matches. */
-export function removeColors(sprite: Sprite, colors: readonly number[], tolerance: number): Sprite {
-  const indices = colorMatches(sprite, colors, tolerance);
+/** The sprite with every tile of `removedMatches` made TRANSPARENT. The same object when no tile matches. */
+export function removeColors(sprite: Sprite, removed: readonly RemovedColor[]): Sprite {
+  const indices = removedMatches(sprite, removed);
   return indices.length === 0 ? sprite : eraseTiles(sprite, indices);
 }
 

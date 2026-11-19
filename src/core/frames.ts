@@ -2,7 +2,7 @@ import { TRANSPARENT } from './color.ts';
 import { CoreError } from './errors.ts';
 import { applyColorMap, combinedColors, matchColors, unifyPalettes, type ColorCount } from './palette.ts';
 import { PARAMS } from './params.ts';
-import { borderBackground, eraseTiles, holdsScenery, opaqueBox, removeColors, type TileBox } from './sprite.ts';
+import { borderBackground, eraseTiles, holdsScenery, opaqueBox, removeColors, type RemovedColor, type TileBox } from './sprite.ts';
 import type { Sprite } from './types.ts';
 
 /**
@@ -24,11 +24,10 @@ export interface PreparedFrames {
   kept: boolean[];
 }
 
-/** Colors that the user removes from every frame, with the OKLab tolerance of `colorMatches`. */
-export interface RemovedColors {
-  colors: readonly number[];
-  tolerance: number;
-}
+export type { RemovedColor };
+
+/** Colors that the user removes from every frame, each with its own OKLab tolerance of `colorMatches`. */
+export type RemovedColors = readonly RemovedColor[];
 
 export interface Placement {
   cell: CellMode;
@@ -84,7 +83,7 @@ export function prepareFrames(
   }
   // After the color map, so the removed colors are the colors that the user sees.
   const removed = options.removeColors;
-  if (removed && removed.colors.length > 0) sprites = sprites.map((sprite) => removeColors(sprite, removed.colors, removed.tolerance));
+  if (removed && removed.length > 0) sprites = sprites.map((sprite) => removeColors(sprite, removed));
   const kept = sprites.map(() => false);
   if (options.eraseBackground) {
     sprites = sprites.map((sprite, i) => {

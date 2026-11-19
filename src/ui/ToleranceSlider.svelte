@@ -1,6 +1,16 @@
+<script lang="ts" module>
+  import { TUNING } from '../app/tuning.ts';
+
+  const STEP = TUNING.clean.removeToleranceStep;
+
+  /** The slider counts whole steps, so a tolerance reads as a small whole number. */
+  export function toleranceSteps(value: number): number {
+    return Math.round(value / STEP);
+  }
+</script>
+
 <script lang="ts">
   import { t } from '../app/i18n.ts';
-  import { TUNING } from '../app/tuning.ts';
 
   interface Props {
     id: string;
@@ -14,10 +24,8 @@
 
   let { id, value, onchange, compact = false }: Props = $props();
 
-  const STEP = TUNING.clean.removeToleranceStep;
-  const max = Math.round(TUNING.clean.removeToleranceMax / STEP);
-  /** The slider counts whole steps, so the value reads as a small whole number. */
-  const steps = $derived(Math.round(value / STEP));
+  const max = toleranceSteps(TUNING.clean.removeToleranceMax);
+  const steps = $derived(toleranceSteps(value));
 
   function read(event: Event): number {
     return Number((event.currentTarget as HTMLInputElement).value) * STEP;
