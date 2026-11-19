@@ -255,6 +255,17 @@ The Align step shows each frame in its container. The onion skin shows the previ
 
 <img src="docs/images/pixel-unslop-video-align-screen.png" width="900" alt="Align step of the video journey: the current frame of the character under the transparent, blue tinted onion skin of the first frame, 2 pixels to the left, with a vertical middle line, the frame offset x +2, y 0, the Onion skin choice with the Previous and First buttons, a loop preview and the list of shortcuts">
 
+### Edit a frame
+
+A video from an AI tool can have stray pixels or a watermark. You can correct each frame by hand on the Frames, Align and Animation screens.
+
+- Select a frame in the timeline. Click "Edit frame", push E, or double-click the frame.
+- Use the pencil, the eraser, the bucket and the dropper, as on the Clean screen. The palette shows the colors of all the frames.
+- Push "," and "." to go to the previous or the next frame. Push O to show the previous frame over this one.
+- Click "Back to the animation" to go back to the screen that you came from.
+
+Each frame keeps its own edits, with its own undo. A pencil mark shows on each edited frame in the timeline. The edits stay when you change the container, the alignment, the colors or the background removal. "Duplicate" copies the edits of the frame. A new grid with another size removes the edits, and Pixel Unslop asks you first.
+
 ### 5. Tune and export the animation
 
 The Animation screen plays the frames in a loop.

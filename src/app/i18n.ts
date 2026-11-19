@@ -24,6 +24,9 @@ const ptBR = {
   'zoom.resetLabel': 'Voltar o zoom para {value}% (Ctrl 0)',
   'zoom.chip': 'Zoom da interface: {value}%. Clique para ajustar.',
   'zoom.failed': 'Não deu para mudar o zoom da janela. O programa segue no zoom atual.',
+  'panel.resize': 'Largura do painel lateral',
+  'panel.resizeHint': 'Arraste para mudar a largura do painel. Clique duas vezes para voltar à largura padrão.',
+  'panel.width': '{px} pixels',
 
   'drop.title': 'Pixel Unslop',
   'drop.tagline': 'Deixe seu pixel art limpinho, pixel por pixel.',
@@ -610,6 +613,20 @@ const ptBR = {
   'align.back': 'Voltar aos frames',
   'align.next': 'Ver a animação',
   'progress.working': 'Trabalhando…',
+  'animEdit.open': 'Editar frame',
+  'animEdit.dblclick': 'Clique duas vezes para editar o frame.',
+  'animEdit.edited': 'Frame editado',
+  'animEdit.title': 'Editar frame {n} de {m}',
+  'animEdit.navLabel': 'Trocar de frame',
+  'animEdit.prev': 'Frame anterior',
+  'animEdit.next': 'Próximo frame',
+  'animEdit.onion': 'Papel vegetal',
+  'animEdit.onionHint': 'Mostra o frame anterior por cima, transparente e colorido.',
+  'animEdit.note': 'Suas correções ficam neste frame e entram na exportação.',
+  'animEdit.back': 'Voltar à animação',
+  'confirm.animFrameGrid.title': 'Usar a grade nova?',
+  'confirm.animFrameGrid.body': 'A grade nova muda o tamanho dos frames, então as correções feitas nos frames serão perdidas.',
+  'confirm.animFrameGrid.ok': 'Usar a grade nova',
 } as const;
 
 export type TextKey = keyof typeof ptBR;
@@ -638,6 +655,9 @@ const en: Record<TextKey, string> = {
   'zoom.resetLabel': 'Set the zoom back to {value}% (Ctrl 0)',
   'zoom.chip': 'Interface zoom: {value}%. Click to change it.',
   'zoom.failed': 'The zoom of the window could not change. The app stays at the current zoom.',
+  'panel.resize': 'Width of the side panel',
+  'panel.resizeHint': 'Drag to change the width of the panel. Double-click to go back to the default width.',
+  'panel.width': '{px} pixels',
 
   'drop.title': 'Pixel Unslop',
   'drop.tagline': 'Make your pixel art crisp, pixel by pixel.',
@@ -1224,6 +1244,20 @@ const en: Record<TextKey, string> = {
   'align.back': 'Back to the frames',
   'align.next': 'See the animation',
   'progress.working': 'Working…',
+  'animEdit.open': 'Edit frame',
+  'animEdit.dblclick': 'Double-click to edit the frame.',
+  'animEdit.edited': 'Edited frame',
+  'animEdit.title': 'Edit frame {n} of {m}',
+  'animEdit.navLabel': 'Change the frame',
+  'animEdit.prev': 'Previous frame',
+  'animEdit.next': 'Next frame',
+  'animEdit.onion': 'Onion skin',
+  'animEdit.onionHint': 'Shows the previous frame over this one, transparent and tinted.',
+  'animEdit.note': 'Your fixes stay on this frame and go into the export.',
+  'animEdit.back': 'Back to the animation',
+  'confirm.animFrameGrid.title': 'Use the new grid?',
+  'confirm.animFrameGrid.body': 'The new grid changes the size of the frames, so the fixes on the frames are lost.',
+  'confirm.animFrameGrid.ok': 'Use the new grid',
 };
 
 const TABLES: Record<Locale, Record<TextKey, string>> = { 'pt-BR': ptBR, en };

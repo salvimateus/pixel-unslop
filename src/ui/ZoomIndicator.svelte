@@ -87,7 +87,10 @@
         display var(--dur-pop) allow-discrete,
         overlay var(--dur-pop) allow-discrete;
 
+      /* The display above beats the hidden popover rule of the browser, so the closed state sets it again. */
       &:not(:popover-open) {
+        display: none;
+        pointer-events: none;
         opacity: 0;
         transform: scale(0.94);
       }

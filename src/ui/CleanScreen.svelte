@@ -18,7 +18,8 @@
   import PalettePanel from './PalettePanel.svelte';
   import ProgressPill from './ProgressPill.svelte';
   import Stage from './Stage.svelte';
-  import type { StagePointer } from './stage-renderer.ts';
+  import PanelSplitter from './PanelSplitter.svelte';
+  import { bakeSprite, STAGE_COLORS, type StagePointer } from './stage-renderer.ts';
 
   interface ToolInfo {
     id: Tool;
@@ -62,11 +63,21 @@
   let overSplit = $state(false);
   let splitPercent = $state(0);
 
+  /** The frame editor of an animation: one timeline entry, with the palette of the whole animation. */
+  const frameMode = app.screen === 'anim-edit';
+  /** The onion ghost of the previous entry, in the frame editor only. */
+  let onion = $state(false);
+
   const result = $derived(app.result);
   const palette = $derived.by(() => {
     void app.editVersion;
-    return result ? listPalette(app.session.composed().pixels) : [];
+    if (!result) return [];
+    if (!frameMode) return listPalette(app.session.composed().pixels);
+    void app.anim.version;
+    return app.anim.paletteColors();
   });
+  const framePosition = $derived(app.anim.timeline.findIndex((frame) => frame.id === app.editingFrameId));
+  const frameCount = $derived(app.anim.timeline.length);
   /** The preview background shows only through transparent tiles; without them the control is disabled. */
   const hasTransparency = $derived.by(() => {
     void app.editVersion;
@@ -77,7 +88,7 @@
     void app.editVersion;
     return result ? opaqueBox(app.session.composed()) : null;
   });
-  const trimmed = $derived(exportBox !== null && result !== null && (exportBox.cols !== result.sprite.cols || exportBox.rows !== result.sprite.rows));
+  const trimmed = $derived(!frameMode && exportBox !== null && result !== null && (exportBox.cols !== result.sprite.cols || exportBox.rows !== result.sprite.rows));
   const canUndo = $derived.by(() => {
     void app.editVersion;
     return app.session.canUndo;
@@ -102,7 +113,13 @@
         return;
       }
       const composed = app.session.composed();
-      if (!scene || sceneAligned !== current.aligned || scene.contentW !== composed.cols || scene.contentH !== composed.rows) {
+      const sameSize = scene !== null && scene.contentW === composed.cols && scene.contentH === composed.rows;
+      if (scene && frameMode && sameSize && sceneAligned !== current.aligned) {
+        // Another frame of the animation: the view stays, with no entry sweep.
+        sceneAligned = current.aligned;
+        scene.setAligned(current.aligned);
+        scene.setSprite(composed);
+      } else if (!scene || sceneAligned !== current.aligned || !sameSize) {
         sceneAligned = current.aligned;
         const next = new CleanScene(composed, current.aligned, compareLabels(), true);
         next.background = app.previewBg;
@@ -115,6 +132,27 @@
       }
     });
   });
+
+  /** The previous timeline entry, in a loop, as a tinted ghost over the frame. */
+  $effect(() => {
+    const on = onion && frameMode;
+    const id = app.editingFrameId;
+    const current = scene;
+    void app.baseVersion;
+    if (!current) return;
+    untrack(() => {
+      const list = app.anim.timeline;
+      const at = list.findIndex((frame) => frame.id === id);
+      const previous = on && at >= 0 && list.length > 1 ? list[(at - 1 + list.length) % list.length] : null;
+      const sprite = previous ? app.anim.editedFrame(previous.id) : null;
+      current.setGhost(sprite ? bakeSprite(sprite, { color: STAGE_COLORS.ghostPrevious, strength: TUNING.anim.ghostTint }) : null, TUNING.anim.ghostAlpha);
+    });
+  });
+
+  function toggleOnion(): void {
+    onion = !onion;
+    sfx.play('tick');
+  }
 
   $effect(() => {
     const bg = app.previewBg;
@@ -163,6 +201,7 @@
 
   function edited(): void {
     app.editVersion++;
+    if (frameMode) app.noteFrameEdit();
   }
 
   /** One stamp of the brush at `tile`: the squares of the footprint that are new to the stroke and change color. */
@@ -400,9 +439,16 @@
       redo();
     } else if (mod && key === 's') {
       event.preventDefault();
-      if (app.editingId === null) app.exportOpen = true;
+      if (app.editingId === null && !frameMode) app.exportOpen = true;
     } else if (event.key === 'Escape') {
       palettePanel?.cancelSwap();
+    } else if (frameMode && !mod && !event.altKey && !isEditable(event.target) && (event.key === ',' || event.key === '.' || key === 'o')) {
+      event.preventDefault();
+      if (key === 'o') {
+        if (!event.repeat) toggleOnion();
+      } else {
+        app.stepAnimFrame(event.key === ',' ? -1 : 1);
+      }
     } else if (!mod && !event.altKey && !isEditable(event.target) && (event.key === '[' || event.key === ']')) {
       if (!brushTool()) return;
       event.preventDefault();
@@ -469,6 +515,11 @@
         <button type="button" class="icon-btn" aria-label={t('clean.grid')} title={t('clean.grid')} aria-pressed={app.showTileGrid} onclick={() => (app.showTileGrid = !app.showTileGrid)}>
           <Icon name="grid" />
         </button>
+        {#if frameMode}
+          <button type="button" class="icon-btn" aria-label={t('animEdit.onion')} title="{t('animEdit.onionHint')} (O)" aria-keyshortcuts="O" aria-pressed={onion} disabled={frameCount < 2} onclick={toggleOnion}>
+            <Icon name="onion" />
+          </button>
+        {/if}
       </div>
       <span class="toolbar-sep" aria-hidden="true"></span>
       <div class="toolbar-group toolbar-brush">
@@ -512,10 +563,24 @@
   </div>
 
   <aside class="clean-panel">
+    <PanelSplitter />
     <div class="clean-panel-scroll">
       <header class="clean-head">
-        {#if app.editingId !== null && app.source}<p class="piece-tag">{t('clean.piece', { name: app.source.name })}</p>{/if}
-        <h1 class="clean-title">{t('clean.title')}</h1>
+        {#if app.editingId !== null && app.source}<p class="piece-tag" title={app.source.name}>{t('clean.piece', { name: app.source.name })}</p>{/if}
+        {#if frameMode}
+          <h1 class="clean-title">{t('animEdit.title', { n: framePosition + 1, m: frameCount })}</h1>
+          <div class="frame-nav" role="group" aria-label={t('animEdit.navLabel')}>
+            <button type="button" class="icon-btn" aria-label={t('animEdit.prev')} title="{t('animEdit.prev')} (,)" aria-keyshortcuts="," disabled={frameCount < 2} onclick={() => app.stepAnimFrame(-1)}>
+              <Icon name="stepBack" size={18} />
+            </button>
+            <button type="button" class="icon-btn" aria-label={t('animEdit.next')} title="{t('animEdit.next')} (.)" aria-keyshortcuts="." disabled={frameCount < 2} onclick={() => app.stepAnimFrame(1)}>
+              <Icon name="stepForward" size={18} />
+            </button>
+            <span class="keycap-group" aria-hidden="true"><kbd class="keycap">,</kbd><kbd class="keycap">.</kbd></span>
+          </div>
+        {:else}
+          <h1 class="clean-title">{t('clean.title')}</h1>
+        {/if}
         {#if result}<p class="hint">{t('clean.size', { cols: result.sprite.cols, rows: result.sprite.rows })} · {t('rule.pixel')}</p>{/if}
         {#if trimmed && exportBox}<p class="hint export-box-note"><span class="export-box-swatch" aria-hidden="true"></span>{t('clean.exportBox', { w: exportBox.cols, h: exportBox.rows })}</p>{/if}
       </header>
@@ -527,13 +592,21 @@
         {t('clean.removeBg')}
       </button>
 
-      <CleanupPresets hint={t('cleanup.hint')} />
+      {#if !frameMode}
+        <CleanupPresets hint={t('cleanup.hint')} />
+      {/if}
 
-      {#if app.editingId === null}<ReferenceColors />{/if}
+      {#if app.editingId === null && !frameMode}<ReferenceColors />{/if}
     </div>
 
-    <div class="clean-actions" class:is-set={app.editingId !== null}>
-      {#if app.editingId !== null}
+    <div class="clean-actions" class:is-set={app.editingId !== null || frameMode}>
+      {#if frameMode}
+        <p class="hint set-note">{t('animEdit.note')}</p>
+        <button type="button" class="btn btn-primary btn-big" title={t('animEdit.note')} onclick={() => app.leaveFrameEditor()}>
+          <Icon name="check" size={20} />
+          {t('animEdit.back')}
+        </button>
+      {:else if app.editingId !== null}
         <p class="hint set-note">{t('clean.setNote')}</p>
         <button type="button" class="btn btn-primary btn-big" title={t('clean.setNote')} onclick={() => app.returnToSet()} disabled={app.loading}>
           <Icon name="check" size={20} />
@@ -560,6 +633,16 @@
       grid-row: 1;
     }
 
+    .frame-nav {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+
+      & .keycap-group {
+        margin-left: var(--space-2);
+      }
+    }
+
     .export-box-note {
       display: flex;
       align-items: center;
@@ -576,7 +659,7 @@
 
     .clean-screen {
       display: grid;
-      grid-template-columns: var(--rail-w) minmax(0, 1fr) var(--panel-w);
+      grid-template-columns: var(--rail-w) minmax(0, 1fr) var(--panel-size, var(--panel-w));
       height: 100%;
       min-width: 0;
       min-height: 0;
@@ -787,6 +870,7 @@
     }
 
     .clean-panel {
+      position: relative;
       display: grid;
       grid-template: minmax(0, 1fr) auto / minmax(0, 1fr);
       min-width: 0;

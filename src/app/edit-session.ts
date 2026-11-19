@@ -53,6 +53,18 @@ export class EditSession {
     this.cache = null;
   }
 
+  /** An independent session with the same base, edits and history. */
+  clone(): EditSession {
+    const copy = new EditSession();
+    copy.base = this.base;
+    copy.mask = this.mask.slice();
+    copy.overlay = this.overlay.slice();
+    copy.maskCount = this.maskCount;
+    copy.undoStack = [...this.undoStack];
+    copy.redoStack = [...this.redoStack];
+    return copy;
+  }
+
   /** One undo step. `colors` is one color for all indices, or one color per index. Returns the indices that changed. */
   apply(indices: Int32Array, colors: number | Uint32Array): Int32Array {
     const composed = this.composed();

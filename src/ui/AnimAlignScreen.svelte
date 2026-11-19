@@ -17,6 +17,7 @@
   import LoopPreview from './LoopPreview.svelte';
   import ProgressPill from './ProgressPill.svelte';
   import Stage from './Stage.svelte';
+  import PanelSplitter from './PanelSplitter.svelte';
   import type { StagePointer } from './stage-renderer.ts';
 
   type GhostMode = GhostKind;
@@ -314,6 +315,9 @@
     } else if (key.toLowerCase() === 'd' && selected !== null) {
       event.preventDefault();
       if (!event.repeat) onDuplicate(selected);
+    } else if (key.toLowerCase() === 'e' && selected !== null) {
+      event.preventDefault();
+      if (!event.repeat) void app.editAnimFrame(selected);
     }
   }
 </script>
@@ -402,11 +406,14 @@
         onremove={onRemove}
         onduplicate={onDuplicate}
         onmove={onMove}
+        onedit={(id) => void app.editAnimFrame(id)}
+        edited={(frame) => anim.isEdited(frame.id)}
       />
     </div>
   </div>
 
   <aside class="align-panel">
+    <PanelSplitter />
     <div class="align-panel-scroll">
       <header class="align-head">
         <h1 class="align-title">{t('align.title')}</h1>
@@ -472,6 +479,8 @@
           <dd>{t('align.keyMove')}</dd>
           <dt><kbd class="keycap">D</kbd></dt>
           <dd>{t('anim.duplicate')}</dd>
+          <dt><kbd class="keycap">E</kbd></dt>
+          <dd>{t('animEdit.open')}</dd>
         </dl>
       </details>
     </div>
@@ -496,7 +505,7 @@
     .align-screen {
       --align-panel-w: clamp(320px, 24vw, 380px);
       display: grid;
-      grid-template-columns: minmax(0, 1fr) var(--align-panel-w);
+      grid-template-columns: minmax(0, 1fr) var(--panel-size, var(--align-panel-w));
       height: 100%;
       min-width: 0;
       min-height: 0;
@@ -644,6 +653,7 @@
     }
 
     .align-panel {
+      position: relative;
       display: grid;
       grid-template: minmax(0, 1fr) auto / minmax(0, 1fr);
       min-width: 0;
@@ -654,6 +664,7 @@
 
     .align-panel-scroll {
       display: grid;
+      grid-template-columns: minmax(0, 1fr);
       align-content: start;
       gap: var(--space-4);
       min-height: 0;

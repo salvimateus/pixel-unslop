@@ -193,7 +193,7 @@
           <AnimScreen />
         {:else if (app.screen === 'grid' || app.screen === 'set-grid' || app.screen === 'anim-grid') && app.source}
           <GridScreen />
-        {:else if app.screen === 'clean' && app.result}
+        {:else if (app.screen === 'clean' || app.screen === 'anim-edit') && app.result}
           <CleanScreen />
         {:else}
           <DropScreen />

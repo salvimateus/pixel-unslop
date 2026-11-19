@@ -79,6 +79,9 @@ export class CleanScene implements Scene {
   labels: CompareLabels;
   private host: StageHost | null = null;
   private aligned: ImageBitmap;
+  /** An onion ghost drawn over the sprite layer at `ghostAlpha`: a canvas of one pixel per tile, or null. */
+  private ghost: HTMLCanvasElement | null = null;
+  private ghostAlpha = 1;
   private readonly spriteCanvas: HTMLCanvasElement;
   private readonly spriteCtx: CanvasRenderingContext2D;
   private readonly image: ImageData;
@@ -133,6 +136,13 @@ export class CleanScene implements Scene {
 
   setAligned(aligned: ImageBitmap): void {
     this.aligned = aligned;
+    this.host?.invalidate();
+  }
+
+  setGhost(ghost: HTMLCanvasElement | null, alpha = 1): void {
+    if (ghost === this.ghost && alpha === this.ghostAlpha) return;
+    this.ghost = ghost && ghost.width === this.contentW && ghost.height === this.contentH ? ghost : null;
+    this.ghostAlpha = alpha;
     this.host?.invalidate();
   }
 
@@ -346,6 +356,10 @@ export class CleanScene implements Scene {
       ctx.rect(splitX, clip.y, Math.max(0, clip.x + clip.w - splitX), clip.h);
       ctx.clip();
       ctx.drawImage(this.spriteCanvas, rect.x, rect.y, rect.w, rect.h);
+      if (this.ghost) {
+        ctx.globalAlpha = this.ghostAlpha;
+        ctx.drawImage(this.ghost, rect.x, rect.y, rect.w, rect.h);
+      }
       ctx.restore();
     }
 

@@ -18,6 +18,7 @@
   import ProgressPill from './ProgressPill.svelte';
   import SetGridRail from './SetGridRail.svelte';
   import Stage from './Stage.svelte';
+  import PanelSplitter from './PanelSplitter.svelte';
   import type { StagePointer } from './stage-renderer.ts';
 
   /** The other pixel size that the edges show after a marked square; the core never applies it. */
@@ -732,6 +733,7 @@
   </div>
 
   <aside class="grid-panel">
+    <PanelSplitter />
     <div class="grid-panel-scroll" bind:this={panelScroll}>
       {#if adjust}
         <section class="adjust-box" aria-labelledby="adjust-title">
@@ -752,7 +754,7 @@
         </section>
       {:else}
       <header class="grid-head">
-        {#if (setMode || app.editingId !== null) && source}<p class="piece-tag">{t('clean.piece', { name: source.name })}</p>{/if}
+        {#if (setMode || app.editingId !== null) && source}<p class="piece-tag" title={source.name}>{t('clean.piece', { name: source.name })}</p>{/if}
         <h1 class="grid-title">{t('grid.title')}</h1>
         <p class="hint grid-goal">{animMode ? t('anim.gridGoal') : t('grid.goal')}</p>
       </header>
@@ -968,14 +970,14 @@
   @layer components {
     .grid-screen {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) var(--panel-w);
+      grid-template-columns: minmax(0, 1fr) var(--panel-size, var(--panel-w));
       height: 100%;
       min-width: 0;
       min-height: 0;
       overflow: clip;
 
       &.is-set {
-        grid-template-columns: var(--set-rail-w) minmax(0, 1fr) var(--panel-w);
+        grid-template-columns: var(--set-rail-w) minmax(0, 1fr) var(--panel-size, var(--panel-w));
       }
     }
 
@@ -1057,6 +1059,7 @@
     }
 
     .grid-panel {
+      position: relative;
       display: grid;
       grid-template: minmax(0, 1fr) auto / minmax(0, 1fr);
       min-width: 0;

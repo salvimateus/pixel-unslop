@@ -23,9 +23,13 @@
     onremove: (id: number) => void;
     onduplicate: (id: number) => void;
     onmove: (id: number, delta: -1 | 1) => void;
+    /** Opens the frame editor on an entry: the pencil button, a double click and the key E. */
+    onedit: (id: number) => void;
+    /** The entry has pixel edits: its thumbnail gets a pencil badge. */
+    edited: (frame: AnimFrame) => boolean;
   }
 
-  let { frames, thumbOf, version, selectedId, current = null, referenceIndex = null, background, onselect, onremove, onduplicate, onmove }: Props = $props();
+  let { frames, thumbOf, version, selectedId, current = null, referenceIndex = null, background, onselect, onremove, onduplicate, onmove, onedit, edited }: Props = $props();
 
   let strip: HTMLOListElement | undefined = $state();
   /** The entries that arrived after the strip opened: they pop in once. */
@@ -99,6 +103,9 @@
         <button type="button" class="icon-btn" aria-label={t('anim.moveRight')} title="{t('anim.moveRight')} (Alt+→)" disabled={selectedAt === frames.length - 1} onclick={() => onmove(id, 1)}>
           <Icon name="arrowRight" size={18} />
         </button>
+        <button type="button" class="icon-btn" aria-label={t('animEdit.open')} title="{t('animEdit.open')} (E)" aria-keyshortcuts="E" onclick={() => onedit(id)}>
+          <Icon name="pencil" size={18} />
+        </button>
         <button type="button" class="icon-btn" aria-label={t('anim.duplicate')} title="{t('anim.duplicate')} (D)" onclick={() => onduplicate(id)}>
           <Icon name="copy" size={18} />
         </button>
@@ -121,13 +128,18 @@
             class:is-selected={frame.id === selectedId}
             class:is-current={position === current}
             aria-pressed={frame.id === selectedId}
-            aria-label="{position + 1}: {t('anim.frameNumber', { n: frame.index + 1 })}"
+            aria-label="{position + 1}: {t('anim.frameNumber', { n: frame.index + 1 })}{edited(frame) ? ` · ${t('animEdit.edited')}` : ''}"
+            title={t('animEdit.dblclick')}
             onclick={() => onselect(frame.id)}
+            ondblclick={() => onedit(frame.id)}
           >
             <canvas class="timeline-canvas" use:thumb={{ sprite: thumbOf(frame, position), version }}></canvas>
             <span class="timeline-position">{position + 1}</span>
             {#if referenceIndex !== null && frame.index === referenceIndex}
               <span class="timeline-star" title={t('anim.reference')}><Icon name="star" size={12} filled /></span>
+            {/if}
+            {#if edited(frame)}
+              <span class="timeline-edited" title={t('animEdit.edited')}><Icon name="pencil" size={12} /></span>
             {/if}
           </button>
           <span class="timeline-index">#{frame.index + 1}</span>
@@ -284,6 +296,20 @@
       right: 1px;
       color: var(--yellow);
       filter: drop-shadow(0 1px 0 var(--depth));
+    }
+
+    .timeline-edited {
+      position: absolute;
+      right: 1px;
+      bottom: 1px;
+      display: grid;
+      place-items: center;
+      width: 16px;
+      height: 16px;
+      color: var(--on-primary);
+      background: var(--teal);
+      border-radius: var(--radius-s);
+      box-shadow: 0 1px 0 var(--depth);
     }
 
     .timeline-index {

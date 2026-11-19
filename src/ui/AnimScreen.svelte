@@ -17,6 +17,7 @@
   import ProgressPill from './ProgressPill.svelte';
   import { spriteThumb } from './sprite-thumb.ts';
   import Stage from './Stage.svelte';
+  import PanelSplitter from './PanelSplitter.svelte';
   import ToggleSwitch from './ToggleSwitch.svelte';
 
   const BACKGROUNDS: ReadonlyArray<{ id: PreviewBackground; label: TextKey }> = [
@@ -32,7 +33,7 @@
     feet: { label: 'animPlay.cellFeet', hint: 'animPlay.cellFeetHint' },
   };
 
-  type LegendKeys = 'space' | 'arrows' | 'brackets' | 'o' | 'delete' | 'altArrows' | 'd' | 'ctrlS';
+  type LegendKeys = 'space' | 'arrows' | 'brackets' | 'o' | 'delete' | 'altArrows' | 'd' | 'e' | 'ctrlS';
 
   const LEGEND: ReadonlyArray<{ keys: LegendKeys; text: TextKey }> = [
     { keys: 'space', text: 'animPlay.keyPlay' },
@@ -42,6 +43,7 @@
     { keys: 'delete', text: 'animPlay.keyRemove' },
     { keys: 'altArrows', text: 'animPlay.keyMove' },
     { keys: 'd', text: 'animPlay.keyDuplicate' },
+    { keys: 'e', text: 'animEdit.open' },
     { keys: 'ctrlS', text: 'animPlay.keyExport' },
   ];
 
@@ -281,6 +283,9 @@
     } else if (key.toLowerCase() === 'd' && selected !== null) {
       event.preventDefault();
       if (!event.repeat) onDuplicate(selected);
+    } else if (key.toLowerCase() === 'e' && selected !== null) {
+      event.preventDefault();
+      if (!event.repeat) void app.editAnimFrame(selected);
     }
   }
 
@@ -413,11 +418,14 @@
         onremove={onRemove}
         onduplicate={onDuplicate}
         onmove={onMove}
+        onedit={(id) => void app.editAnimFrame(id)}
+        edited={(frame) => app.anim.isEdited(frame.id)}
       />
     </div>
   </div>
 
   <aside class="anim-panel">
+    <PanelSplitter />
     <div class="anim-panel-scroll">
       <header class="anim-head">
         <h1 class="anim-title">{t('animPlay.title')}</h1>
@@ -524,7 +532,7 @@
     .anim-screen {
       --anim-panel-w: clamp(320px, 24vw, 380px);
       display: grid;
-      grid-template-columns: minmax(0, 1fr) var(--anim-panel-w);
+      grid-template-columns: minmax(0, 1fr) var(--panel-size, var(--anim-panel-w));
       height: 100%;
       min-width: 0;
       min-height: 0;
@@ -742,6 +750,7 @@
     }
 
     .anim-panel {
+      position: relative;
       display: grid;
       grid-template: minmax(0, 1fr) auto / minmax(0, 1fr);
       min-width: 0;
@@ -752,6 +761,7 @@
 
     .anim-panel-scroll {
       display: grid;
+      grid-template-columns: minmax(0, 1fr);
       align-content: start;
       gap: var(--space-4);
       min-height: 0;

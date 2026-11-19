@@ -2,6 +2,7 @@ import type { CellGrid, Sprite } from '../core/types.ts';
 import { placeFrames, prepareFrames, type BuiltFrames, type CellMode, type FrameOffset, type PreparedFrames } from '../core/frames.ts';
 import { borderBackground, eraseTiles, listPalette, opaqueBox, type TileBox } from '../core/sprite.ts';
 import { track } from './analytics.ts';
+import { EditSession } from './edit-session.ts';
 import { readStored, writeStored } from './storage.ts';
 import { TUNING } from './tuning.ts';
 import type { VideoInfo, VideoSource } from './video.ts';
@@ -131,6 +132,11 @@ export class Animation {
   private redoStack: PlaceSnapshot[] = [];
   /** The state before the edit in progress (a drag), or null. */
   private editStart: PlaceSnapshot | null = null;
+  /** The pixel edits of each timeline entry, by entry id, over its prepared frame. */
+  private sessions = new Map<number, EditSession>();
+  /** Changes on each pixel edit of an entry: the badges and thumbnails read it. */
+  frameEditsVersion = $state(0);
+  private paletteCache: { version: number; colors: Array<{ color: number; count: number }> } | null = null;
 
   get active(): boolean {
     return this.info !== null;
@@ -162,6 +168,73 @@ export class Animation {
   get gridSize(): { cols: number; rows: number } {
     const own = this.owns[0];
     return own ? { cols: own.cols, rows: own.rows } : { cols: 0, rows: 0 };
+  }
+
+  /** Some timeline entry has pixel edits. */
+  get hasFrameEdits(): boolean {
+    void this.frameEditsVersion;
+    for (const session of this.sessions.values()) if (session.hasEdits) return true;
+    return false;
+  }
+
+  /** The entry has pixel edits. Reactive through `frameEditsVersion`. */
+  isEdited(id: number): boolean {
+    void this.frameEditsVersion;
+    return this.sessions.get(id)?.hasEdits ?? false;
+  }
+
+  /**
+   * The edit session of one entry, made on first use. Its base is the prepared frame of the entry (one palette,
+   * reference colors and erase, on the full grid, before the placement). Null for an unknown entry.
+   */
+  sessionOf(id: number): EditSession | null {
+    const at = this.liveTimeline().findIndex((frame) => frame.id === id);
+    const base = this.prepared.frames[at];
+    if (at < 0 || !base) return null;
+    let session = this.sessions.get(id);
+    if (!session) {
+      session = new EditSession();
+      session.setBase(base);
+      this.sessions.set(id, session);
+    }
+    return session;
+  }
+
+  /** The prepared frame of an entry with its pixel edits, on the full grid; null for an unknown entry. */
+  editedFrame(id: number): Sprite | null {
+    const timeline = this.liveTimeline();
+    const at = timeline.findIndex((frame) => frame.id === id);
+    return at < 0 ? null : (this.frameAt(at, timeline) ?? null);
+  }
+
+  /** The edits of an entry, for a view of its video frame: null when the entry has no edits. */
+  editsOf(id: number): Sprite | null {
+    void this.frameEditsVersion;
+    const session = this.sessions.get(id);
+    return session?.hasEdits ? session.composed() : null;
+  }
+
+  /** A pixel edit of an entry: the output places the frames again, and the export has a change to write. */
+  frameEdited(): void {
+    this.editVersion++;
+    this.frameEditsVersion++;
+    this.place();
+  }
+
+  /** The colors of every timeline frame with its edits, most used first: the palette of the frame editor. */
+  paletteColors(): Array<{ color: number; count: number }> {
+    if (this.paletteCache?.version === this.version) return this.paletteCache.colors;
+    const timeline = this.liveTimeline();
+    const frames = timeline.map((_, at) => this.frameAt(at, timeline)).filter((frame): frame is Sprite => frame !== undefined);
+    const all = new Uint32Array(frames.reduce((sum, frame) => sum + frame.pixels.length, 0));
+    let offset = 0;
+    for (const frame of frames) {
+      all.set(frame.pixels, offset);
+      offset += frame.pixels.length;
+    }
+    const colors = listPalette(all);
+    this.paletteCache = { version: this.version, colors };
+    return colors;
   }
 
   find(id: number): AnimFrame | null {
@@ -226,7 +299,8 @@ export class Animation {
    */
   setFrames(raws: Sprite[], owns: Sprite[], thumbs: ImageBitmap[], strength: number, grid: CellGrid, fitVersion: number): boolean {
     const before = this.gridSize;
-    const resized = this.container !== null && (owns[0]?.cols !== before.cols || owns[0]?.rows !== before.rows);
+    const sizeChanged = owns[0]?.cols !== before.cols || owns[0]?.rows !== before.rows;
+    const resized = this.container !== null && sizeChanged;
     for (const thumb of this.thumbs) thumb.close();
     this.raws = raws;
     this.owns = owns;
@@ -240,6 +314,9 @@ export class Animation {
     this.cursor = Math.min(this.cursor, Math.max(0, count - 1));
     if (!this.referenceChosen || this.referenceIndex >= count) this.referenceIndex = Math.min(this.keyIndex, Math.max(0, count - 1));
     let kept = this.timeline.filter((frame) => frame.index < count);
+    if (sizeChanged) this.sessions.clear();
+    for (const id of this.sessions.keys()) if (!kept.some((frame) => frame.id === id)) this.sessions.delete(id);
+    this.frameEditsVersion++;
     if (resized) {
       kept = kept.map((frame) => ({ ...frame, offset: ZERO }));
       this.container = null;
@@ -359,6 +436,7 @@ export class Animation {
     const at = list.findIndex((frame) => frame.id === id);
     if (at < 0) return;
     const next = list.filter((frame) => frame.id !== id);
+    if (this.sessions.delete(id)) this.frameEditsVersion++;
     if (this.selectedId === id) this.selectedId = next[Math.min(at, next.length - 1)]?.id ?? null;
     this.setTimeline(next);
   }
@@ -369,6 +447,11 @@ export class Animation {
     const at = list.findIndex((frame) => frame.id === id);
     if (at < 0) return null;
     const frame: AnimFrame = { id: this.nextId++, index: list[at].index, offset: list[at].offset };
+    const session = this.sessions.get(id);
+    if (session) {
+      this.sessions.set(frame.id, session.clone());
+      this.frameEditsVersion++;
+    }
     this.setTimeline([...list.slice(0, at + 1), frame, ...list.slice(at + 1)]);
     this.selectedId = frame.id;
     return frame;
@@ -581,7 +664,7 @@ export class Animation {
    * frames, the strength, the reference or the erase changed), then the placement in the cell.
    */
   rebuild(): void {
-    const timeline = this.timeline.filter((frame) => this.owns[frame.index] !== undefined);
+    const timeline = this.liveTimeline();
     const strength = Number.isFinite(this.ownStrength) ? this.ownStrength : 0;
     const reference = this.referenceColors ? this.owns[this.referenceIndex] : undefined;
     const key = `${this.framesVersion}|${strength}|${this.referenceColors ? this.referenceIndex : -1}|${this.eraseBackground}|${timeline.map((frame) => frame.index).join(',')}`;
@@ -594,6 +677,11 @@ export class Animation {
               timeline.map((frame) => this.owns[frame.index]),
               { strength, reference: reference ? listPalette(reference.pixels) : null, eraseBackground: this.eraseBackground },
             );
+      // Same grid size: each session keeps its edits over the new base.
+      timeline.forEach((frame, at) => {
+        const base = this.prepared.frames[at];
+        if (base) this.sessions.get(frame.id)?.setBase(base);
+      });
     }
     this.place();
   }
@@ -604,7 +692,7 @@ export class Animation {
    */
   paddedFrame(position: number, pad: number): { sprite: Sprite; inner: TileBox } | null {
     const frame = this.timeline[position];
-    const prepared = this.prepared.frames[position];
+    const prepared = this.frameAt(position);
     const built = this.built.frames[position];
     if (!frame || !prepared || !built) return null;
     const box = this.container;
@@ -617,7 +705,7 @@ export class Animation {
 
   /** Places the prepared frames in the cell with the offsets and the container. Cheap: it runs on every drag move. */
   private place(): void {
-    const timeline = this.timeline.filter((frame) => this.owns[frame.index] !== undefined);
+    const timeline = this.liveTimeline();
     const prepared = this.prepared;
     if (prepared.frames.length === 0 || prepared.frames.length !== timeline.length) {
       this.built = prepared.frames.length === 0 ? EMPTY_BUILD : this.built;
@@ -625,9 +713,24 @@ export class Animation {
       return;
     }
     const cell = this.cell === 'box' && !this.container ? 'crop' : this.cell;
-    const placed = placeFrames(prepared.frames, { cell, offsets: timeline.map((frame) => frame.offset), box: this.container });
+    const frames = prepared.frames.map((frame, at) => this.sessions.get(timeline[at].id)?.composed() ?? frame);
+    const placed = placeFrames(frames, { cell, offsets: timeline.map((frame) => frame.offset), box: this.container });
     this.built = { frames: placed.frames, cell: placed.cell, kept: prepared.kept };
     this.version++;
+  }
+
+  /** The timeline entries whose video frame was sampled: the ones that `prepared` holds, in order. */
+  private liveTimeline(): AnimFrame[] {
+    return this.timeline.filter((frame) => this.owns[frame.index] !== undefined);
+  }
+
+  /** The prepared frame at one timeline position, with the edits of its entry. */
+  private frameAt(position: number, timeline = this.liveTimeline()): Sprite | undefined {
+    const prepared = this.prepared.frames[position];
+    const frame = timeline[position];
+    if (!prepared || !frame) return prepared;
+    const session = this.sessions.get(frame.id);
+    return session?.hasBase ? session.composed() : prepared;
   }
 
   markExported(): void {
@@ -657,6 +760,9 @@ export class Animation {
     this.referenceColors = false;
     this.container = null;
     this.clearHistory();
+    this.sessions.clear();
+    this.frameEditsVersion++;
+    this.paletteCache = null;
     this.prepared = EMPTY_PREPARED;
     this.preparedKey = '';
     this.built = EMPTY_BUILD;

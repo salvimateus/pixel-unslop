@@ -12,6 +12,7 @@
     'anim-frames': 'step.frames',
     'anim-align': 'step.align',
     anim: 'step.anim',
+    'anim-edit': 'step.anim',
   };
   const SINGLE: readonly Screen[] = ['drop', 'grid', 'clean'];
   const SET: readonly Screen[] = ['drop', 'set-grid', 'set'];
@@ -20,7 +21,9 @@
 
   /** The single flow, the set, or one set object open on the Limpar screen. */
   const steps = $derived(app.anim.active ? ANIM : app.editingId !== null && app.screen === 'clean' ? SET_OBJECT : app.set.active || app.startingSet ? SET : SINGLE);
-  const current = $derived(steps.indexOf(app.screen));
+  /** The frame editor of an animation shows the step that opened it. */
+  const editingFrame = $derived(app.screen === 'anim-edit');
+  const current = $derived(steps.indexOf(editingFrame ? app.animEditFrom : app.screen));
 
   /**
    * Back is always open; forward only to a step that already has its data, so nothing is recomputed by surprise.
@@ -46,7 +49,7 @@
         <button
           type="button"
           class="stepper-step"
-          disabled={index === current || !reachable(screen)}
+          disabled={(index === current && !editingFrame) || !reachable(screen)}
           aria-current={index === current ? 'step' : undefined}
           onclick={() => app.goTo(screen)}
         >

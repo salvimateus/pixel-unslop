@@ -107,7 +107,7 @@
                 <canvas class="piece-thumb" use:spriteThumb={item.output} width="1" height="1" aria-hidden="true"></canvas>
               {/if}
             </span>
-            <span class="piece-name">{item.name}</span>
+            <span class="piece-name" title={item.name}>{item.name}</span>
             <span class="piece-size">
               {#if view === 'grid'}
                 {#if item.reference}
@@ -212,6 +212,7 @@
 
     .pieces-head {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
       gap: var(--space-2);
@@ -483,10 +484,6 @@
       border-radius: var(--radius-s);
       font-weight: 700;
       font-size: 0.6875rem;
-    }
-
-    .is-grid .pieces-head {
-      flex-wrap: wrap;
     }
 
     .piece-thumb.is-source {

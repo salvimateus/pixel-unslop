@@ -191,5 +191,11 @@ export const TUNING = {
     zoomIndicatorMs: 2000,
     /** The smallest layout viewport, in CSS pixels; the smallest window grows with the zoom to keep it. */
     minViewport: { width: 960, height: 640 },
+    /**
+     * The side panel that the user resizes. With no stored width, each screen keeps its own CSS width. The
+     * smallest width still holds the panel content; the largest is a share of the screen, and the stage keeps
+     * at least `stageMinPx`. Arrow keys move by `stepPx`, with Shift by `bigStepPx`.
+     */
+    panel: { minPx: 300, maxShare: 0.5, stageMinPx: 360, stepPx: 16, bigStepPx: 64 },
   },
 } as const;

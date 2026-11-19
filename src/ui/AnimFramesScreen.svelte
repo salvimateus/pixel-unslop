@@ -17,6 +17,7 @@
   import LoopPreview from './LoopPreview.svelte';
   import ProgressPill from './ProgressPill.svelte';
   import Stage from './Stage.svelte';
+  import PanelSplitter from './PanelSplitter.svelte';
   import ToggleSwitch from './ToggleSwitch.svelte';
   import { ContainerScene, type ContainerHandle, type ContainerMode, type ContainerPart } from './container-scene.ts';
   import type { StagePointer } from './stage-renderer.ts';
@@ -387,6 +388,9 @@
     } else if (key.toLowerCase() === 'd' && selected !== null) {
       event.preventDefault();
       if (!event.repeat) duplicateEntry(selected);
+    } else if (key.toLowerCase() === 'e' && selected !== null) {
+      event.preventDefault();
+      if (!event.repeat) void app.editAnimFrame(selected);
     }
   }
 </script>
@@ -463,7 +467,7 @@
     <div class="frames-timeline">
       <AnimTimeline
         frames={anim.timeline}
-        thumbOf={(frame) => anim.displayFrame(frame.index)}
+        thumbOf={(frame) => anim.editsOf(frame.id) ?? anim.displayFrame(frame.index)}
         version={anim.framesVersion}
         selectedId={anim.selectedId}
         referenceIndex={anim.referenceIndex}
@@ -472,16 +476,19 @@
         onremove={removeEntry}
         onduplicate={duplicateEntry}
         onmove={moveEntry}
+        onedit={(id) => void app.editAnimFrame(id)}
+        edited={(frame) => anim.isEdited(frame.id)}
       />
     </div>
   </div>
 
   <aside class="frames-panel">
+    <PanelSplitter />
     <div class="frames-panel-scroll">
       <header class="frames-head">
         <h1 class="frames-title">{t('frames.title')}</h1>
         {#if anim.info}
-          <p class="video-chip" title={anim.info.name}>
+          <p class="video-chip" title="{anim.info.name}.{anim.info.format}">
             <Icon name="film" size={16} />
             <span class="video-name">{anim.info.name}.{anim.info.format}</span>
             <span class="video-meta">{t('frames.videoMeta', { w: anim.info.width, h: anim.info.height, fps: anim.info.fps, count: anim.count })}</span>
@@ -620,6 +627,8 @@
           <dd>{t('frames.keyMove')}</dd>
           <dt><kbd class="keycap">D</kbd></dt>
           <dd>{t('anim.duplicate')}</dd>
+          <dt><kbd class="keycap">E</kbd></dt>
+          <dd>{t('animEdit.open')}</dd>
           <dt><span class="keycap-group"><KeyText text="Ctrl" /><kbd class="keycap">Z</kbd></span></dt>
           <dd>{t('clean.undo')}</dd>
           <dt><span class="keycap-group"><KeyText text="Ctrl" /><kbd class="keycap">Y</kbd></span></dt>
@@ -651,7 +660,7 @@
     .frames-screen {
       --frames-panel-w: clamp(320px, 24vw, 380px);
       display: grid;
-      grid-template-columns: minmax(0, 1fr) var(--frames-panel-w);
+      grid-template-columns: minmax(0, 1fr) var(--panel-size, var(--frames-panel-w));
       height: 100%;
       min-width: 0;
       min-height: 0;
@@ -816,6 +825,7 @@
     }
 
     .frames-panel {
+      position: relative;
       display: grid;
       grid-template: minmax(0, 1fr) auto / minmax(0, 1fr);
       min-width: 0;
@@ -826,6 +836,7 @@
 
     .frames-panel-scroll {
       display: grid;
+      grid-template-columns: minmax(0, 1fr);
       align-content: start;
       gap: var(--space-3);
       min-height: 0;
@@ -835,6 +846,7 @@
 
     .frames-head {
       display: grid;
+      grid-template-columns: minmax(0, 1fr);
       gap: var(--space-2);
       padding: var(--space-3) var(--space-5) 0;
     }
@@ -844,10 +856,10 @@
     }
 
     .video-chip {
-      display: flex;
-      flex-wrap: wrap;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
       align-items: center;
-      gap: 4px var(--space-2);
+      gap: 2px var(--space-2);
       padding: var(--space-1) var(--space-2);
       font-size: 0.8125rem;
       background: var(--surface-sunken);
@@ -868,6 +880,7 @@
     }
 
     .video-meta {
+      grid-column: 2;
       color: var(--text-muted);
       font-variant-numeric: tabular-nums;
     }
@@ -1006,8 +1019,8 @@
     }
 
     .range-row {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
+      display: flex;
+      flex-wrap: wrap;
       align-items: center;
       gap: var(--space-2);
     }
@@ -1024,6 +1037,7 @@
 
     .range-every {
       display: flex;
+      flex: none;
       align-items: center;
       gap: var(--space-1);
       color: var(--text-muted);

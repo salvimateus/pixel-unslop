@@ -16,3 +16,11 @@ export function writeStored(key: string, value: string): void {
     // Storage is a convenience only: the app works the same without it.
   }
 }
+
+export function removeStored(key: string): void {
+  try {
+    localStorage.removeItem(PREFIX + key);
+  } catch {
+    // Storage is a convenience only.
+  }
+}

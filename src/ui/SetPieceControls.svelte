@@ -77,7 +77,7 @@
 {#if piece?.reference}
   <section class="controls is-ref" aria-labelledby="set-piece-title">
     <div class="controls-head">
-      <h2 class="piece-title" id="set-piece-title"><span class="visually-hidden">{t('set.selected')}: </span>{piece.name}</h2>
+      <h2 class="piece-title" id="set-piece-title" title={piece.name}><span class="visually-hidden">{t('set.selected')}: </span>{piece.name}</h2>
       <span class="ref-tag"><Icon name="lock" size={14} />{t('set.reference')}</span>
     </div>
     <p class="ref-note">{t('set.referenceNote')}</p>
@@ -95,7 +95,7 @@
 {:else if piece}
   <section class="controls" aria-labelledby="set-piece-title">
     <div class="controls-head">
-      <h2 class="piece-title" id="set-piece-title"><span class="visually-hidden">{t('set.selected')}: </span>{piece.name}</h2>
+      <h2 class="piece-title" id="set-piece-title" title={piece.name}><span class="visually-hidden">{t('set.selected')}: </span>{piece.name}</h2>
       {#if !piece.empty}
         <span class="height-readout">
           <label class="hint" for="set-height">{t('set.height')}</label>
@@ -297,7 +297,7 @@
 
     .quick {
       display: grid;
-      grid-template-columns: 1.7fr repeat(3, minmax(0, 1fr));
+      grid-template-columns: minmax(min-content, 1.7fr) repeat(3, minmax(0, 1fr));
 
       &.is-enlarge {
         grid-template-columns: repeat(3, minmax(0, 1fr));

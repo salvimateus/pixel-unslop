@@ -25,7 +25,9 @@ import { TUNING } from './tuning.ts';
  * `anim-frames`, `anim-align` and `anim` are the steps of a video animation: its grid on one video frame, the frame pick
  * with the container, the frame by frame alignment, and the loop.
  */
-export type Screen = 'drop' | 'set-grid' | 'set' | 'grid' | 'clean' | 'anim-grid' | 'anim-frames' | 'anim-align' | 'anim';
+export type Screen = 'drop' | 'set-grid' | 'set' | 'grid' | 'clean' | 'anim-grid' | 'anim-frames' | 'anim-align' | 'anim' | 'anim-edit';
+/** The animation screens that open the frame editor, and that it goes back to. */
+export type AnimEditOrigin = 'anim-frames' | 'anim-align' | 'anim';
 /** The stages of the progress pill: the worker stages, plus the frame extraction of a video. */
 export type ProgressStage = Stage | 'frames';
 export interface Progress {
@@ -227,6 +229,15 @@ class AppState {
   aboutOpen = $state(false);
   toasts = $state<ToastItem[]>([]);
   confirmRequest = $state.raw<ConfirmRequest | null>(null);
+
+  /** The timeline entry that the frame editor (`'anim-edit'`) shows, and the screen it goes back to. */
+  editingFrameId = $state<number | null>(null);
+  animEditFrom = $state<AnimEditOrigin>('anim');
+  /** The entry that the frame editor should show; the loads follow the newest one. */
+  private frameTarget: number | null = null;
+  private frameLoop: Promise<boolean> | null = null;
+  /** A pixel edit happened since the frame editor opened. */
+  private frameEditsMade = false;
 
   private toastId = 0;
   /** The video frame that the Grade step of an animation should show; the loads follow the newest one. */
@@ -1549,6 +1560,7 @@ class AppState {
 
   private closeAnim(): void {
     this.progressCancel?.();
+    if (this.editingFrameId !== null) this.closeFrameEditor();
     this.anim.clear();
     this.animExportOpen = false;
     this.forgetSingle();
@@ -1557,6 +1569,11 @@ class AppState {
   /** The stepper and the back buttons inside the animation. */
   private async goToAnim(target: Screen): Promise<void> {
     if (this.cleaning) return;
+    if (this.screen === 'anim-edit' && target !== 'drop' && target !== 'anim-edit') {
+      this.closeFrameEditor();
+      this.screen = this.animEditFrom;
+      if (target === this.screen) return;
+    }
     if (target === 'drop') {
       await this.leaveAnim();
       return;
@@ -1672,6 +1689,9 @@ class AppState {
       this.screen = 'anim-frames';
       return true;
     }
+    const size = anim.gridSize;
+    const resized = anim.extracted && (fit.cols !== size.cols || fit.rows !== size.rows);
+    if (resized && anim.hasFrameEdits && !(await this.confirm(t('confirm.animFrameGrid.title'), t('confirm.animFrameGrid.body'), t('confirm.animFrameGrid.ok')))) return false;
     const info = video.info;
     const tilesPerFrame = Math.max(1, fit.cols * fit.rows * 2);
     const fitting = Math.floor(PARAMS.limits.maxFrameTiles / tilesPerFrame);
@@ -1764,6 +1784,10 @@ class AppState {
       // A newer level superseded this merge: its own refresh sets the frames.
       if (!owns || strength !== this.strength || !anim.extracted) return;
       anim.setOwn(owns, strength);
+      if (this.screen === 'anim-edit') {
+        this.baseVersion++;
+        this.editVersion++;
+      }
     } catch (error) {
       this.fail(error);
     }
@@ -1778,6 +1802,149 @@ class AppState {
     this.anim.markExported();
   }
 
+  /**
+   * "Editar frame": opens one timeline entry in the frame editor, from the Frames, Align or Animation screen, or
+   * moves the open editor to another entry. The worker loads the video frame of the entry on the grid of the
+   * frames, for the before view; the session of the entry holds the edits. A burst of calls loads only the newest
+   * entry. Returns false on a failure.
+   */
+  editAnimFrame(id: number): Promise<boolean> {
+    const anim = this.anim;
+    const from = this.screen;
+    if (!anim.video || !anim.grid || !anim.find(id) || this.cleaning) return Promise.resolve(false);
+    if (from !== 'anim-edit' && from !== 'anim-frames' && from !== 'anim-align' && from !== 'anim') return Promise.resolve(false);
+    if (from !== 'anim-edit' && !this.frameLoop) this.animEditFrom = from;
+    this.frameTarget = id;
+    if (!this.frameLoop) {
+      this.frameLoop = this.runFrameLoop().finally(() => {
+        this.frameLoop = null;
+      });
+    }
+    return this.frameLoop;
+  }
+
+  /** The frame editor moves to the previous (-1) or next (1) timeline entry, in a loop. */
+  stepAnimFrame(delta: -1 | 1): void {
+    const list = this.anim.timeline;
+    const current = this.frameTarget ?? this.editingFrameId;
+    const at = list.findIndex((frame) => frame.id === current);
+    if (at < 0 || list.length < 2) return;
+    void this.editAnimFrame(list[(at + delta + list.length) % list.length].id);
+  }
+
+  /** A pixel edit in the frame editor: the animation output and its export state follow. */
+  noteFrameEdit(): void {
+    if (this.editingFrameId === null) return;
+    this.frameEditsMade = true;
+    this.anim.frameEdited();
+  }
+
+  /** "Voltar à animação": closes the frame editor and opens the screen it came from. The edits stay. */
+  leaveFrameEditor(): void {
+    if (this.screen !== 'anim-edit') return;
+    this.closeFrameEditor();
+    this.screen = this.animEditFrom;
+  }
+
+  private async runFrameLoop(): Promise<boolean> {
+    const wasLoading = this.loading;
+    this.loading = true;
+    try {
+      while (this.frameTarget !== null && (this.frameTarget !== this.editingFrameId || this.screen !== 'anim-edit')) {
+        const id = this.frameTarget;
+        const anim = this.anim;
+        const video = anim.video;
+        const entry = anim.find(id);
+        const grid = anim.grid;
+        if (!video || !entry || !grid) {
+          this.frameTarget = null;
+          return false;
+        }
+        const png = await this.track(video.framePng(entry.index));
+        if (this.screen !== 'anim-edit' && this.source) {
+          // The worker image changes now: the Grade step must load its key frame again, even when this load fails.
+          this.source.bitmap.close();
+          this.result?.aligned.close();
+          this.source = null;
+          this.fit = null;
+          this.result = null;
+          this.baseVersion++;
+        }
+        const loaded = await this.track(this.engine.load(png));
+        let fit: GridFit;
+        let output: Awaited<ReturnType<CleanEngine['clean']>>;
+        try {
+          const manual = await this.track(this.engine.setGrid(grid));
+          if (!manual) throw new EngineError('internal', 'the grid of the frame did not arrive');
+          fit = manual;
+          output = await this.track(this.engine.clean({ strength: this.strength }));
+        } catch (error) {
+          loaded.bitmap.close();
+          throw error;
+        }
+        const session = anim.video === video && this.frameTarget === id ? anim.sessionOf(id) : null;
+        if (!session) {
+          loaded.bitmap.close();
+          output.aligned.close();
+          continue;
+        }
+        this.takeAnimFrame(id, session, loaded, fit, output);
+      }
+      return this.screen === 'anim-edit';
+    } catch (error) {
+      this.frameTarget = null;
+      this.fail(error);
+      return false;
+    } finally {
+      this.loading = wasLoading;
+    }
+  }
+
+  /** A loaded video frame becomes the before view of the frame editor, and the session of its entry the after view. */
+  private takeAnimFrame(id: number, session: EditSession, loaded: LoadResult, fit: GridFit, output: Awaited<ReturnType<CleanEngine['clean']>>): void {
+    const entering = this.screen !== 'anim-edit';
+    this.source?.bitmap.close();
+    this.result?.aligned.close();
+    this.source = { name: this.anim.info?.name ?? 'video', width: loaded.width, height: loaded.height, bitmap: loaded.bitmap };
+    this.fit = fit;
+    this.fitVersion++;
+    this.profiles = loaded.profiles;
+    this.gridRejected = false;
+    this.session = session;
+    this.result = { ...output, fitVersion: this.fitVersion };
+    this.editingFrameId = id;
+    this.anim.select(id);
+    this.baseVersion++;
+    this.editVersion++;
+    if (entering) {
+      this.frameEditsMade = false;
+      const colors = this.anim.paletteColors();
+      if (this.ink !== TRANSPARENT && !colors.some((entry) => entry.color === this.ink) && colors.length > 0) this.ink = colors[0].color;
+      if (this.tool !== 'eraser' && this.tool !== 'bucket') this.tool = 'pencil';
+      this.screen = 'anim-edit';
+    }
+  }
+
+  /**
+   * Closes the frame editor without a worker call. The worker image goes away, so the Grade step loads its key
+   * frame again; its grid inputs stay.
+   */
+  private closeFrameEditor(): void {
+    if (this.frameEditsMade) trackEvent('option_change', { kind: 'anim_edit_frame', count: this.anim.timeline.filter((frame) => this.anim.isEdited(frame.id)).length, screen: this.animEditFrom });
+    this.frameEditsMade = false;
+    this.frameTarget = null;
+    this.source?.bitmap.close();
+    this.result?.aligned.close();
+    this.source = null;
+    this.fit = null;
+    this.result = null;
+    this.profiles = null;
+    this.session = this.singleSession;
+    this.editingFrameId = null;
+    this.baseVersion++;
+    this.editVersion++;
+  }
+
   /** After an animation export: start again with a new file, with nothing left to confirm. */
   startOverAnim(): void {
     this.closeAnim();
@@ -1787,6 +1954,11 @@ class AppState {
   private forgetImage(): void {
     if (this.anim.active) {
       // The worker lost the frame of the Grade step: the sampled frames stay, and the Grade step loads its frame again.
+      if (this.screen === 'anim-edit') {
+        this.closeFrameEditor();
+        this.screen = this.animEditFrom;
+        return;
+      }
       this.source?.bitmap.close();
       this.result?.aligned.close();
       this.source = null;
@@ -1892,6 +2064,10 @@ interface DevAnim {
   referenceIndex: number;
   built: { cols: number; rows: number; count: number; kept: boolean[] };
   unexported: boolean;
+  /** One flag per timeline entry: the entry has pixel edits. */
+  edited: boolean[];
+  /** The entry that the frame editor shows, or null. */
+  editingFrameId: number | null;
 }
 
 function base64Of(bytes: Uint8Array): string {
@@ -1987,6 +2163,8 @@ export function installDevHook(): void {
         referenceIndex: anim.referenceIndex,
         built: { cols: anim.built.cell.cols, rows: anim.built.cell.rows, count: anim.built.frames.length, kept: [...anim.built.kept] },
         unexported: anim.unexported,
+        edited: anim.timeline.map((frame) => anim.isEdited(frame.id)),
+        editingFrameId: app.editingFrameId,
       };
     },
     animFrame: (position) => {

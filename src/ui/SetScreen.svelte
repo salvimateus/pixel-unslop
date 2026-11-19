@@ -15,6 +15,7 @@
   import ToggleSwitch from './ToggleSwitch.svelte';
   import { SetScene, type SetLabels } from './set-scene.ts';
   import Stage from './Stage.svelte';
+  import PanelSplitter from './PanelSplitter.svelte';
   import type { StagePointer } from './stage-renderer.ts';
 
   const BACKGROUNDS: ReadonlyArray<{ id: PreviewBackground; label: TextKey }> = [
@@ -418,6 +419,7 @@
   </div>
 
   <aside class="set-panel">
+    <PanelSplitter />
     <div class="set-panel-scroll">
       <header class="set-head">
         <h1 class="set-title">{t('set.title')}</h1>
@@ -460,7 +462,7 @@
       /* A bit wider than the other panels: the set panel holds the grid, the pieces and the set controls. */
       --set-panel-w: clamp(336px, 25vw, 400px);
       display: grid;
-      grid-template-columns: minmax(0, 1fr) var(--set-panel-w);
+      grid-template-columns: minmax(0, 1fr) var(--panel-size, var(--set-panel-w));
       height: 100%;
       min-width: 0;
       min-height: 0;
@@ -604,6 +606,7 @@
     }
 
     .set-panel {
+      position: relative;
       display: grid;
       grid-template: minmax(0, 1fr) auto / minmax(0, 1fr);
       min-width: 0;
