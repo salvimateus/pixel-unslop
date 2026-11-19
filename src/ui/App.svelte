@@ -5,7 +5,7 @@
   import { app, isImageFile } from '../app/state.svelte.ts';
   import { t } from '../app/i18n.ts';
   import { isVideoFile } from '../app/video.ts';
-  import { isDesktop, launchFile } from '../app/platform.ts';
+  import { isDesktop, watchLaunchFiles, type LaunchedFile } from '../app/platform.ts';
   import { zoomMoveOf } from '../app/zoom.ts';
   import AboutDialog from './AboutDialog.svelte';
   import AnimExportDialog from './AnimExportDialog.svelte';
@@ -27,6 +27,8 @@
 
   const DEV = import.meta.env.DEV;
   let dragDepth = 0;
+  /** The newest file given to the exe, until the app is free to open it. */
+  let launched = $state<LaunchedFile | null>(null);
 
   // One event for each screen that the user reaches.
   $effect(() => track('app_screen', { screen: app.screen }));
@@ -118,14 +120,32 @@
     if (event.ctrlKey) event.preventDefault();
   }
 
+  // A launch file waits for open dialogs and running work, so it never opens behind a dialog or gets lost.
+  $effect(() => {
+    const file = launched;
+    if (!file || dialogOpen() || app.loading || app.cleaning) return;
+    launched = null;
+    void app.openLaunched(file);
+  });
+
   onMount(() => {
     window.addEventListener('wheel', onWheel, { passive: false });
-    launchFile()
-      .then((file) => {
-        if (file) void app.openBytes(file.bytes.slice().buffer, file.name);
+    let stopLaunch: (() => void) | null = null;
+    let mounted = true;
+    watchLaunchFiles(
+      (file) => (launched = file),
+      () => app.toast(t('error.read'), 'error'),
+    )
+      .then((stop) => {
+        if (mounted) stopLaunch = stop;
+        else stop();
       })
       .catch(() => app.toast(t('error.read'), 'error'));
-    return () => window.removeEventListener('wheel', onWheel);
+    return () => {
+      mounted = false;
+      stopLaunch?.();
+      window.removeEventListener('wheel', onWheel);
+    };
   });
 </script>
 

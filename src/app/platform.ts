@@ -21,9 +21,10 @@ export interface OutputFile {
 
 export type PngFile = OutputFile;
 
+/** A file given to the desktop exe: its name is known at once, its bytes are read only on demand. */
 export interface LaunchedFile {
   name: string;
-  bytes: Uint8Array;
+  read(): Promise<File>;
 }
 
 /** True inside the Tauri window, false in a plain browser. */
@@ -283,12 +284,38 @@ export async function openExternal(url: string): Promise<void> {
   window.open(url, '_blank', 'noopener');
 }
 
-/** The image file given to the exe as its first argument (a file dropped on the icon), if any. */
-export async function launchFile(): Promise<LaunchedFile | null> {
-  if (!isDesktop) return null;
+/** The event that the exe emits when a later launch gives the running window a file. */
+const LAUNCH_EVENT = 'launch-file';
+
+/** The file that waits in the exe, taken once: a second take gets null until another launch gives a file. */
+async function takeLaunchFile(): Promise<LaunchedFile | null> {
   const path = await invoke<string | null>('launch_file');
   if (!path) return null;
-  const { readFile } = await import('@tauri-apps/plugin-fs');
-  const bytes = await readFile(path);
-  return { name: baseName(path), bytes };
+  const name = baseName(path);
+  return {
+    name,
+    async read() {
+      const { readFile } = await import('@tauri-apps/plugin-fs');
+      const bytes = await readFile(path);
+      return new File([bytes as Uint8Array<ArrayBuffer>], name);
+    },
+  };
+}
+
+/**
+ * Desktop only: gives `onFile` each file that the exe receives ("Open with", a drop on the icon), the one of this
+ * launch and those of later launches, which the single running window takes. Resolves to the function that stops
+ * the watch; a browser gets a function that does nothing.
+ */
+export async function watchLaunchFiles(onFile: (file: LaunchedFile) => void, onError: () => void): Promise<() => void> {
+  if (!isDesktop) return () => {};
+  const take = (): Promise<void> =>
+    takeLaunchFile().then((file) => {
+      if (file) onFile(file);
+    }, onError);
+  const { listen } = await import('@tauri-apps/api/event');
+  // The listener comes first: a file that arrives before it waits in the exe for the first take.
+  const stop = await listen(LAUNCH_EVENT, () => void take());
+  void take();
+  return stop;
 }

@@ -50,6 +50,8 @@ Or use the web version in your browser at [pixel-unslop.vercel.app](https://pixe
 
 To start the desktop app, double-click `PixelUnslop.exe`.
 
+To open an image or a video directly, right-click the file in Explorer, then select "Open with" > "Pixel Unslop". The first time, select "Choose another app" and find `PixelUnslop.exe`. If the app is already open, the file opens in the same window.
+
 To use the command line tool on WSL or Linux, extract the file:
 
 ```sh
@@ -220,6 +222,8 @@ The video journey has five steps: "Drop", "Grid", "Frames", "Align" and "Animati
 ### 1. Drop the video
 
 On the drop screen, click "A video" and select an MP4, MOV or WebM file. You can also drop the video into the window. For the best result, generate the character on a flat background of one color.
+
+In the desktop app, you can also open the video from Explorer with "Open with" > "Pixel Unslop". When the app finds a clear grid, it locks the grid and goes directly to the Frames screen. If the grid is not clear, the app stops on the Grid step.
 
 ### 2. Set the grid on one frame
 

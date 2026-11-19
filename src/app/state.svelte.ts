@@ -5,7 +5,7 @@ import { pack, TRANSPARENT } from '../core/color.ts';
 import { matchToReference, type ColorCount } from '../core/palette.ts';
 import { exportSprite, referencePalette } from '../core/pipeline.ts';
 import { listPalette } from '../core/sprite.ts';
-import { isDesktop, monitorWorkArea, setDownloadFile, setInterfaceZoom, type PngFile } from './platform.ts';
+import { isDesktop, monitorWorkArea, setDownloadFile, setInterfaceZoom, type LaunchedFile, type PngFile } from './platform.ts';
 import { defaultZoom, nextZoom, snapZoom, storeZoom, storedZoom, type ZoomMove } from './zoom.ts';
 import type { Camera } from '../ui/camera.ts';
 import type { PreviewBackground } from '../ui/clean-scene.ts';
@@ -457,6 +457,31 @@ class AppState {
       return;
     }
     await this.openBytes(bytes, file.name);
+  }
+
+  /**
+   * A file given to the desktop exe ("Open with", a drop on the icon, a later launch) takes the path of a drop.
+   * A video then goes on to the frames step when its automatic grid is sure; a weak grid stays on the Grade step,
+   * where the user sees the warning. Another type is rejected by its name, before any read.
+   */
+  async openLaunched(launched: LaunchedFile): Promise<void> {
+    const named = new File([], launched.name);
+    if (!isImageFile(named) && !isVideoFile(named)) {
+      this.rejectDrop(t('toast.notImage'));
+      return;
+    }
+    let file: File;
+    try {
+      file = await this.track(launched.read());
+    } catch {
+      this.rejectDrop(t('error.read'));
+      return;
+    }
+    const video = this.anim.video;
+    await this.openFiles([file]);
+    if (!isVideoFile(file) || this.anim.video === video || this.screen !== 'anim-grid') return;
+    if (this.gridRejected || !this.fit || this.fit.notes.includes('weak-grid')) return;
+    await this.lockAnimGrid();
   }
 
   async openBytes(bytes: ArrayBuffer, fileName: string): Promise<void> {
