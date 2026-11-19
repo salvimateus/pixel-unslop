@@ -9,7 +9,7 @@
   import { TUNING } from '../app/tuning.ts';
   import type { FrameOffset } from '../core/frames.ts';
   import { opaqueBox } from '../core/sprite.ts';
-  import { AlignScene, type AlignLayers } from './align-scene.ts';
+  import { AlignScene, type AlignLayers, type GhostKind } from './align-scene.ts';
   import AnimTimeline from './AnimTimeline.svelte';
   import type { PreviewBackground } from './clean-scene.ts';
   import Icon from './Icon.svelte';
@@ -19,7 +19,7 @@
   import Stage from './Stage.svelte';
   import type { StagePointer } from './stage-renderer.ts';
 
-  type GhostMode = 'previous' | 'first';
+  type GhostMode = GhostKind;
 
   const BACKGROUNDS: ReadonlyArray<{ id: PreviewBackground; label: TextKey }> = [
     { id: 'checker', label: 'clean.bg.checker' },
@@ -74,7 +74,7 @@
     const ghostAt = ghostPosition(at, mode);
     const ghost = ghostAt === null ? null : anim.paddedFrame(ghostAt, pad);
     const inner = current?.inner ?? { col: 0, row: 0, cols: anim.built.cell.cols, rows: anim.built.cell.rows };
-    return { current: current?.sprite ?? null, ghost: ghost?.sprite ?? null, inner };
+    return { current: current?.sprite ?? null, ghost: ghost?.sprite ?? null, ghostKind: mode, inner };
   }
 
   const scene = untrack(() => new AlignScene(layersAt(position, ghostMode)));

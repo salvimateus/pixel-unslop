@@ -3,27 +3,18 @@ import type { Sprite } from '../core/types.ts';
 import { TUNING } from '../app/tuning.ts';
 import type { Camera } from './camera.ts';
 import type { PreviewBackground } from './clean-scene.ts';
-import { checkerPattern, drawFrame, intersect, progress, snap, STAGE_COLORS, strokeGrid, viewRect, type Rect, type Scene, type StageHost } from './stage-renderer.ts';
+import { bakeSprite, checkerPattern, drawFrame, intersect, progress, snap, STAGE_COLORS, strokeGrid, viewRect, type Rect, type Scene, type StageHost } from './stage-renderer.ts';
 
-/** What the Align stage shows: the current frame, the ghost under it, and the cell inside both. */
+/** Which frame the ghost shows: it sets the tint of the ghost. */
+export type GhostKind = 'previous' | 'first';
+
+/** What the Align stage shows: the current frame, the ghost over it, and the cell inside both. */
 export interface AlignLayers {
   current: Sprite | null;
   ghost: Sprite | null;
+  ghostKind: GhostKind;
   /** The cell inside the sprites, in tiles. */
   inner: TileBox;
-}
-
-function bake(sprite: Sprite): HTMLCanvasElement {
-  const canvas = document.createElement('canvas');
-  canvas.width = sprite.cols;
-  canvas.height = sprite.rows;
-  const ctx = canvas.getContext('2d');
-  if (ctx) {
-    const image = ctx.createImageData(sprite.cols, sprite.rows);
-    new Uint32Array(image.data.buffer).set(sprite.pixels);
-    ctx.putImageData(image, 0, 0);
-  }
-  return canvas;
 }
 
 /** A black mask of the content with the cell cut out: drawn at the dim opacity over everything outside the cell. */
@@ -41,7 +32,7 @@ function bakeMask(width: number, height: number, inner: TileBox): HTMLCanvasElem
 }
 
 /**
- * The Align step: one frame over a faint ghost of another, the area around the cell dimmed, and the guides of
+ * The Align step: one frame under a faint tinted ghost of another, the area around the cell dimmed, and the guides of
  * the cell (its edges and its vertical center axis). Every layer is baked once per change, so a tick is a few
  * `drawImage` calls and two short paths.
  */
@@ -82,9 +73,10 @@ export class AlignScene implements Scene {
     const resized = width !== this.contentW || height !== this.contentH;
     this.contentW = width;
     this.contentH = height;
-    this.current = sprite ? bake(sprite) : null;
+    this.current = sprite ? bakeSprite(sprite) : null;
     const ghost = layers.ghost;
-    this.ghost = ghost && ghost.cols === width && ghost.rows === height ? bake(ghost) : null;
+    const tint = { color: layers.ghostKind === 'first' ? STAGE_COLORS.ghostFirst : STAGE_COLORS.ghostPrevious, strength: TUNING.anim.ghostTint };
+    this.ghost = ghost && ghost.cols === width && ghost.rows === height ? bakeSprite(ghost, tint) : null;
     this.inner = layers.inner;
     const key = `${width}x${height}|${layers.inner.col},${layers.inner.row},${layers.inner.cols},${layers.inner.rows}`;
     if (key !== this.maskKey) {
@@ -119,12 +111,12 @@ export class AlignScene implements Scene {
     ctx.fillStyle = this.background === 'checker' ? checkerPattern(ctx) : this.background === 'dark' ? STAGE_COLORS.previewDark : STAGE_COLORS.previewLight;
     ctx.fillRect(clip.x, clip.y, clip.w, clip.h);
     ctx.imageSmoothingEnabled = false;
+    if (this.current) ctx.drawImage(this.current, rect.x, rect.y, rect.w, rect.h);
     if (this.ghost) {
       ctx.globalAlpha = TUNING.anim.ghostAlpha;
       ctx.drawImage(this.ghost, rect.x, rect.y, rect.w, rect.h);
       ctx.globalAlpha = 1;
     }
-    if (this.current) ctx.drawImage(this.current, rect.x, rect.y, rect.w, rect.h);
     if (this.mask) {
       ctx.globalAlpha = TUNING.anim.outsideDim;
       ctx.drawImage(this.mask, rect.x, rect.y, rect.w, rect.h);

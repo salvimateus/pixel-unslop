@@ -133,8 +133,9 @@ export const TUNING = {
     /** Width of the small picture of each video frame, in pixels. */
     monitorPx: 192,
     maxZoom: 96,
-    /** Opacity of the ghost of the frame before. */
-    onionAlpha: 0.3,
+    /** The ghost of another frame, drawn over the current frame: its opacity and how far its colors move toward the tint. */
+    ghostAlpha: 0.45,
+    ghostTint: 0.5,
     /** The pop of an added frame, and its sparks. */
     popMs: 280,
     addSparks: 12,
@@ -152,8 +153,7 @@ export const TUNING = {
     handleHitPx: 12,
     /** The outside of the container on the Frames screen, and the frame content outside the cell on the Align step. */
     outsideDim: 0.55,
-    /** The Align step: the ghost opacity, the tiles of frame shown around the cell, the Shift nudge and the axis highlight. */
-    ghostAlpha: 0.35,
+    /** The Align step: the tiles of frame shown around the cell, the Shift nudge and the axis highlight. */
     alignPadTiles: 8,
     nudgeShift: 5,
     nudgeTickMs: 60,

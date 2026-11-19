@@ -232,6 +232,7 @@ The Frames screen shows the video frame by frame. A small player shows the origi
 - Push Enter to add the frame to the timeline, or to remove it.
 - To add many frames at a time, set "every" and click "Add range". The app adds one frame every N frames, from the current frame to the end of the video.
 - Push Space to play or pause the video.
+- Push O, or turn on "Onion skin", to see the previous picked frame over the current one, transparent and tinted red.
 - Click "Use as color reference" to mark the frame with the best colors. A star shows it.
 - If the grid is not good on this part of the video, click "Calibrate the grid here". The app keeps your timeline.
 
@@ -243,16 +244,16 @@ In the timeline, push Delete to remove the selected frame, D to repeat it, and A
 
 ### 4. Align the frames
 
-The Align step shows each frame in its container. The previous frame, or the first frame, shows below it as a transparent ghost. A vertical line marks the middle of the container. Put the center of the character on this line in each frame, so the character does not jump in the animation.
+The Align step shows each frame in its container. The onion skin shows the previous frame, or the first frame, over it, transparent and tinted: red for the previous frame, blue for the first frame. A vertical line marks the middle of the container. Put the center of the character on this line in each frame, so the character does not jump in the animation.
 
 - Drag the frame, or push the arrow keys to move it 1 pixel. With Shift, the frame moves 5 pixels.
 - Push "," and "." to go to the previous or the next frame. Push Home or End to go to the first or the last frame.
-- Select the ghost: "Previous" or "First".
+- Under "Onion skin", select "Previous" or "First". The first frame is a fixed base, so the error does not add up.
 - Push G to show or hide the guides.
 - Click "Copy previous" to use the offset of the previous frame. Click "Reset" to put the frame back at its video position.
 - Push Ctrl+Z to undo and Ctrl+Y to redo.
 
-<img src="docs/images/pixel-unslop-video-align-screen.png" width="900" alt="Align step of the video journey: the current frame of the character, 2 pixels to the right of the transparent ghost of the first frame, with a vertical middle line, the frame offset x +2, y 0, the Previous and First ghost buttons, a loop preview and the list of shortcuts">
+<img src="docs/images/pixel-unslop-video-align-screen.png" width="900" alt="Align step of the video journey: the current frame of the character under the transparent, blue tinted onion skin of the first frame, 2 pixels to the left, with a vertical middle line, the frame offset x +2, y 0, the Onion skin choice with the Previous and First buttons, a loop preview and the list of shortcuts">
 
 ### 5. Tune and export the animation
 
@@ -260,7 +261,7 @@ The Animation screen plays the frames in a loop.
 
 - Push Space to play or pause, and the left and right arrow keys to see one frame.
 - Set the speed with "−" and "+", with a preset from 6 to 24 fps, or with "Video speed". You can also push `[` and `]`. With Shift, the speed changes by 5 fps.
-- Push O, or click "Onion skin", to see the previous frame below the current one.
+- Push O, or click "Onion skin", to see the previous frame over the current one, transparent and tinted red.
 - The "Color cleanup" level applies to all the frames. All the frames share one palette.
 - Turn on "Use only the colors of one frame" to give all the frames the colors of the reference frame.
 - Turn on "Remove the frame backgrounds" to make the background transparent.
@@ -304,7 +305,7 @@ The export dialog shows the frame size, the number of columns and the number of 
 - The smallest PNG size: each export is cropped to its visible pixels, and no visible pixel is cut.
 - Lossless PNG optimization: smaller files with exactly the same pixels.
 - A set mode for several sprites in three steps: a Grid step for all the pieces, one pixel grid for all the pieces or one for each piece, a visual resize with a snap to clean sizes, a comparison with the originals, one shared palette, locked reference pieces, and an export of the selected files.
-- A video to sprite animation journey: one pixel grid for all frames, a crop container, frame alignment with a ghost, one shared palette, and an export as a sprite sheet PNG with a TexturePacker JSON or as an animated GIF.
+- A video to sprite animation journey: one pixel grid for all frames, a crop container, frame alignment with an onion skin, one shared palette, and an export as a sprite sheet PNG with a TexturePacker JSON or as an animated GIF.
 - An interface in English and in Brazilian Portuguese, with a language selector in the header, and an interface zoom from 50% to 200% in the desktop app.
 - A desktop window that keeps its size, its position and its zoom for the next start.
 - No account and no upload: your image never leaves your computer. The desktop app and the command line tool work offline and send no data. The web version sends anonymous usage events to Google Analytics, with no image and no file name.

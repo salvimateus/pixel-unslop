@@ -67,6 +67,9 @@
     --stage-preview-light: var(--preview-light);
     --stage-panel: var(--surface-1);
     --stage-panel-edge: var(--line-strong);
+    /* The ghost tints: warm for the previous frame, cool for the first frame. */
+    --stage-ghost-previous: oklch(0.68 0.2 25);
+    --stage-ghost-first: oklch(0.65 0.17 255);
 
     --font-display: 'Pixelify Sans Variable', 'Pixelify Sans', system-ui, sans-serif;
     --font-body: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;

@@ -1,4 +1,6 @@
 import { blue, green, red } from '../core/color.ts';
+import { borderBackground, opaqueBox, trimOrNull } from '../core/sprite.ts';
+import type { Sprite } from '../core/types.ts';
 import type { Camera } from './camera.ts';
 import type { ParticleField } from './particles.ts';
 
@@ -73,6 +75,8 @@ const STAGE_TOKENS = {
   previewLight: '--stage-preview-light',
   panel: '--stage-panel',
   panelEdge: '--stage-panel-edge',
+  ghostPrevious: '--stage-ghost-previous',
+  ghostFirst: '--stage-ghost-first',
 } as const;
 
 export type StageColor = keyof typeof STAGE_TOKENS;
@@ -87,6 +91,76 @@ export function loadStageColors(): void {
     const value = style.getPropertyValue(token).trim();
     if (value) STAGE_COLORS[key] = value;
   }
+}
+
+const rgbCache = new Map<string, [number, number, number]>();
+
+/** The RGB bytes of a CSS color, resolved once by the canvas itself. */
+function cssRgb(color: string): [number, number, number] {
+  const cached = rgbCache.get(color);
+  if (cached) return cached;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 1;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  let rgb: [number, number, number] = [0, 0, 0];
+  if (ctx) {
+    ctx.fillStyle = color;
+    ctx.fillRect(0, 0, 1, 1);
+    const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+    rgb = [r, g, b];
+  }
+  rgbCache.set(color, rgb);
+  return rgb;
+}
+
+/** The border-connected background of the opaque box, as tiles of the whole sprite: padding or an offset can leave a transparent edge. */
+function ghostBackground(sprite: Sprite): Int32Array {
+  const box = opaqueBox(sprite);
+  const trimmed = trimOrNull(sprite);
+  if (!box || !trimmed) return new Int32Array(0);
+  const tiles = borderBackground(trimmed);
+  for (let i = 0; i < tiles.length; i++) {
+    const tile = tiles[i];
+    tiles[i] = (box.row + Math.floor(tile / box.cols)) * sprite.cols + box.col + (tile % box.cols);
+  }
+  return tiles;
+}
+
+/**
+ * A sprite baked into a canvas of one pixel per tile. With a tint, the bake is a ghost: the background that
+ * touches the edge of its opaque box is dropped (scenery stays whole), and every other visible pixel moves toward the tint color
+ * by `strength` and keeps its alpha, so the ghost reads apart from the frame at the cost of one bake.
+ */
+export function bakeSprite(sprite: Sprite, tint?: { color: string; strength: number }): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = sprite.cols;
+  canvas.height = sprite.rows;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return canvas;
+  const image = ctx.createImageData(sprite.cols, sprite.rows);
+  if (tint) {
+    const [tr, tg, tb] = cssRgb(tint.color);
+    const k = Math.min(1, Math.max(0, tint.strength));
+    const data = image.data;
+    const pixels = sprite.pixels;
+    const dropped = new Uint8Array(pixels.length);
+    for (const tile of ghostBackground(sprite)) dropped[tile] = 1;
+    for (let i = 0; i < pixels.length; i++) {
+      if (dropped[i] === 1) continue;
+      const color = pixels[i];
+      const a = color >>> 24;
+      if (a === 0) continue;
+      const o = i * 4;
+      data[o] = red(color) + (tr - red(color)) * k;
+      data[o + 1] = green(color) + (tg - green(color)) * k;
+      data[o + 2] = blue(color) + (tb - blue(color)) * k;
+      data[o + 3] = a;
+    }
+  } else {
+    new Uint32Array(image.data.buffer).set(sprite.pixels);
+  }
+  ctx.putImageData(image, 0, 0);
+  return canvas;
 }
 
 /** The colors of sparks and confetti: the accents of the theme. */

@@ -2,7 +2,7 @@ import type { Sprite } from '../core/types.ts';
 import { TUNING } from '../app/tuning.ts';
 import type { Camera } from './camera.ts';
 import type { PreviewBackground } from './clean-scene.ts';
-import { checkerPattern, contentRect, drawFrame, easeOutBack, intersect, progress, sparkColors, STAGE_COLORS, viewRect, type Scene, type StageHost } from './stage-renderer.ts';
+import { bakeSprite, checkerPattern, contentRect, drawFrame, easeOutBack, intersect, progress, sparkColors, STAGE_COLORS, viewRect, type Scene, type StageHost } from './stage-renderer.ts';
 
 /** The frames that a scene plays: all of the same size, read on demand. */
 export interface AnimSource {
@@ -12,22 +12,9 @@ export interface AnimSource {
   frameOf(index: number): Sprite | null;
 }
 
-function bake(sprite: Sprite): HTMLCanvasElement {
-  const canvas = document.createElement('canvas');
-  canvas.width = sprite.cols;
-  canvas.height = sprite.rows;
-  const ctx = canvas.getContext('2d');
-  if (ctx) {
-    const image = ctx.createImageData(sprite.cols, sprite.rows);
-    new Uint32Array(image.data.buffer).set(sprite.pixels);
-    ctx.putImageData(image, 0, 0);
-  }
-  return canvas;
-}
-
 /**
  * Plays equal-size frames in a loop on the stage. Each frame is baked once into its own canvas, so a tick is
- * one `drawImage` (two with the onion ghost). The clock is the time since the anchor, so the frame rate does
+ * one `drawImage` (two with the onion ghost, a tinted bake drawn over the frame). The clock is the time since the anchor, so the frame rate does
  * not depend on the display rate.
  */
 export class AnimScene implements Scene {
@@ -42,6 +29,7 @@ export class AnimScene implements Scene {
   protected host: StageHost | null = null;
   private source: AnimSource;
   private baked = new Map<number, HTMLCanvasElement | null>();
+  private ghosts = new Map<number, HTMLCanvasElement | null>();
   private current = 0;
   private fps: number;
   private isPlaying = false;
@@ -77,6 +65,7 @@ export class AnimScene implements Scene {
   setSource(source: AnimSource): boolean {
     this.source = source;
     this.baked.clear();
+    this.ghosts.clear();
     if (this.current >= source.count) this.current = Math.max(0, source.count - 1);
     const width = Math.max(1, source.cols);
     const height = Math.max(1, source.rows);
@@ -91,6 +80,7 @@ export class AnimScene implements Scene {
   /** The same frames with new pixels. */
   refresh(): void {
     this.baked.clear();
+    this.ghosts.clear();
     this.host?.invalidate();
   }
 
@@ -148,8 +138,17 @@ export class AnimScene implements Scene {
   private canvasOf(index: number): HTMLCanvasElement | null {
     if (this.baked.has(index)) return this.baked.get(index) ?? null;
     const sprite = this.source.frameOf(index);
-    const canvas = sprite && sprite.cols === this.contentW && sprite.rows === this.contentH ? bake(sprite) : null;
+    const canvas = sprite && sprite.cols === this.contentW && sprite.rows === this.contentH ? bakeSprite(sprite) : null;
     this.baked.set(index, canvas);
+    return canvas;
+  }
+
+  private ghostCanvasOf(index: number): HTMLCanvasElement | null {
+    if (this.ghosts.has(index)) return this.ghosts.get(index) ?? null;
+    const sprite = this.source.frameOf(index);
+    const fits = sprite && sprite.cols === this.contentW && sprite.rows === this.contentH;
+    const canvas = fits ? bakeSprite(sprite, { color: STAGE_COLORS.ghostPrevious, strength: TUNING.anim.ghostTint }) : null;
+    this.ghosts.set(index, canvas);
     return canvas;
   }
 
@@ -183,17 +182,17 @@ export class AnimScene implements Scene {
     ctx.fillRect(clip.x, clip.y, clip.w, clip.h);
     if (count === 0) return alive;
     ctx.imageSmoothingEnabled = false;
+    const frame = this.canvasOf(this.current);
+    if (frame) ctx.drawImage(frame, rect.x, rect.y, rect.w, rect.h);
     if (this.onion) {
       const ghost = this.ghostOf(this.current);
-      const canvas = ghost === null || ghost === this.current ? null : this.canvasOf(ghost);
+      const canvas = ghost === null || ghost === this.current ? null : this.ghostCanvasOf(ghost);
       if (canvas) {
-        ctx.globalAlpha = TUNING.anim.onionAlpha;
+        ctx.globalAlpha = TUNING.anim.ghostAlpha;
         ctx.drawImage(canvas, rect.x, rect.y, rect.w, rect.h);
         ctx.globalAlpha = 1;
       }
     }
-    const frame = this.canvasOf(this.current);
-    if (frame) ctx.drawImage(frame, rect.x, rect.y, rect.w, rect.h);
     return alive;
   }
 }
