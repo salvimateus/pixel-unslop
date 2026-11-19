@@ -4,6 +4,7 @@ import { TUNING } from '../app/tuning.ts';
 import { brushBox } from './brush.ts';
 import { clamp, type Camera, type Tile } from './camera.ts';
 import {
+  shatterTiles,
   sparkColors,
   STAGE_COLORS,
   checkerPattern,
@@ -26,7 +27,7 @@ import {
 export type PreviewBackground = 'checker' | 'dark' | 'light';
 
 /** What the tile under the cursor shows: the ink that a click paints, an eraser mark or a picker mark. */
-export type HoverMark = { kind: 'paint'; color: number } | { kind: 'erase' } | { kind: 'pick' } | null;
+export type HoverMark = { kind: 'paint'; color: number } | { kind: 'erase' } | { kind: 'pick' } | { kind: 'remove' } | null;
 
 interface Wave {
   order: Int32Array;
@@ -94,6 +95,8 @@ export class CleanScene implements Scene {
   private hoverMark: HoverMark = null;
   /** The brush size of the hover outline, in grid squares. */
   private hoverSize = 1;
+  private mask: HTMLCanvasElement | null = null;
+  private maskFlash: { mask: HTMLCanvasElement; start: number } | null = null;
   private brushFlash: BrushFlash | null = null;
   private sweepStart = -1;
   private waves: Wave[] = [];
@@ -239,28 +242,21 @@ export class CleanScene implements Scene {
 
   /** Erased tiles fall as particles in their old color. */
   shatter(indices: ArrayLike<number>, oldPixels: Uint32Array): void {
-    const host = this.host;
-    if (!host || host.reducedMotion || indices.length === 0) return;
-    const { camera, particles } = host;
-    const stride = Math.max(1, Math.ceil(indices.length / TUNING.particles.eraseMaxTiles));
-    const side = clamp(camera.zoom * 0.45, 2, 14);
-    for (let i = 0; i < indices.length; i += stride) {
-      const index = indices[i];
-      const color = oldPixels[index];
-      if (color === TRANSPARENT) continue;
-      const p = camera.imageToScreen((index % this.contentW) + 0.5, Math.floor(index / this.contentW) + 0.5);
-      particles.burst(p.x, p.y, {
-        count: TUNING.particles.eraseShards,
-        colors: [cssColor(color)],
-        speed: [40, 190],
-        angle: -Math.PI / 2,
-        spread: Math.PI * 0.9,
-        life: [0.35, 0.75],
-        size: [side * 0.6, side],
-        jitter: camera.zoom * 0.6,
-      });
-    }
-    host.invalidate();
+    if (this.host) shatterTiles(this.host, this.contentW, indices, oldPixels);
+  }
+
+  /** The tiles that a click of "Remove color" erases, drawn over the sprite until the pointer leaves them. */
+  setMask(mask: HTMLCanvasElement | null): void {
+    if (mask === this.mask) return;
+    this.mask = mask && mask.width === this.contentW && mask.height === this.contentH ? mask : null;
+    this.host?.invalidate();
+  }
+
+  /** A short flash on erased tiles: `mask` is their bake. None with reduced motion. */
+  flashMask(mask: HTMLCanvasElement): void {
+    if (this.host?.reducedMotion || mask.width !== this.contentW || mask.height !== this.contentH) return;
+    this.maskFlash = { mask, start: performance.now() };
+    this.host?.invalidate();
   }
 
   playSweep(): void {
@@ -360,6 +356,11 @@ export class CleanScene implements Scene {
         ctx.globalAlpha = this.ghostAlpha;
         ctx.drawImage(this.ghost, rect.x, rect.y, rect.w, rect.h);
       }
+      if (this.mask) {
+        ctx.globalAlpha = TUNING.clean.removeMaskAlpha;
+        ctx.drawImage(this.mask, rect.x, rect.y, rect.w, rect.h);
+      }
+      ctx.globalAlpha = 1;
       ctx.restore();
     }
 
@@ -376,7 +377,23 @@ export class CleanScene implements Scene {
     alive = this.drawPops(fx, camera, now) || alive;
     alive = this.drawBrushFlash(fx, camera, now, dpr) || alive;
     alive = this.drawRipples(fx, camera, now) || alive;
+    alive = this.drawMaskFlash(fx, rect, now) || alive;
     return alive;
+  }
+
+  private drawMaskFlash(fx: CanvasRenderingContext2D, rect: Rect, now: number): boolean {
+    const flash = this.maskFlash;
+    if (!flash) return false;
+    const t = progress(now, flash.start, TUNING.clean.popMs * 1.5);
+    if (t >= 1) {
+      this.maskFlash = null;
+      return false;
+    }
+    fx.imageSmoothingEnabled = false;
+    fx.globalAlpha = 1 - easeOutCubic(t);
+    fx.drawImage(flash.mask, rect.x, rect.y, rect.w, rect.h);
+    fx.globalAlpha = 1;
+    return true;
   }
 
   private drawExportBox(ctx: CanvasRenderingContext2D, camera: Camera, dpr: number): void {
@@ -448,7 +465,7 @@ export class CleanScene implements Scene {
     const tile = this.hover;
     const mark = this.hoverMark;
     if (!tile || !mark) return;
-    const size = mark.kind === 'pick' ? 1 : this.hoverSize;
+    const size = mark.kind === 'pick' || mark.kind === 'remove' ? 1 : this.hoverSize;
     const box = brushBox(tile.col, tile.row, size, this.contentW, this.contentH);
     if (!box) return;
     const p = camera.imageToScreen(box.col, box.row);
@@ -467,7 +484,7 @@ export class CleanScene implements Scene {
       ctx.fillRect(p.x, p.y, w, h);
       ctx.globalAlpha = 1;
     }
-    const color = erase ? STAGE_COLORS.danger : mark.kind === 'pick' ? STAGE_COLORS.teal : STAGE_COLORS.white;
+    const color = erase || mark.kind === 'remove' ? STAGE_COLORS.danger : mark.kind === 'pick' ? STAGE_COLORS.teal : STAGE_COLORS.white;
     drawOutline(ctx, p.x, p.y, w, h, Math.max(1, Math.min(2, camera.zoom / 8)), color, dpr);
   }
 

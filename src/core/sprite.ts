@@ -1,4 +1,4 @@
-import { TRANSPARENT, alpha, blue, green, pack, red } from './color.ts';
+import { TRANSPARENT, alpha, blue, green, pack, red, toOklab } from './color.ts';
 import { CoreError } from './errors.ts';
 import { PARAMS } from './params.ts';
 import type { RasterImage, Sprite } from './types.ts';
@@ -107,6 +107,50 @@ export function indicesOfColor(pixels: Uint32Array, color: number): Int32Array {
   let n = 0;
   for (let i = 0; i < pixels.length; i++) if (pixels[i] === color) indices[n++] = i;
   return indices;
+}
+
+/**
+ * Sorted tile indices whose color is within `tolerance` (OKLab distance, inclusive) of any of `colors`. A tolerance
+ * of 0, or one that is not a finite number above 0, matches the exact colors only. TRANSPARENT never matches.
+ */
+export function colorMatches(sprite: Sprite, colors: readonly number[], tolerance: number): Int32Array {
+  const pixels = sprite.pixels;
+  const targets = colors.filter((color) => color !== TRANSPARENT);
+  if (targets.length === 0 || pixels.length === 0) return new Int32Array(0);
+  const exact = new Set(targets);
+  const near = Number.isFinite(tolerance) && tolerance > 0 ? tolerance : 0;
+  const labs = near > 0 ? targets.map(toOklab) : [];
+  // One distance test per distinct color, not per tile.
+  const verdict = new Map<number, boolean>();
+  const matches = (color: number): boolean => {
+    if (color === TRANSPARENT) return false;
+    if (exact.has(color)) return true;
+    if (near === 0) return false;
+    const known = verdict.get(color);
+    if (known !== undefined) return known;
+    const [l, a, b] = toOklab(color);
+    const hit = labs.some(([tl, ta, tb]) => Math.hypot(l - tl, a - ta, b - tb) <= near);
+    verdict.set(color, hit);
+    return hit;
+  };
+  let count = 0;
+  const flags = new Uint8Array(pixels.length);
+  for (let i = 0; i < pixels.length; i++) {
+    if (matches(pixels[i])) {
+      flags[i] = 1;
+      count++;
+    }
+  }
+  const indices = new Int32Array(count);
+  let n = 0;
+  for (let i = 0; i < flags.length; i++) if (flags[i] === 1) indices[n++] = i;
+  return indices;
+}
+
+/** The sprite with every tile of `colorMatches` made TRANSPARENT. The same object when no tile matches. */
+export function removeColors(sprite: Sprite, colors: readonly number[], tolerance: number): Sprite {
+  const indices = colorMatches(sprite, colors, tolerance);
+  return indices.length === 0 ? sprite : eraseTiles(sprite, indices);
 }
 
 /** Unique colors with counts, sorted by count descending, then by value ascending. TRANSPARENT is not listed. */

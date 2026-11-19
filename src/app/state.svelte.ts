@@ -38,7 +38,7 @@ export interface Progress {
   done?: number;
   total?: number;
 }
-export type Tool = 'view' | 'pencil' | 'eraser' | 'bucket' | 'picker';
+export type Tool = 'view' | 'pencil' | 'eraser' | 'bucket' | 'picker' | 'remove';
 /** The tools with a brush size. */
 export type BrushTool = 'pencil' | 'eraser';
 export interface BrushSizes {

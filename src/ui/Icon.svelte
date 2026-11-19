@@ -5,6 +5,7 @@
     eraser: 'M3 15.5L12.5 6l6 6-7.5 7.5H7zM9 9.5l6 6M12 20h9',
     bucket: 'M4 11l7-7 8 8-7 7zM4 11h15M20 15v3M19 20h2',
     picker: 'M14 4l6 6M12.5 6.5l5 5M15 9L6 18H4v-2l9-9',
+    colorErase: 'M15 3l6 6M13.5 5.5l5 5M16 8l-7 7H7v-2l7-7M3 17l4 4M7 17l-4 4',
     undo: 'M4 9h11a5 5 0 0 1 0 10H9M8 5L4 9l4 4',
     redo: 'M20 9H9a5 5 0 0 0 0 10h6M16 5l4 4-4 4',
     grid: 'M3 3h18v18H3zM9 3v18M15 3v18M3 9h18M3 15h18',

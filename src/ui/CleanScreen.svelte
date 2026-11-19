@@ -1,12 +1,14 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { TRANSPARENT } from '../core/color.ts';
-  import { borderBackground, floodRegion, indicesOfColor, lineTiles, listPalette } from '../core/sprite.ts';
+  import { borderBackground, colorMatches, floodRegion, indicesOfColor, lineTiles, listPalette } from '../core/sprite.ts';
   import { track } from '../app/analytics.ts';
+  import { clampTolerance } from '../app/animation.svelte.ts';
   import { opaqueBox } from '../app/image-set.svelte.ts';
   import { app, type BrushTool, type Tool } from '../app/state.svelte.ts';
   import { t, type TextKey } from '../app/i18n.ts';
   import * as sfx from '../app/sfx.ts';
+  import { readStored, writeStored } from '../app/storage.ts';
   import { TUNING } from '../app/tuning.ts';
   import type { Tile } from './camera.ts';
   import { CleanScene, type CompareLabels, type HoverMark, type PreviewBackground } from './clean-scene.ts';
@@ -17,9 +19,11 @@
   import ReferenceColors from './ReferenceColors.svelte';
   import PalettePanel from './PalettePanel.svelte';
   import ProgressPill from './ProgressPill.svelte';
+  import RemoveColors from './RemoveColors.svelte';
   import Stage from './Stage.svelte';
   import PanelSplitter from './PanelSplitter.svelte';
-  import { bakeSprite, STAGE_COLORS, type StagePointer } from './stage-renderer.ts';
+  import ToleranceSlider from './ToleranceSlider.svelte';
+  import { bakeMask, bakeSprite, PICKER_CURSOR, STAGE_COLORS, type StagePointer } from './stage-renderer.ts';
 
   interface ToolInfo {
     id: Tool;
@@ -34,7 +38,10 @@
     { id: 'eraser', icon: 'eraser', label: 'clean.tool.eraser', key: 'E' },
     { id: 'bucket', icon: 'bucket', label: 'clean.tool.bucket', key: 'G' },
     { id: 'picker', icon: 'picker', label: 'clean.tool.picker', key: 'I' },
+    { id: 'remove', icon: 'colorErase', label: 'clean.tool.remove', key: 'R' },
   ];
+  /** The tolerance of "Remove color" on a single image or a set piece; the animation keeps its own. */
+  const TOLERANCE_KEY = 'removeTolerance';
   const BACKGROUNDS: ReadonlyArray<{ id: PreviewBackground; label: TextKey }> = [
     { id: 'checker', label: 'clean.bg.checker' },
     { id: 'dark', label: 'clean.bg.dark' },
@@ -67,6 +74,11 @@
   const frameMode = app.screen === 'anim-edit';
   /** The onion ghost of the previous entry, in the frame editor only. */
   let onion = $state(false);
+  let singleTolerance = $state(storedTolerance());
+  /** The OKLab tolerance of the "Remove color" tool: in the frame editor, the one of the animation. */
+  const tolerance = $derived(frameMode ? app.anim.colorTolerance : singleTolerance);
+  /** What the shown mask of "Remove color" was made from, so a hover on the same color bakes nothing. */
+  let maskKey = '';
 
   const result = $derived(app.result);
   /** The frame editor shows a stand-in before view until the worker loads the real one: the compare waits. */
@@ -99,7 +111,12 @@
     void app.editVersion;
     return app.session.canRedo;
   });
-  const cursor = $derived(overSplit ? 'ew-resize' : app.tool === 'view' ? 'grab' : app.tool === 'picker' ? 'copy' : 'crosshair');
+  const cursor = $derived(overSplit ? 'ew-resize' : app.tool === 'view' ? 'grab' : app.tool === 'picker' ? 'copy' : app.tool === 'remove' ? PICKER_CURSOR : 'crosshair');
+
+  function storedTolerance(): number {
+    const text = readStored(TOLERANCE_KEY);
+    return text === null ? TUNING.clean.removeTolerance : clampTolerance(Number(text));
+  }
 
   function compareLabels(): CompareLabels {
     return { before: t('clean.before'), after: t('clean.after') };
@@ -196,6 +213,8 @@
         return { kind: 'erase' };
       case 'picker':
         return { kind: 'pick' };
+      case 'remove':
+        return { kind: 'remove' };
       default:
         return null;
     }
@@ -301,6 +320,9 @@
       case 'bucket':
         if (tile) fillAt(tile);
         return false;
+      case 'remove':
+        if (tile) removeColorAt(tile);
+        return false;
       case 'pencil':
       case 'eraser': {
         const erase = app.tool === 'eraser' || app.ink === TRANSPARENT;
@@ -350,6 +372,7 @@
     overSplit = p !== null && splitHit(p);
     lastTile = p && !overSplit ? tileOf(p) : null;
     scene.setHover(lastTile, hoverMark(), brushSize());
+    updateMask();
   }
 
   function selectTool(tool: Tool): void {
@@ -357,6 +380,86 @@
     app.tool = tool;
     track('tool_change', { detail: tool });
     sfx.play('tick');
+    scene?.setHover(lastTile, hoverMark(), brushSize());
+    updateMask();
+  }
+
+  /** "Remove color": the tiles that a click on the square under the pointer erases, over the sprite. */
+  function updateMask(): void {
+    if (!scene) return;
+    const tile = app.tool === 'remove' ? lastTile : null;
+    const composed = app.session.composed();
+    const color = tile ? composed.pixels[tile.row * composed.cols + tile.col] : TRANSPARENT;
+    const key = color === TRANSPARENT ? '' : `${color}|${tolerance}|${app.editVersion}|${app.baseVersion}`;
+    if (key === maskKey) return;
+    maskKey = key;
+    scene.setMask(key === '' ? null : bakeMask(composed.cols, composed.rows, colorMatches(composed, [color], tolerance), STAGE_COLORS.danger));
+  }
+
+  function setTolerance(value: number, commit: boolean): void {
+    if (frameMode) {
+      app.anim.setColorTolerance(value, commit);
+      if (commit) refreshFrame();
+    } else {
+      singleTolerance = clampTolerance(value);
+      if (commit) writeStored(TOLERANCE_KEY, String(singleTolerance));
+    }
+    updateMask();
+  }
+
+  /** The animation built its frames again: the open frame shows its new base. */
+  function refreshFrame(): void {
+    app.baseVersion++;
+    app.editVersion++;
+    maskKey = '';
+  }
+
+  /**
+   * "Remove color": every tile within the tolerance of the clicked color becomes transparent. On one image this is
+   * one edit; in the frame editor the color joins the list of the animation, so every frame loses it.
+   */
+  function removeColorAt(tile: Tile): void {
+    if (!scene) return;
+    const composed = app.session.composed();
+    const color = composed.pixels[tile.row * composed.cols + tile.col];
+    if (color === TRANSPARENT) {
+      sfx.play('tick');
+      return;
+    }
+    if (frameMode) {
+      removeColorInFrames(color);
+      return;
+    }
+    const count = eraseTiles(colorMatches(composed, [color], tolerance), true);
+    if (count === 0) return;
+    if (app.ink === color) app.ink = TRANSPARENT;
+    track('option_change', { kind: 'remove_color', detail: tolerance, count });
+    app.toast(t('toast.colorDeleted', { count }), 'success');
+    updateMask();
+  }
+
+  function removeColorInFrames(color: number): void {
+    if (!scene) return;
+    if (app.anim.removedColors.includes(color)) {
+      app.toast(t('toast.colorAlreadyRemoved'), 'info');
+      return;
+    }
+    const before = app.session.composed().pixels;
+    const frames = app.anim.addRemovedColor(color);
+    if (frames === 0) {
+      app.toast(t('toast.colorNotInFrames'), 'info');
+      return;
+    }
+    const after = app.session.composed();
+    const changed: number[] = [];
+    for (let i = 0; i < after.pixels.length; i++) if (after.pixels[i] !== before[i]) changed.push(i);
+    scene.writeTiles(changed, after.pixels);
+    scene.shatter(changed, before);
+    if (changed.length > 0) scene.flashMask(bakeMask(after.cols, after.rows, changed, STAGE_COLORS.white));
+    sfx.play('erase');
+    refreshFrame();
+    app.toast(frames === 1 ? t('toast.colorRemovedFrame') : t('toast.colorRemovedFrames', { count: frames }), 'success');
+    updateMask();
   }
 
   function undo(): void {
@@ -375,14 +478,16 @@
     edited();
   }
 
-  /** Erases tiles with the falling-shards effect. Returns how many tiles changed. */
-  function eraseTiles(indices: Int32Array): number {
+  /** Erases tiles with the falling-shards effect, and a flash on them with `flash`. Returns how many tiles changed. */
+  function eraseTiles(indices: Int32Array, flash = false): number {
     if (!scene) return 0;
     const before = app.session.composed().pixels;
     const changed = app.session.apply(indices, TRANSPARENT);
     if (changed.length === 0) return 0;
-    scene.writeTiles(changed, app.session.composed().pixels);
+    const composed = app.session.composed();
+    scene.writeTiles(changed, composed.pixels);
     scene.shatter(changed, before);
+    if (flash) scene.flashMask(bakeMask(composed.cols, composed.rows, changed, STAGE_COLORS.white));
     sfx.play('erase');
     edited();
     return changed.length;
@@ -525,7 +630,11 @@
       </div>
       <span class="toolbar-sep" aria-hidden="true"></span>
       <div class="toolbar-group toolbar-brush">
-        <BrushSize tool={app.tool === 'pencil' || app.tool === 'eraser' ? app.tool : null} onsize={changeBrush} />
+        {#if app.tool === 'remove'}
+          <ToleranceSlider id="remove-tolerance" value={tolerance} compact onchange={setTolerance} />
+        {:else}
+          <BrushSize tool={app.tool === 'pencil' || app.tool === 'eraser' ? app.tool : null} onsize={changeBrush} />
+        {/if}
       </div>
       <div class="toolbar-group toolbar-end">
         <span class="toolbar-label" id="bg-label">{t('clean.background')}</span>
@@ -596,6 +705,10 @@
         <Icon name="sparkle" size={18} />
         {t('clean.removeBg')}
       </button>
+
+      {#if frameMode}
+        <RemoveColors picking={app.tool === 'remove'} ontogglepick={() => selectTool(app.tool === 'remove' ? 'pencil' : 'remove')} onchange={refreshFrame} />
+      {/if}
 
       {#if !frameMode}
         <CleanupPresets hint={t('cleanup.hint')} />

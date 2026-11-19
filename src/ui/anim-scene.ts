@@ -2,7 +2,22 @@ import type { Sprite } from '../core/types.ts';
 import { TUNING } from '../app/tuning.ts';
 import type { Camera } from './camera.ts';
 import type { PreviewBackground } from './clean-scene.ts';
-import { bakeSprite, checkerPattern, contentRect, drawFrame, easeOutBack, intersect, progress, sparkColors, STAGE_COLORS, viewRect, type Scene, type StageHost } from './stage-renderer.ts';
+import {
+  bakeSprite,
+  checkerPattern,
+  contentRect,
+  drawFrame,
+  easeOutBack,
+  easeOutCubic,
+  intersect,
+  progress,
+  shatterTiles,
+  sparkColors,
+  STAGE_COLORS,
+  viewRect,
+  type Scene,
+  type StageHost,
+} from './stage-renderer.ts';
 
 /** The frames that a scene plays: all of the same size, read on demand. */
 export interface AnimSource {
@@ -55,6 +70,9 @@ export class AnimScene implements Scene {
   private isPlaying = false;
   private anchor = 0;
   private popStart = -1;
+  /** A bake of tiles drawn over one frame (the tiles that a click erases), and the frame it belongs to. */
+  private mask: { canvas: HTMLCanvasElement; index: number } | null = null;
+  private maskFlash: { canvas: HTMLCanvasElement; start: number } | null = null;
 
   constructor(source: AnimSource, fps: number) {
     this.source = source;
@@ -87,6 +105,7 @@ export class AnimScene implements Scene {
     this.baked.clear();
     this.ghosts.clear();
     this.lastDrawn = null;
+    this.mask = null;
     if (this.current >= source.count) this.current = Math.max(0, source.count - 1);
     const width = Math.max(1, source.cols);
     const height = Math.max(1, source.rows);
@@ -158,6 +177,22 @@ export class AnimScene implements Scene {
     host.invalidate();
   }
 
+  /** Tiles over frame `index` at `TUNING.clean.removeMaskAlpha`, or null. */
+  setMask(canvas: HTMLCanvasElement | null, index = this.current): void {
+    if (canvas === this.mask?.canvas && index === this.mask?.index) return;
+    this.mask = canvas ? { canvas, index } : null;
+    this.host?.invalidate();
+  }
+
+  /** Erased tiles of the shown frame: they fall as particles in their old color and flash once. None with reduced motion. */
+  shatter(indices: ArrayLike<number>, oldPixels: Uint32Array, flash: HTMLCanvasElement | null): void {
+    const host = this.host;
+    if (!host || host.reducedMotion) return;
+    shatterTiles(host, this.contentW, indices, oldPixels);
+    if (flash) this.maskFlash = { canvas: flash, start: performance.now() };
+    host.invalidate();
+  }
+
   private anchorAt(now: number): void {
     this.anchor = now - (this.current * 1000) / this.fps;
   }
@@ -182,7 +217,7 @@ export class AnimScene implements Scene {
     return canvas;
   }
 
-  draw(ctx: CanvasRenderingContext2D, _fx: CanvasRenderingContext2D, now: number): boolean {
+  draw(ctx: CanvasRenderingContext2D, fx: CanvasRenderingContext2D, now: number): boolean {
     const host = this.host;
     if (!host) return false;
     const count = this.source.count;
@@ -228,6 +263,24 @@ export class AnimScene implements Scene {
         ctx.globalAlpha = TUNING.anim.ghostAlpha;
         ctx.drawImage(canvas, rect.x, rect.y, rect.w, rect.h);
         ctx.globalAlpha = 1;
+      }
+    }
+    const mask = this.mask;
+    if (mask && mask.index === this.current && mask.canvas.width === this.contentW && mask.canvas.height === this.contentH) {
+      ctx.globalAlpha = TUNING.clean.removeMaskAlpha;
+      ctx.drawImage(mask.canvas, rect.x, rect.y, rect.w, rect.h);
+      ctx.globalAlpha = 1;
+    }
+    const flash = this.maskFlash;
+    if (flash) {
+      const t = progress(now, flash.start, TUNING.clean.popMs * 1.5);
+      if (t >= 1 || flash.canvas.width !== this.contentW || flash.canvas.height !== this.contentH) this.maskFlash = null;
+      else {
+        alive = true;
+        fx.imageSmoothingEnabled = false;
+        fx.globalAlpha = 1 - easeOutCubic(t);
+        fx.drawImage(flash.canvas, rect.x, rect.y, rect.w, rect.h);
+        fx.globalAlpha = 1;
       }
     }
     return alive;

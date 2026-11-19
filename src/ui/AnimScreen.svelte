@@ -7,6 +7,7 @@
   import { TUNING } from '../app/tuning.ts';
   import type { CellMode } from '../core/frames.ts';
   import { TRANSPARENT } from '../core/color.ts';
+  import { colorMatches } from '../core/sprite.ts';
   import { AnimScene, type AnimSource } from './anim-scene.ts';
   import AnimTimeline from './AnimTimeline.svelte';
   import type { PreviewBackground } from './clean-scene.ts';
@@ -15,8 +16,10 @@
   import Icon from './Icon.svelte';
   import KeyText from './KeyText.svelte';
   import ProgressPill from './ProgressPill.svelte';
+  import RemoveColors from './RemoveColors.svelte';
   import { spriteThumb } from './sprite-thumb.ts';
   import Stage from './Stage.svelte';
+  import { bakeMask, PICKER_CURSOR, STAGE_COLORS, type StagePointer } from './stage-renderer.ts';
   import PanelSplitter from './PanelSplitter.svelte';
   import ToggleSwitch from './ToggleSwitch.svelte';
 
@@ -33,7 +36,7 @@
     feet: { label: 'animPlay.cellFeet', hint: 'animPlay.cellFeetHint' },
   };
 
-  type LegendKeys = 'space' | 'arrows' | 'brackets' | 'o' | 'delete' | 'altArrows' | 'd' | 'e' | 'ctrlS';
+  type LegendKeys = 'space' | 'arrows' | 'brackets' | 'o' | 'delete' | 'altArrows' | 'd' | 'e' | 'r' | 'ctrlS';
 
   const LEGEND: ReadonlyArray<{ keys: LegendKeys; text: TextKey }> = [
     { keys: 'space', text: 'animPlay.keyPlay' },
@@ -44,6 +47,7 @@
     { keys: 'altArrows', text: 'animPlay.keyMove' },
     { keys: 'd', text: 'animPlay.keyDuplicate' },
     { keys: 'e', text: 'animEdit.open' },
+    { keys: 'r', text: 'animPlay.keyRemoveColor' },
     { keys: 'ctrlS', text: 'animPlay.keyExport' },
   ];
 
@@ -64,6 +68,11 @@
   let lastVersion = untrack(() => app.anim.version);
   /** A held bracket key changes the fps without storing it; the key release stores it. */
   let fpsKeyHeld = false;
+  /** "Remove color": a click on the stage adds the color under the pointer to the removed colors. */
+  let picking = $state(false);
+  /** The last pointer over the stage while picking, and what its mask was made from. */
+  let pickPointer: StagePointer | null = null;
+  let maskKey = '';
 
   scene.onframe = (index) => {
     current = index;
@@ -216,6 +225,70 @@
     else showEntry(id);
   }
 
+  function setPicking(on: boolean): void {
+    if (on === picking) return;
+    picking = on;
+    sfx.play('tick');
+    // The color under the pointer must stay still while the user aims.
+    if (on) setPlaying(false);
+    else {
+      pickPointer = null;
+      updateMask();
+    }
+  }
+
+  /** The tile of the shown frame under the pointer, as an index, or -1. */
+  function tileAt(p: StagePointer | null): number {
+    if (!p) return -1;
+    const col = Math.floor(p.ix);
+    const row = Math.floor(p.iy);
+    const { cols, rows } = app.anim.built.cell;
+    return col >= 0 && row >= 0 && col < cols && row < rows ? row * cols + col : -1;
+  }
+
+  /** The tiles of the shown frame that a click erases, over the frame. */
+  function updateMask(): void {
+    const frame = app.anim.built.frames[scene.index];
+    const tile = picking && frame ? tileAt(pickPointer) : -1;
+    const color = tile >= 0 && frame ? frame.pixels[tile] : TRANSPARENT;
+    const key = color === TRANSPARENT ? '' : `${color}|${app.anim.colorTolerance}|${app.anim.version}|${scene.index}`;
+    if (key === maskKey) return;
+    maskKey = key;
+    scene.setMask(key === '' || !frame ? null : bakeMask(frame.cols, frame.rows, colorMatches(frame, [color], app.anim.colorTolerance), STAGE_COLORS.danger), scene.index);
+  }
+
+  function onStageHover(p: StagePointer | null): void {
+    if (!picking) return;
+    pickPointer = p;
+    updateMask();
+  }
+
+  function onStageDown(p: StagePointer): boolean | void {
+    if (!picking) return;
+    pickPointer = p;
+    const frame = app.anim.built.frames[scene.index];
+    const tile = tileAt(p);
+    const color = frame && tile >= 0 ? frame.pixels[tile] : TRANSPARENT;
+    if (!frame || color === TRANSPARENT) {
+      sfx.play('tick');
+      return false;
+    }
+    if (app.anim.removedColors.includes(color)) {
+      app.toast(t('toast.colorAlreadyRemoved'), 'info');
+      return false;
+    }
+    const indices = colorMatches(frame, [color], app.anim.colorTolerance);
+    const frames = app.anim.addRemovedColor(color);
+    if (frames === 0) {
+      app.toast(t('toast.colorNotInFrames'), 'info');
+      return false;
+    }
+    scene.shatter(indices, frame.pixels, bakeMask(frame.cols, frame.rows, indices, STAGE_COLORS.white));
+    sfx.play('erase');
+    app.toast(frames === 1 ? t('toast.colorRemovedFrame') : t('toast.colorRemovedFrames', { count: frames }), 'success');
+    return false;
+  }
+
   function openExport(): void {
     if (app.loading) return;
     app.animExportOpen = true;
@@ -286,6 +359,12 @@
     } else if (key.toLowerCase() === 'e' && selected !== null) {
       event.preventDefault();
       if (!event.repeat) void app.editAnimFrame(selected);
+    } else if (key.toLowerCase() === 'r') {
+      event.preventDefault();
+      if (!event.repeat) setPicking(!picking);
+    } else if (key === 'Escape' && picking) {
+      event.preventDefault();
+      setPicking(false);
     }
   }
 
@@ -305,7 +384,15 @@
 <section class="anim-screen">
   <div class="anim-main">
     <div class="anim-stage">
-      <Stage bind:this={stage} {scene} {insets} label={t('anim.stageLabel')}>
+      <Stage
+        bind:this={stage}
+        {scene}
+        {insets}
+        label={t('anim.stageLabel')}
+        cursor={picking ? PICKER_CURSOR : 'default'}
+        onprimarydown={onStageDown}
+        onhover={onStageHover}
+      >
         <div class="stage-top" bind:offsetHeight={overlayTop}>
           <div class="stage-zoom">
             <button type="button" class="icon-btn" aria-label={t('clean.zoomOut')} title={t('clean.zoomOut')} onclick={() => stage?.zoomBy(1 / TUNING.zoom.buttonStep)}>
@@ -468,6 +555,10 @@
         {#if app.anim.eraseBackground && keptCount > 0}
           <p class="kept-note" role="status">{keptCount === 1 ? t('animPlay.keptOne') : t('animPlay.kept', { count: keptCount })}</p>
         {/if}
+      </div>
+
+      <div class="anim-section">
+        <RemoveColors {picking} ontogglepick={() => setPicking(!picking)} />
       </div>
 
       <section class="anim-section field" aria-labelledby="anim-cell-title">
@@ -779,9 +870,10 @@
       min-width: 0;
     }
 
+    /* With no room, the button goes under the frame name instead of squeezing it. */
     .reference {
-      display: grid;
-      grid-template-columns: auto minmax(0, 1fr) auto;
+      display: flex;
+      flex-wrap: wrap;
       align-items: center;
       gap: var(--space-2);
       transition: opacity var(--dur-hover) var(--ease-sym);
@@ -792,6 +884,7 @@
     }
 
     .reference-thumb {
+      flex: none;
       width: 44px;
       height: 44px;
       object-fit: contain;
@@ -803,8 +896,9 @@
 
     .reference-text {
       display: grid;
+      flex: 1 1 auto;
       gap: 2px;
-      min-width: 0;
+      min-width: min-content;
     }
 
     .reference-name {
@@ -813,6 +907,7 @@
       gap: var(--space-1);
       font-weight: 600;
       font-size: 0.875rem;
+      white-space: nowrap;
 
       & :global(.icon) {
         color: var(--yellow);
@@ -820,6 +915,7 @@
     }
 
     .reference-pick {
+      flex: none;
       min-height: 36px;
       padding-inline: var(--space-3);
       font-size: 0.875rem;

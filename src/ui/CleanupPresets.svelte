@@ -55,10 +55,10 @@
       white-space: nowrap;
     }
 
-    /* Four equal columns, so short labels never run together. */
+    /* Four equal columns, so short labels never run together; a narrow panel gives a long label the room it needs. */
     .presets {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(min-content, 1fr));
 
       & button {
         padding: 0 2px;

@@ -1,7 +1,8 @@
 import type { CellGrid, Sprite } from '../core/types.ts';
+import { TRANSPARENT } from '../core/color.ts';
 import { PARAMS } from '../core/params.ts';
 import { placeFrames, prepareFrames, type BuiltFrames, type CellMode, type FrameOffset, type PreparedFrames } from '../core/frames.ts';
-import { borderBackground, eraseTiles, listPalette, opaqueBox, type TileBox } from '../core/sprite.ts';
+import { borderBackground, colorMatches, eraseTiles, listPalette, opaqueBox, type TileBox } from '../core/sprite.ts';
 import { track } from './analytics.ts';
 import { EditSession } from './edit-session.ts';
 import { readStored, writeStored } from './storage.ts';
@@ -82,6 +83,18 @@ export function pinnedLimit(tilesPerFrame: number): number {
   return tilesPerFrame > 0 ? Math.floor(PARAMS.limits.maxTimelineTiles / tilesPerFrame) : 0;
 }
 
+const TOLERANCE_KEY = 'animRemoveTolerance';
+
+/** A tolerance of "Remove color", inside the range of the slider. */
+export function clampTolerance(value: number): number {
+  return Number.isFinite(value) ? Math.min(TUNING.clean.removeToleranceMax, Math.max(0, value)) : TUNING.clean.removeTolerance;
+}
+
+function storedTolerance(key: string): number {
+  const text = readStored(key);
+  return text === null ? TUNING.clean.removeTolerance : clampTolerance(Number(text));
+}
+
 function clampFps(fps: number): number {
   return Math.round(Math.min(TUNING.anim.maxFps, Math.max(TUNING.anim.minFps, fps)));
 }
@@ -137,6 +150,9 @@ export class Animation {
   referenceIndex = $state(0);
   referenceColors = $state(false);
   eraseBackground = $state(readStored('animErase') !== 'off');
+  /** The colors that "Remove color" erases from every frame, in the order of the picks, and their OKLab tolerance. */
+  removedColors = $state.raw<readonly number[]>([]);
+  colorTolerance = $state(storedTolerance(TOLERANCE_KEY));
   cell = $state<CellMode>(storedCell());
   fps = $state(storedNumber('animFps', TUNING.anim.minFps, TUNING.anim.maxFps, TUNING.anim.defaultFps));
   onion = $state(readStored('animOnion') === 'on');
@@ -172,6 +188,8 @@ export class Animation {
   /** The palette, reference and erase of the timeline frames: the slow part, made again only when its inputs change. */
   private prepared: PreparedFrames = EMPTY_PREPARED;
   private preparedKey = '';
+  /** The tolerance of the last build with removed colors. */
+  private builtTolerance = Number.NaN;
   private undoStack: PlaceSnapshot[] = [];
   private redoStack: PlaceSnapshot[] = [];
   /** The state before the edit in progress (a drag), or null. */
@@ -789,6 +807,43 @@ export class Animation {
     this.changed();
   }
 
+  /**
+   * Adds a color to the colors that every frame loses. Returns how many timeline frames have tiles of it within the
+   * tolerance; with 0 (no frame has it, it is in the list, or it is TRANSPARENT) the list does not change.
+   */
+  addRemovedColor(color: number): number {
+    if (color === TRANSPARENT || this.removedColors.includes(color)) return 0;
+    const frames = this.prepared.frames.filter((frame) => colorMatches(frame, [color], this.colorTolerance).length > 0).length;
+    if (frames === 0) return 0;
+    this.removedColors = [...this.removedColors, color];
+    track('option_change', { kind: 'anim_remove_color', detail: 'add', count: this.removedColors.length });
+    this.changed();
+    return frames;
+  }
+
+  restoreRemovedColor(color: number): void {
+    if (!this.removedColors.includes(color)) return;
+    this.removedColors = this.removedColors.filter((entry) => entry !== color);
+    track('option_change', { kind: 'anim_remove_color', detail: 'restore', count: this.removedColors.length });
+    this.changed();
+  }
+
+  clearRemovedColors(): void {
+    if (this.removedColors.length === 0) return;
+    this.removedColors = [];
+    track('option_change', { kind: 'anim_remove_color', detail: 'clear', count: 0 });
+    this.changed();
+  }
+
+  /** A slider drag changes the tolerance with no build; `commit` stores it and builds the frames again. */
+  setColorTolerance(value: number, commit = true): void {
+    this.colorTolerance = clampTolerance(value);
+    if (!commit) return;
+    writeStored(TOLERANCE_KEY, String(this.colorTolerance));
+    track('option_change', { kind: 'anim_remove_color', detail: 'tolerance', count: this.removedColors.length });
+    if (this.removedColors.length > 0 && this.builtTolerance !== this.colorTolerance) this.changed();
+  }
+
   setCell(mode: CellMode): void {
     if (mode === this.cell) return;
     this.cell = mode;
@@ -967,14 +1022,16 @@ export class Animation {
   }
 
   /**
-   * Builds the output frames of the timeline: one palette, the reference colors and the erase (only when the
-   * frames, the strength, the reference or the erase changed), then the placement in the cell.
+   * Builds the output frames of the timeline: one palette, the reference colors, the removed colors and the erase
+   * (only when one of these inputs or the frames changed), then the placement in the cell.
    */
   rebuild(): void {
     const timeline = this.liveTimeline();
     const strength = Number.isFinite(this.ownStrength) ? this.ownStrength : 0;
     const reference = this.referenceColors ? this.store.get(this.referenceIndex)?.own : undefined;
-    const key = `${this.framesVersion}|${strength}|${reference ? this.referenceIndex : -1}|${this.eraseBackground}|${timeline.map((frame) => frame.index).join(',')}`;
+    const removed = this.removedColors.length > 0 ? { colors: this.removedColors, tolerance: this.colorTolerance } : null;
+    if (removed) this.builtTolerance = removed.tolerance;
+    const key = `${this.framesVersion}|${strength}|${reference ? this.referenceIndex : -1}|${this.eraseBackground}|${removed ? `${removed.colors.join(',')}@${removed.tolerance}` : ''}|${timeline.map((frame) => frame.index).join(',')}`;
     if (key !== this.preparedKey) {
       this.preparedKey = key;
       this.prepared =
@@ -982,7 +1039,7 @@ export class Animation {
           ? EMPTY_PREPARED
           : prepareFrames(
               timeline.map((frame) => this.store.get(frame.index)!.own),
-              { strength, reference: reference ? listPalette(reference.pixels) : null, eraseBackground: this.eraseBackground },
+              { strength, reference: reference ? listPalette(reference.pixels) : null, eraseBackground: this.eraseBackground, removeColors: removed },
             );
       // Same grid size: each session keeps its edits over the new base.
       timeline.forEach((frame, at) => {
@@ -1064,6 +1121,7 @@ export class Animation {
     this.referenceIndex = 0;
     this.referenceChosen = false;
     this.referenceColors = false;
+    this.removedColors = [];
     this.container = null;
     this.containerWaits = false;
     this.clearHistory();

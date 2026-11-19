@@ -98,6 +98,15 @@ export const TUNING = {
     brushFlashMs: 650,
     /** The dashed outline of the box that the export writes. */
     exportBoxAlpha: 0.75,
+    /**
+     * "Remove color": the OKLab tolerance of a click. 0.05 takes a magenta chroma key with its blends up to about 10%
+     * toward a dark outline and 30% toward skin, and keeps a pink of the character (0.16 away).
+     */
+    removeTolerance: 0.05,
+    removeToleranceMax: 0.15,
+    removeToleranceStep: 0.005,
+    /** The opacity of the tiles that a click of "Remove color" erases, under the pointer. */
+    removeMaskAlpha: 0.75,
   },
   set: {
     maxObjects: 24,

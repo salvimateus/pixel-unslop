@@ -2,7 +2,7 @@ import { TRANSPARENT } from './color.ts';
 import { CoreError } from './errors.ts';
 import { applyColorMap, combinedColors, matchColors, unifyPalettes, type ColorCount } from './palette.ts';
 import { PARAMS } from './params.ts';
-import { borderBackground, eraseTiles, holdsScenery, opaqueBox, type TileBox } from './sprite.ts';
+import { borderBackground, eraseTiles, holdsScenery, opaqueBox, removeColors, type TileBox } from './sprite.ts';
 import type { Sprite } from './types.ts';
 
 /**
@@ -24,6 +24,12 @@ export interface PreparedFrames {
   kept: boolean[];
 }
 
+/** Colors that the user removes from every frame, with the OKLab tolerance of `colorMatches`. */
+export interface RemovedColors {
+  colors: readonly number[];
+  tolerance: number;
+}
+
 export interface Placement {
   cell: CellMode;
   /** Per frame; a missing entry is no move. */
@@ -38,6 +44,7 @@ export interface FrameOptions {
   /** listPalette of the reference frame's own sprite, or null. */
   reference: readonly ColorCount[] | null;
   eraseBackground: boolean;
+  removeColors?: RemovedColors | null;
   cell: CellMode;
   offsets?: readonly FrameOffset[];
   box?: TileBox | null;
@@ -62,11 +69,11 @@ function checkSameSize(frames: readonly Sprite[]): { cols: number; rows: number 
 /**
  * The palette work of an animation. The inputs are the own sprites of the frames, all on one grid and already
  * merged at `strength`. With a reference, one color map serves every frame, so a color never flickers between two
- * reference colors.
+ * reference colors. The removed colors go before the background erase.
  */
 export function prepareFrames(
   owns: readonly Sprite[],
-  options: { strength: number; reference: readonly ColorCount[] | null; eraseBackground: boolean },
+  options: { strength: number; reference: readonly ColorCount[] | null; eraseBackground: boolean; removeColors?: RemovedColors | null },
 ): PreparedFrames {
   if (owns.length === 0) return { frames: [], kept: [] };
   checkSameSize(owns);
@@ -75,6 +82,9 @@ export function prepareFrames(
     const map = matchColors(combinedColors(sprites), options.reference);
     sprites = sprites.map((sprite) => applyColorMap(sprite, map));
   }
+  // After the color map, so the removed colors are the colors that the user sees.
+  const removed = options.removeColors;
+  if (removed && removed.colors.length > 0) sprites = sprites.map((sprite) => removeColors(sprite, removed.colors, removed.tolerance));
   const kept = sprites.map(() => false);
   if (options.eraseBackground) {
     sprites = sprites.map((sprite, i) => {

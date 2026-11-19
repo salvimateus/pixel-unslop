@@ -1,4 +1,5 @@
-import { blue, green, red } from '../core/color.ts';
+import { TRANSPARENT, blue, green, red } from '../core/color.ts';
+import { TUNING } from '../app/tuning.ts';
 import { borderBackground, opaqueBox, trimOrNull } from '../core/sprite.ts';
 import type { Sprite } from '../core/types.ts';
 import type { Camera } from './camera.ts';
@@ -161,6 +162,58 @@ export function bakeSprite(sprite: Sprite, tint?: { color: string; strength: num
   }
   ctx.putImageData(image, 0, 0);
   return canvas;
+}
+
+/** The dropper as a CSS cursor, with its tip as the hot spot: a light line on a dark line, for light and dark art. */
+export const PICKER_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke-linecap="square"><path d="M14 4l6 6M12.5 6.5l5 5M15 9L6 18H4v-2l9-9" stroke="#000" stroke-width="4"/><path d="M14 4l6 6M12.5 6.5l5 5M15 9L6 18H4v-2l9-9" stroke="#fff" stroke-width="2"/></svg>',
+)}") 3 20, crosshair`;
+
+/** One canvas pixel per tile: the tiles at `indices` in a CSS color, every other tile clear. */
+export function bakeMask(cols: number, rows: number, indices: ArrayLike<number>, color: string): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, cols);
+  canvas.height = Math.max(1, rows);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return canvas;
+  const image = ctx.createImageData(canvas.width, canvas.height);
+  const [r, g, b] = cssRgb(color);
+  const data = image.data;
+  for (let i = 0; i < indices.length; i++) {
+    const o = indices[i] * 4;
+    if (o < 0 || o >= data.length) continue;
+    data[o] = r;
+    data[o + 1] = g;
+    data[o + 2] = b;
+    data[o + 3] = 255;
+  }
+  ctx.putImageData(image, 0, 0);
+  return canvas;
+}
+
+/** Erased tiles fall as particles in their old color; `cols` is the content width in tiles. Nothing under reduced motion. */
+export function shatterTiles(host: StageHost, cols: number, indices: ArrayLike<number>, oldPixels: Uint32Array): void {
+  if (host.reducedMotion || indices.length === 0) return;
+  const { camera, particles } = host;
+  const stride = Math.max(1, Math.ceil(indices.length / TUNING.particles.eraseMaxTiles));
+  const side = Math.min(14, Math.max(2, camera.zoom * 0.45));
+  for (let i = 0; i < indices.length; i += stride) {
+    const index = indices[i];
+    const color = oldPixels[index];
+    if (color === TRANSPARENT) continue;
+    const p = camera.imageToScreen((index % cols) + 0.5, Math.floor(index / cols) + 0.5);
+    particles.burst(p.x, p.y, {
+      count: TUNING.particles.eraseShards,
+      colors: [cssColor(color)],
+      speed: [40, 190],
+      angle: -Math.PI / 2,
+      spread: Math.PI * 0.9,
+      life: [0.35, 0.75],
+      size: [side * 0.6, side],
+      jitter: camera.zoom * 0.6,
+    });
+  }
+  host.invalidate();
 }
 
 /** The colors of sparks and confetti: the accents of the theme. */
