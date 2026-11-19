@@ -2,8 +2,9 @@ import type { CellGrid, Sprite } from '../core/types.ts';
 import { TRANSPARENT } from '../core/color.ts';
 import { PARAMS } from '../core/params.ts';
 import { CoreError } from '../core/errors.ts';
-import { placeFrames, prepareFrames, type BuiltFrames, type CellMode, type FrameOffset, type PreparedFrames, type RemovedColor } from '../core/frames.ts';
-import { borderBackground, colorMatches, eraseTiles, listPalette, opaqueBox, type TileBox } from '../core/sprite.ts';
+import { clearFrames, placeFrames, unifyFrames, type BuiltFrames, type CellMode, type FrameOffset, type PreparedFrames, type RemovedColor, type RemoveScope } from '../core/frames.ts';
+import { combinedColors } from '../core/palette.ts';
+import { borderBackground, eraseTiles, listPalette, opaqueBox, type TileBox } from '../core/sprite.ts';
 import { track } from './analytics.ts';
 import { EditSession } from './edit-session.ts';
 import { readStored, writeStored } from './storage.ts';
@@ -48,7 +49,7 @@ export interface FrameStoreStats {
 export const CELL_MODES: readonly CellMode[] = ['box', 'crop', 'feet', 'full'];
 
 const EMPTY_BUILD: BuiltFrames = { frames: [], cell: { cols: 0, rows: 0 }, kept: [] };
-const EMPTY_PREPARED: PreparedFrames = { frames: [], kept: [] };
+const EMPTY_PREPARED: PreparedFrames = { frames: [], kept: [], cleared: [] };
 const ZERO: FrameOffset = { x: 0, y: 0 };
 const UNDO_LIMIT = 100;
 
@@ -189,9 +190,12 @@ export class Animation {
   private referenceChosen = false;
   /** The per-frame erase of the Frames screen, per video frame, until the frames or the erase change. */
   private displayCache = new Map<number, Sprite>();
-  /** The palette, reference and erase of the timeline frames: the slow part, made again only when its inputs change. */
+  /** The one palette and the reference colors of the live timeline frames: the slow part, made again only when its inputs change. */
+  private unified: Sprite[] = [];
+  private unifiedKey = '';
+  /** The unified frames after the erase and the removed colors, made again when those change or the unified frames change. */
   private prepared: PreparedFrames = EMPTY_PREPARED;
-  private preparedKey = '';
+  private clearKey = '';
   private undoStack: PlaceSnapshot[] = [];
   private redoStack: PlaceSnapshot[] = [];
   /** The state before the edit in progress (a drag), or null. */
@@ -491,13 +495,7 @@ export class Animation {
     if (this.paletteCache?.version === this.version) return this.paletteCache.colors;
     const timeline = this.liveTimeline();
     const frames = timeline.map((_, at) => this.frameAt(at, timeline)).filter((frame): frame is Sprite => frame !== undefined);
-    const all = new Uint32Array(frames.reduce((sum, frame) => sum + frame.pixels.length, 0));
-    let offset = 0;
-    for (const frame of frames) {
-      all.set(frame.pixels, offset);
-      offset += frame.pixels.length;
-    }
-    const colors = listPalette(all);
+    const colors = combinedColors(frames);
     this.paletteCache = { version: this.version, colors };
     return colors;
   }
@@ -833,18 +831,28 @@ export class Animation {
   }
 
   /**
-   * Adds a color, at the current tolerance, to the colors that every frame loses. Returns how many timeline frames
-   * have tiles of it within that tolerance; with 0 (no frame has it, it is in the list, or it is TRANSPARENT) the
-   * list does not change.
+   * Adds a color, at the current tolerance and with `scope`, to the colors that every frame loses; a color in the list
+   * with 'border' and a new scope of 'all' widens to 'all' at its own tolerance. Returns how many timeline frames lose
+   * tiles; with 0 (no frame changes, the color is in the list with that scope, or it is TRANSPARENT) the list does
+   * not change.
    */
-  addRemovedColor(color: number): number {
-    if (color === TRANSPARENT || this.hasRemovedColor(color)) return 0;
-    const tolerance = this.colorTolerance;
-    const frames = this.prepared.frames.filter((frame) => colorMatches(frame, [color], tolerance).length > 0).length;
+  addRemovedColor(color: number, scope: RemoveScope): number {
+    if (color === TRANSPARENT) return 0;
+    const listed = this.removedColors.find((entry) => entry.color === color);
+    if (listed && (listed.scope === 'all' || scope === 'border')) return 0;
+    if (!this.stageCurrent()) this.rebuild();
+    const next: RemovedColor[] = listed
+      ? this.removedColors.map((entry) => (entry === listed ? { ...entry, scope: 'all' } : entry))
+      : [...this.removedColors, { color, tolerance: this.colorTolerance, scope }];
+    const prepared = clearFrames(this.unified, { eraseBackground: this.eraseBackground, removeColors: next });
+    const before = this.prepared.cleared;
+    const frames = prepared.cleared.filter((count, at) => count > (before[at] ?? 0)).length;
     if (frames === 0) return 0;
-    this.removedColors = [...this.removedColors, { color, tolerance }];
-    track('option_change', { kind: 'anim_remove_color', detail: 'add', count: this.removedColors.length });
-    this.changed();
+    this.removedColors = next;
+    this.setPrepared(prepared, this.clearKeyOf());
+    track('option_change', { kind: 'anim_remove_color', detail: listed ? 'widen' : 'add', count: this.removedColors.length });
+    this.editVersion++;
+    this.place();
     return frames;
   }
 
@@ -1057,31 +1065,59 @@ export class Animation {
   }
 
   /**
-   * Builds the output frames of the timeline: one palette, the reference colors, the removed colors and the erase
-   * (only when one of these inputs or the frames changed), then the placement in the cell.
+   * Builds the output frames of the timeline: one palette and the reference colors (only when the frames, the
+   * strength or the reference changed), then the erase and the removed colors (only when those or the unified frames
+   * changed), then the placement in the cell.
    */
   rebuild(): void {
     const timeline = this.liveTimeline();
-    const strength = Number.isFinite(this.ownStrength) ? this.ownStrength : 0;
-    const reference = this.referenceColors ? this.store.get(this.referenceIndex)?.own : undefined;
-    const removed = this.removedColors.length > 0 ? this.removedColors : null;
-    const key = `${this.framesVersion}|${strength}|${reference ? this.referenceIndex : -1}|${this.eraseBackground}|${removed ? removed.map((entry) => `${entry.color}@${entry.tolerance}`).join(',') : ''}|${timeline.map((frame) => frame.index).join(',')}`;
-    if (key !== this.preparedKey) {
-      this.preparedKey = key;
-      this.prepared =
+    const unifiedKey = this.unifiedKeyOf(timeline);
+    if (unifiedKey !== this.unifiedKey) {
+      const strength = Number.isFinite(this.ownStrength) ? this.ownStrength : 0;
+      const reference = this.referenceColors ? this.store.get(this.referenceIndex)?.own : undefined;
+      this.unifiedKey = unifiedKey;
+      this.unified =
         timeline.length === 0
-          ? EMPTY_PREPARED
-          : prepareFrames(
+          ? []
+          : unifyFrames(
               timeline.map((frame) => this.store.get(frame.index)!.own),
-              { strength, reference: reference ? listPalette(reference.pixels) : null, eraseBackground: this.eraseBackground, removeColors: removed },
+              { strength, reference: reference ? listPalette(reference.pixels) : null },
             );
-      // Same grid size: each session keeps its edits over the new base.
-      timeline.forEach((frame, at) => {
-        const base = this.prepared.frames[at];
-        if (base) this.sessions.get(frame.id)?.setBase(base);
-      });
+      this.clearKey = '';
+    }
+    const clearKey = this.clearKeyOf();
+    if (clearKey !== this.clearKey) {
+      const removed = this.removedColors.length > 0 ? this.removedColors : null;
+      this.setPrepared(this.unified.length === 0 ? EMPTY_PREPARED : clearFrames(this.unified, { eraseBackground: this.eraseBackground, removeColors: removed }), clearKey);
     }
     this.place();
+  }
+
+  /** What the unified frames are made from: the frames, the strength, the reference and the video frames of the live timeline. */
+  private unifiedKeyOf(timeline: readonly AnimFrame[]): string {
+    const strength = Number.isFinite(this.ownStrength) ? this.ownStrength : 0;
+    const reference = this.referenceColors && this.store.has(this.referenceIndex) ? this.referenceIndex : -1;
+    return `${this.framesVersion}|${strength}|${reference}|${timeline.map((frame) => frame.index).join(',')}`;
+  }
+
+  /** What the cleared frames are made from, over the unified frames: the erase and the removed colors. */
+  private clearKeyOf(): string {
+    return `${this.eraseBackground}|${this.removedColors.map((entry) => `${entry.color}@${entry.tolerance}@${entry.scope}`).join(',')}`;
+  }
+
+  /** The unified and the cleared frames follow the live timeline and the options. */
+  private stageCurrent(): boolean {
+    return this.unifiedKey === this.unifiedKeyOf(this.liveTimeline()) && this.clearKey === this.clearKeyOf();
+  }
+
+  /** New cleared frames: each session keeps its edits over its new base (same grid size). */
+  private setPrepared(prepared: PreparedFrames, clearKey: string): void {
+    this.prepared = prepared;
+    this.clearKey = clearKey;
+    this.liveTimeline().forEach((frame, at) => {
+      const base = prepared.frames[at];
+      if (base) this.sessions.get(frame.id)?.setBase(base);
+    });
   }
 
   /**
@@ -1163,8 +1199,10 @@ export class Animation {
     this.sessions.clear();
     this.frameEditsVersion++;
     this.paletteCache = null;
+    this.unified = [];
+    this.unifiedKey = '';
     this.prepared = EMPTY_PREPARED;
-    this.preparedKey = '';
+    this.clearKey = '';
     this.built = EMPTY_BUILD;
     this.version++;
     this.editVersion++;

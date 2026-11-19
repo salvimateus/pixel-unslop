@@ -2,7 +2,7 @@ import { TRANSPARENT } from './color.ts';
 import { CoreError } from './errors.ts';
 import { applyColorMap, combinedColors, matchColors, unifyPalettes, type ColorCount } from './palette.ts';
 import { PARAMS } from './params.ts';
-import { borderBackground, eraseTiles, holdsScenery, opaqueBox, removeColors, type RemovedColor, type TileBox } from './sprite.ts';
+import { borderColors, eraseTiles, holdsScenery, opaqueBox, removedMatches, type RemovedColor, type RemoveScope, type TileBox } from './sprite.ts';
 import type { Sprite } from './types.ts';
 
 /**
@@ -22,11 +22,13 @@ export interface PreparedFrames {
   frames: Sprite[];
   /** Per frame: the erase kept a scenery background. Always false when eraseBackground is off. */
   kept: boolean[];
+  /** Per frame: the tiles that the erase and the removed colors cleared. */
+  cleared: number[];
 }
 
-export type { RemovedColor };
+export type { RemovedColor, RemoveScope };
 
-/** Colors that the user removes from every frame, each with its own OKLab tolerance of `colorMatches`. */
+/** Colors that the user removes from every frame, each with its own OKLab tolerance and scope of `removedMatches`. */
 export type RemovedColors = readonly RemovedColor[];
 
 export interface Placement {
@@ -66,34 +68,49 @@ function checkSameSize(frames: readonly Sprite[]): { cols: number; rows: number 
 }
 
 /**
- * The palette work of an animation. The inputs are the own sprites of the frames, all on one grid and already
- * merged at `strength`. With a reference, one color map serves every frame, so a color never flickers between two
- * reference colors. The removed colors go before the background erase.
+ * The slow palette work of an animation: one palette, then the reference colors. The inputs are the own sprites of
+ * the frames, all on one grid and already merged at `strength`. With a reference, one color map serves every frame,
+ * so a color never flickers between two reference colors.
  */
-export function prepareFrames(
-  owns: readonly Sprite[],
-  options: { strength: number; reference: readonly ColorCount[] | null; eraseBackground: boolean; removeColors?: RemovedColors | null },
-): PreparedFrames {
-  if (owns.length === 0) return { frames: [], kept: [] };
+export function unifyFrames(owns: readonly Sprite[], options: { strength: number; reference: readonly ColorCount[] | null }): Sprite[] {
+  if (owns.length === 0) return [];
   checkSameSize(owns);
   let sprites = unifyPalettes([...owns], { strength: options.strength });
   if (options.reference && options.reference.length > 0) {
     const map = matchColors(combinedColors(sprites), options.reference);
     sprites = sprites.map((sprite) => applyColorMap(sprite, map));
   }
-  // After the color map, so the removed colors are the colors that the user sees.
-  const removed = options.removeColors;
-  if (removed && removed.length > 0) sprites = sprites.map((sprite) => removeColors(sprite, removed));
-  const kept = sprites.map(() => false);
-  if (options.eraseBackground) {
-    sprites = sprites.map((sprite, i) => {
-      const background = borderBackground(sprite);
-      const erased = background.length > 0 ? eraseTiles(sprite, background) : sprite;
-      kept[i] = holdsScenery(erased, background.length > 0);
-      return erased;
-    });
+  return sprites;
+}
+
+/**
+ * The background erase and the removed colors of unified frames, in one flood per frame: the background colors of
+ * the border join the flood as exact 'border' entries, so the erase and the removed colors open the way to each
+ * other. A frame that loses no tile stays the same object.
+ */
+export function clearFrames(unified: readonly Sprite[], options: { eraseBackground: boolean; removeColors?: RemovedColors | null }): PreparedFrames {
+  const removed = options.removeColors ?? [];
+  const frames: Sprite[] = [];
+  const kept: boolean[] = [];
+  const cleared: number[] = [];
+  for (const sprite of unified) {
+    const background = options.eraseBackground ? borderColors(sprite) : [];
+    const entries = background.length === 0 ? removed : [...removed, ...background.map((color): RemovedColor => ({ color, tolerance: 0, scope: 'border' }))];
+    const tiles = entries.length > 0 ? removedMatches(sprite, entries) : new Int32Array(0);
+    const frame = tiles.length > 0 ? eraseTiles(sprite, tiles) : sprite;
+    frames.push(frame);
+    kept.push(options.eraseBackground && holdsScenery(frame, background.length > 0));
+    cleared.push(tiles.length);
   }
-  return { frames: sprites, kept };
+  return { frames, kept, cleared };
+}
+
+/** The palette work, the erase and the removed colors of an animation: unifyFrames, then clearFrames. */
+export function prepareFrames(
+  owns: readonly Sprite[],
+  options: { strength: number; reference: readonly ColorCount[] | null; eraseBackground: boolean; removeColors?: RemovedColors | null },
+): PreparedFrames {
+  return clearFrames(unifyFrames(owns, options), options);
 }
 
 function offsetsOf(count: number, offsets: readonly FrameOffset[] | undefined): FrameOffset[] {

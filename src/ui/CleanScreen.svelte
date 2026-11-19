@@ -444,7 +444,7 @@
       return;
     }
     const before = app.session.composed().pixels;
-    const frames = app.anim.addRemovedColor(color);
+    const frames = app.anim.addRemovedColor(color, 'all');
     if (frames === 0) {
       app.toast(t('toast.colorNotInFrames'), 'info');
       return;

@@ -56,21 +56,28 @@ function borderTiles(cols: number, rows: number): number[] {
   return tiles;
 }
 
-/** Tile indices of the background that touches the border. Empty when the border is already transparent or has no dominant color. */
-export function borderBackground(sprite: Sprite): Int32Array {
+/** The background candidate colors of the border; empty when half or more of the border is transparent or no color has enough share. */
+export function borderColors(sprite: Sprite): number[] {
   const { cols, rows, pixels } = sprite;
   const border = borderTiles(cols, rows);
-  if (border.length === 0) return new Int32Array(0);
+  if (border.length === 0) return [];
   const counts = new Map<number, number>();
   for (const tile of border) counts.set(pixels[tile], (counts.get(pixels[tile]) ?? 0) + 1);
   const { minBorderShare, maxColors } = PARAMS.background;
-  if ((counts.get(TRANSPARENT) ?? 0) >= border.length / 2) return new Int32Array(0);
-  const candidates = [...counts.entries()]
+  if ((counts.get(TRANSPARENT) ?? 0) >= border.length / 2) return [];
+  return [...counts.entries()]
     .filter(([color, count]) => color !== TRANSPARENT && count >= minBorderShare * border.length)
     .sort((a, b) => b[1] - a[1] || a[0] - b[0])
     .slice(0, maxColors)
     .map(([color]) => color);
+}
+
+/** Tile indices of the background that touches the border. Empty when the border is already transparent or has no dominant color. */
+export function borderBackground(sprite: Sprite): Int32Array {
+  const { cols, rows, pixels } = sprite;
+  const candidates = borderColors(sprite);
   if (candidates.length === 0) return new Int32Array(0);
+  const border = borderTiles(cols, rows);
 
   const total = cols * rows;
   const seen = new Uint8Array(total);
@@ -109,10 +116,14 @@ export function indicesOfColor(pixels: Uint32Array, color: number): Int32Array {
   return indices;
 }
 
-/** One color of "Remove color" with its own OKLab tolerance (see colorMatches). */
+/** Where "Remove color" erases a color: 'border' only where it reaches the sprite border, 'all' on every tile. */
+export type RemoveScope = 'border' | 'all';
+
+/** One color of "Remove color" with its own OKLab tolerance and scope. */
 export interface RemovedColor {
   color: number;
   tolerance: number;
+  scope: RemoveScope;
 }
 
 /**
@@ -120,23 +131,19 @@ export interface RemovedColor {
  * of 0, or one that is not a finite number above 0, matches the exact colors only. TRANSPARENT never matches.
  */
 export function colorMatches(sprite: Sprite, colors: readonly number[], tolerance: number): Int32Array {
-  return removedMatches(sprite, colors.map((color) => ({ color, tolerance })));
+  return removedMatches(sprite, colors.map((color) => ({ color, tolerance, scope: 'all' })));
 }
 
-/** As colorMatches, with each color at its own tolerance. */
-export function removedMatches(sprite: Sprite, removed: readonly RemovedColor[]): Int32Array {
-  const pixels = sprite.pixels;
-  const targets = removed.filter((entry) => entry.color !== TRANSPARENT);
-  if (targets.length === 0 || pixels.length === 0) return new Int32Array(0);
-  const exact = new Set(targets.map((entry) => entry.color));
-  const labs = targets.flatMap((entry) => {
+/** The color test of some entries, with one distance test per distinct color; null when no entry is given. */
+function colorTest(entries: readonly RemovedColor[]): ((color: number) => boolean) | null {
+  if (entries.length === 0) return null;
+  const exact = new Set(entries.map((entry) => entry.color));
+  const labs = entries.flatMap((entry) => {
     const near = Number.isFinite(entry.tolerance) && entry.tolerance > 0 ? entry.tolerance : 0;
     return near > 0 ? [{ lab: toOklab(entry.color), near }] : [];
   });
-  // One distance test per distinct color, not per tile.
   const verdict = new Map<number, boolean>();
-  const matches = (color: number): boolean => {
-    if (color === TRANSPARENT) return false;
+  return (color) => {
     if (exact.has(color)) return true;
     if (labs.length === 0) return false;
     const known = verdict.get(color);
@@ -146,24 +153,72 @@ export function removedMatches(sprite: Sprite, removed: readonly RemovedColor[])
     verdict.set(color, hit);
     return hit;
   };
+}
+
+/** Tile states of removedMatches. A tile that is not one of these blocks the border flood. */
+const PASS = 1;
+const GOES = 2;
+const REACHABLE = 3;
+const REACHED = 4;
+
+/**
+ * Sorted tiles that `removed` erases. An 'all' entry takes every tile within its tolerance. A 'border' entry takes a
+ * matching tile only when a 4-connected path of TRANSPARENT tiles or tiles that match any entry joins it to the
+ * border. The flood starts at the border tiles only, so a hole inside the drawing never opens a way in.
+ */
+export function removedMatches(sprite: Sprite, removed: readonly RemovedColor[]): Int32Array {
+  const { cols, rows, pixels } = sprite;
+  const total = pixels.length;
+  const targets = removed.filter((entry) => entry.color !== TRANSPARENT);
+  if (targets.length === 0 || total === 0) return new Int32Array(0);
+  const anywhere = colorTest(targets.filter((entry) => entry.scope === 'all'));
+  const reachable = colorTest(targets.filter((entry) => entry.scope === 'border'));
+  const state = new Uint8Array(total);
   let count = 0;
-  const flags = new Uint8Array(pixels.length);
-  for (let i = 0; i < pixels.length; i++) {
-    if (matches(pixels[i])) {
-      flags[i] = 1;
-      count++;
+  // A video frame has long runs of one color, so the verdict of the last color serves the next tiles.
+  let last = TRANSPARENT;
+  let lastState = PASS;
+  for (let i = 0; i < total; i++) {
+    const color = pixels[i];
+    if (color !== last) {
+      last = color;
+      lastState = color === TRANSPARENT ? PASS : anywhere?.(color) ? GOES : reachable?.(color) ? REACHABLE : 0;
     }
+    state[i] = lastState;
+    if (lastState === GOES) count++;
   }
+  if (reachable) count += floodFromBorder(state, cols, rows);
   const indices = new Int32Array(count);
-  let n = 0;
-  for (let i = 0; i < flags.length; i++) if (flags[i] === 1) indices[n++] = i;
+  for (let i = 0, n = 0; n < count; i++) if (state[i] === GOES || state[i] === REACHED) indices[n++] = i;
   return indices;
 }
 
-/** The sprite with every tile of `removedMatches` made TRANSPARENT. The same object when no tile matches. */
-export function removeColors(sprite: Sprite, removed: readonly RemovedColor[]): Sprite {
-  const indices = removedMatches(sprite, removed);
-  return indices.length === 0 ? sprite : eraseTiles(sprite, indices);
+/** Floods the passable tiles from the border, marks each REACHABLE tile that it finds as REACHED, and returns how many. */
+function floodFromBorder(state: Uint8Array, cols: number, rows: number): number {
+  const total = cols * rows;
+  const seen = new Uint8Array(total);
+  const queue = new Int32Array(total);
+  let tail = 0;
+  let reached = 0;
+  const visit = (tile: number) => {
+    if (seen[tile] === 1 || state[tile] === 0) return;
+    seen[tile] = 1;
+    queue[tail++] = tile;
+    if (state[tile] === REACHABLE) {
+      state[tile] = REACHED;
+      reached++;
+    }
+  };
+  for (const tile of borderTiles(cols, rows)) visit(tile);
+  for (let head = 0; head < tail; head++) {
+    const index = queue[head];
+    const x = index % cols;
+    if (x > 0) visit(index - 1);
+    if (x < cols - 1) visit(index + 1);
+    if (index >= cols) visit(index - cols);
+    if (index + cols < total) visit(index + cols);
+  }
+  return reached;
 }
 
 /** Unique colors with counts, sorted by count descending, then by value ascending. TRANSPARENT is not listed. */

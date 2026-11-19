@@ -86,7 +86,14 @@
     const colors = new Set<number>();
     for (const frame of app.anim.built.frames) {
       const pixels = frame.pixels;
-      for (let i = 0; i < pixels.length; i++) if (pixels[i] !== TRANSPARENT) colors.add(pixels[i]);
+      // A frame holds long runs of one color: only a new run can add a color.
+      let last = TRANSPARENT;
+      for (let i = 0; i < pixels.length; i++) {
+        const color = pixels[i];
+        if (color === last) continue;
+        last = color;
+        if (color !== TRANSPARENT) colors.add(color);
+      }
     }
     return colors.size;
   });
@@ -271,7 +278,7 @@
       return false;
     }
     const indices = colorMatches(frame, [color], app.anim.colorTolerance);
-    const frames = app.anim.addRemovedColor(color);
+    const frames = app.anim.addRemovedColor(color, 'all');
     if (frames === 0) {
       app.toast(t('toast.colorNotInFrames'), 'info');
       return false;
