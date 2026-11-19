@@ -18,9 +18,11 @@
     oninvalid?: (invalid: boolean) => void;
     /** `end` puts the name and the pencil at the right edge, as the values of the rows above it. */
     align?: 'start' | 'end';
+    /** The fixed suffix after the name, with its dot; a typed copy of it at the end of the name is dropped. */
+    extension?: string;
   }
 
-  let { base, id, conflict = null, disabled = false, onrename, oninvalid, align = 'start' }: Props = $props();
+  let { base, id, conflict = null, disabled = false, onrename, oninvalid, align = 'start', extension = '.png' }: Props = $props();
 
   /** Letters at the end of a name with no size part that always show. */
   const TAIL_CHARS = 12;
@@ -39,16 +41,16 @@
   let button: HTMLButtonElement | undefined = $state();
 
   /**
-   * The name in two parts: the end (the size and ".png") always shows, and the start loses its last letters to an
+   * The name in two parts: the end (the size and the extension) always shows, and the start loses its last letters to an
    * ellipsis when the row is short.
    */
   const nameParts = $derived.by(() => {
-    const full = `${base}.png`;
+    const full = `${base}${extension}`;
     const marker = full.lastIndexOf('-pixel-');
     const cut = marker > 0 ? marker : Math.max(0, full.length - TAIL_CHARS);
     return { head: full.slice(0, cut), tail: full.slice(cut) };
   });
-  const problem = $derived(editing ? fileNameProblem(cleanBaseName(draft)) : null);
+  const problem = $derived(editing ? fileNameProblem(cleanBaseName(draft, extension)) : null);
 
   $effect(() => {
     oninvalid?.(editing && problem !== null);
@@ -71,7 +73,7 @@
 
   function confirm(): boolean {
     if (problem) return false;
-    const next = cleanBaseName(draft);
+    const next = cleanBaseName(draft, extension);
     if (next !== base) onrename(next);
     void close();
     return true;
@@ -115,14 +117,14 @@
         onkeydown={onKey}
         onblur={onBlur}
       />
-      <code class="ext">.png</code>
+      <code class="ext">{extension}</code>
     </span>
   {:else}
     <span class="name-row">
-      <code class="file-name" class:is-conflict={conflict !== null} title="{base}.png" aria-label="{base}.png">
+      <code class="file-name" class:is-conflict={conflict !== null} title="{base}{extension}" aria-label="{base}{extension}">
         <span class="name-head" aria-hidden="true">{nameParts.head}</span><span class="name-tail" aria-hidden="true">{nameParts.tail}</span>
       </code>
-      <button type="button" class="rename" bind:this={button} {disabled} aria-label="{t('fileName.rename')}: {base}.png" title={t('fileName.rename')} onclick={open}>
+      <button type="button" class="rename" bind:this={button} {disabled} aria-label="{t('fileName.rename')}: {base}{extension}" title={t('fileName.rename')} onclick={open}>
         <Icon name="pencil" size={14} />
       </button>
     </span>

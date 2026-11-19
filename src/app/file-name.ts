@@ -19,7 +19,10 @@ export function fileNameProblem(base: string): FileNameProblem | null {
   return null;
 }
 
-/** The base name without a `.png` that the user typed by habit. */
-export function cleanBaseName(base: string): string {
-  return base.trim().replace(/\.png$/i, '').trimEnd();
+/** The base name without one final `extension` (with its dot) that the user typed by habit. */
+export function cleanBaseName(base: string, extension = '.png'): string {
+  const name = base.trim();
+  const tail = name.slice(name.length - extension.length);
+  const cut = extension.length > 0 && name.length >= extension.length && tail.toLowerCase() === extension.toLowerCase();
+  return (cut ? name.slice(0, name.length - extension.length) : name).trimEnd();
 }

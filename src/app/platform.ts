@@ -12,10 +12,14 @@ export type SaveSetResult =
   | { status: 'downloaded'; count: number; zip: string | null }
   | { status: 'cancelled' };
 
-export interface PngFile {
+export type FileKind = 'png' | 'gif' | 'json' | 'zip';
+
+export interface OutputFile {
   name: string;
   bytes: Uint8Array;
 }
+
+export type PngFile = OutputFile;
 
 export interface LaunchedFile {
   name: string;
@@ -157,13 +161,34 @@ function baseName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
-export async function savePng(bytes: Uint8Array, name: string): Promise<SaveResult> {
+/** The save dialog filter and the download MIME type of each kind of output file. */
+const FILE_KINDS: Record<FileKind, { label: string; extension: string; mime: string }> = {
+  png: { label: 'PNG', extension: 'png', mime: 'image/png' },
+  gif: { label: 'GIF', extension: 'gif', mime: 'image/gif' },
+  json: { label: 'JSON', extension: 'json', mime: 'application/json' },
+  zip: { label: 'ZIP', extension: 'zip', mime: 'application/zip' },
+};
+
+/** The MIME type of a file name by its extension, or `fallback` for an extension with no kind. */
+function mimeOfName(name: string, fallback = 'application/octet-stream'): string {
+  const extension = /\.([^.\\/]+)$/.exec(name)?.[1].toLowerCase();
+  const kind = Object.values(FILE_KINDS).find((entry) => entry.extension === extension);
+  return kind?.mime ?? fallback;
+}
+
+function blobOf(bytes: Uint8Array, type: string): Blob {
+  return new Blob([bytes as Uint8Array<ArrayBuffer>], { type });
+}
+
+/** Saves one file. Desktop: a save dialog filtered to the kind. Browser: a download with the MIME type of the kind. */
+export async function saveFile(bytes: Uint8Array, name: string, kind: FileKind): Promise<SaveResult> {
+  const { label, extension, mime } = FILE_KINDS[kind];
   if (isDesktop) {
     const [{ save }, { writeFile }] = await Promise.all([
       import('@tauri-apps/plugin-dialog'),
       import('@tauri-apps/plugin-fs'),
     ]);
-    const path = await save({ defaultPath: name, filters: [{ name: 'PNG', extensions: ['png'] }] });
+    const path = await save({ defaultPath: name, filters: [{ name: label, extensions: [extension] }] });
     if (!path) return { status: 'cancelled' };
     // The dialog grants write access to this exact path only: another extension would be a forbidden path.
     await writeFile(path, bytes);
@@ -171,10 +196,14 @@ export async function savePng(bytes: Uint8Array, name: string): Promise<SaveResu
   }
 
   if (lastDownloadUrl) URL.revokeObjectURL(lastDownloadUrl);
-  const url = URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: 'image/png' }));
+  const url = URL.createObjectURL(blobOf(bytes, mime));
   lastDownloadUrl = url;
   download(url, name);
   return { status: 'downloaded', url };
+}
+
+export function savePng(bytes: Uint8Array, name: string): Promise<SaveResult> {
+  return saveFile(bytes, name, 'png');
 }
 
 function download(url: string, name: string): void {
@@ -187,19 +216,24 @@ function download(url: string, name: string): void {
   link.remove();
 }
 
-/** The one file that a browser download of a set gives: the PNG itself for one file, else one ZIP of all of them. */
-export function setDownloadFile(files: readonly PngFile[]): PngFile | null {
+/** The one file that a browser download of a set gives: the file itself for one file, else one ZIP of all of them. */
+export function setDownloadFile(files: readonly OutputFile[], zipName: string = SET_ZIP_NAME): OutputFile | null {
   if (files.length === 0) return null;
   if (files.length === 1) return files[0];
-  return { name: SET_ZIP_NAME, bytes: zipStored(files) };
+  return { name: zipName, bytes: zipStored(files) };
 }
 
 /**
- * Saves several PNG files. Desktop: one folder dialog, one confirmation when files with the same names exist,
- * and each file directly in that folder. Browser: one download, because browsers block a row of automatic
- * downloads: the PNG itself for one file, else one ZIP that holds all the files.
+ * Saves several files, each with its name exactly as given. Desktop: one folder dialog, one confirmation when
+ * files with the same names exist, and each file directly in that folder. Browser: one download, because browsers
+ * block a row of automatic downloads: the file itself for one file, else one ZIP named `zipName` that holds them all.
  */
-export async function savePngSet(files: readonly PngFile[], confirmOverwrite: (names: string[]) => Promise<boolean>): Promise<SaveSetResult> {
+export function saveFileSet(files: readonly OutputFile[], confirmOverwrite: (names: string[]) => Promise<boolean>, zipName: string): Promise<SaveSetResult> {
+  return saveSet(files, confirmOverwrite, zipName);
+}
+
+/** `singleMime` is the download type of one file whose extension has no kind. */
+async function saveSet(files: readonly OutputFile[], confirmOverwrite: (names: string[]) => Promise<boolean>, zipName: string, singleMime?: string): Promise<SaveSetResult> {
   if (isDesktop) {
     const [{ open }, { exists, writeFile }, { join }] = await Promise.all([
       import('@tauri-apps/plugin-dialog'),
@@ -208,8 +242,7 @@ export async function savePngSet(files: readonly PngFile[], confirmOverwrite: (n
     ]);
     const folder = await open({ directory: true, multiple: false });
     if (typeof folder !== 'string') return { status: 'cancelled' };
-    // Every file written to the folder is a PNG, whatever name reached this point.
-    const names = files.map((file) => (/\.png$/i.test(file.name) ? file.name : `${file.name}.png`));
+    const names = files.map((file) => file.name);
     const paths = await Promise.all(names.map((name) => join(folder, name)));
     const found = await Promise.all(paths.map((path) => exists(path)));
     const taken = names.filter((_, i) => found[i]);
@@ -218,14 +251,20 @@ export async function savePngSet(files: readonly PngFile[], confirmOverwrite: (n
     return { status: 'saved', folder, paths };
   }
 
-  const file = setDownloadFile(files);
+  const file = setDownloadFile(files, zipName);
   if (!file) return { status: 'cancelled' };
   const single = files.length === 1;
   // The URL stays alive until the next set export, so a slow browser still finds the file.
   if (setDownloadUrl) URL.revokeObjectURL(setDownloadUrl);
-  setDownloadUrl = URL.createObjectURL(new Blob([file.bytes as Uint8Array<ArrayBuffer>], { type: single ? 'image/png' : 'application/zip' }));
+  setDownloadUrl = URL.createObjectURL(blobOf(file.bytes, single ? mimeOfName(file.name, singleMime) : FILE_KINDS.zip.mime));
   download(setDownloadUrl, file.name);
   return { status: 'downloaded', count: files.length, zip: single ? null : file.name };
+}
+
+/** Saves several PNG files: `saveFileSet` with the set ZIP name, where every file written to a desktop folder is a PNG. */
+export function savePngSet(files: readonly PngFile[], confirmOverwrite: (names: string[]) => Promise<boolean>): Promise<SaveSetResult> {
+  const named = isDesktop ? files.map((file) => (/\.png$/i.test(file.name) ? file : { name: `${file.name}.png`, bytes: file.bytes })) : files;
+  return saveSet(named, confirmOverwrite, SET_ZIP_NAME, FILE_KINDS.png.mime);
 }
 
 export async function revealFile(path: string): Promise<void> {
