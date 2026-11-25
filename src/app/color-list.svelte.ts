@@ -63,7 +63,7 @@ function unedited(tiles: Int32Array, shown: Sprite, prepared: Sprite): Int32Arra
  */
 abstract class ColorList<T> {
   entries = $state.raw<readonly T[]>([]);
-  tolerance = $state(TUNING.clean.removeTolerance);
+  tolerance = $state<number>(TUNING.clean.removeTolerance);
   onchange: (() => void) | null = null;
   /** Records each user change as one undo step: it must call `run`, which makes the change. */
   onstep: ((action: ListAction, run: () => void) => void) | null = null;
@@ -149,7 +149,7 @@ export class RemovedColorList extends ColorList<RemovedColor> {
    * color and a new scope of 'all' widen to 'all' at its own tolerance. Null when nothing changes: TRANSPARENT, or a
    * listed color with that scope.
    */
-  withColor(color: number, scope: RemoveScope, tolerance = this.tolerance): { next: RemovedColor[]; action: 'add' | 'widen' } | null {
+  withColor(color: number, scope: RemoveScope, tolerance: number = this.tolerance): { next: RemovedColor[]; action: 'add' | 'widen' } | null {
     if (color === TRANSPARENT) return null;
     const listed = this.entries.find((entry) => entry.color === color);
     if (listed && (listed.scope === 'all' || scope === 'border')) return null;
@@ -229,7 +229,7 @@ export class ReplacedColorList extends ColorList<ReplacedColor> {
   }
 
   /** Adds a source to the pending group and opens the chooser of the target. */
-  pick(color: number, tolerance = this.tolerance): void {
+  pick(color: number, tolerance: number = this.tolerance): void {
     if (color === TRANSPARENT) return;
     if (!this.pending.some((entry) => entry.color === color)) this.pending = [...this.pending, { color, tolerance }];
     this.choosing = this.pending.length > 0;
