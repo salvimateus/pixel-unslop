@@ -28,8 +28,12 @@ export type EngineRequest =
   | { id: number; type: 'fit'; selection: Selection | null; options: GridOptions }
   /** Grid lines that the user placed: they become the current fit, and the reply is a 'fit' reply. */
   | { id: number; type: 'set-grid'; grid: CellGrid }
-  | { id: number; type: 'clean'; merge: MergeOptions }
-  | { id: number; type: 'merge'; merge: MergeOptions }
+  /**
+   * `crop` (source pixels) keeps only the cells of the fit whose center is inside it (see cropFit). The worker keeps
+   * it for later requests, across fits; leave it out to keep the last one, give null for the whole image.
+   */
+  | { id: number; type: 'clean'; merge: MergeOptions; crop?: Selection | null }
+  | { id: number; type: 'merge'; merge: MergeOptions; crop?: Selection | null }
   /** Own palette merge of each sprite. Needs no loaded image and leaves the worker state as it is. */
   | { id: number; type: 'merge-own'; raws: Sprite[]; merge: MergeOptions }
   /** The PNG of the sprite at one image pixel per tile; `optimize` makes the smallest lossless PNG. */

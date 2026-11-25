@@ -25,7 +25,8 @@
   import Stage from './Stage.svelte';
   import PanelSplitter from './PanelSplitter.svelte';
   import ToggleSwitch from './ToggleSwitch.svelte';
-  import { ContainerScene, type ContainerHandle, type ContainerMode, type ContainerPart } from './container-scene.ts';
+  import { cursorOf, draggedTileBox, sameTileBox } from './box-handles.ts';
+  import { ContainerScene, type ContainerMode, type ContainerPart } from './container-scene.ts';
   import type { StagePointer } from './stage-renderer.ts';
 
   const BACKGROUNDS: ReadonlyArray<{ id: PreviewBackground; label: TextKey }> = [
@@ -519,16 +520,6 @@
     if (anim.move(id, delta)) sfx.play('tick');
   }
 
-  const RESIZE_CURSORS: Record<ContainerHandle, string> = { nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize' };
-
-  function cursorOf(part: ContainerPart | null): string {
-    return part === null ? 'default' : part === 'inside' ? 'move' : RESIZE_CURSORS[part];
-  }
-
-  function sameTileBox(a: TileBox, b: TileBox): boolean {
-    return a.col === b.col && a.row === b.row && a.cols === b.cols && a.rows === b.rows;
-  }
-
   function onStageDown(p: StagePointer): boolean | 'pan' {
     const part = scene.hit(p.sx, p.sy);
     const box = shownBox;
@@ -546,27 +537,13 @@
     return true;
   }
 
-  /** The box on screen after a move or a resize by whole tiles; every side keeps at least 1 tile. */
-  function draggedBox(start: TileBox, part: ContainerPart, dx: number, dy: number): TileBox {
-    if (part === 'inside') return { ...start, col: start.col + dx, row: start.row + dy };
-    let left = start.col;
-    let top = start.row;
-    let right = start.col + start.cols;
-    let bottom = start.row + start.rows;
-    if (part.includes('w')) left = Math.min(right - 1, left + dx);
-    if (part.includes('e')) right = Math.max(left + 1, right + dx);
-    if (part.includes('n')) top = Math.min(bottom - 1, top + dy);
-    if (part.includes('s')) bottom = Math.max(top + 1, bottom + dy);
-    return { col: left, row: top, cols: right - left, rows: bottom - top };
-  }
-
   function onStageMove(p: StagePointer): void {
     const current = drag;
     if (!current) return;
     const dx = Math.round(p.ix - current.startIx);
     const dy = Math.round(p.iy - current.startIy);
     if (current.kind === 'box') {
-      const next = draggedBox(current.start, current.part, dx, dy);
+      const next = draggedTileBox(current.start, current.part, dx, dy);
       if (sameTileBox(next, current.last)) return;
       current.last = next;
       anim.setContainer({ col: next.col + current.offset.x, row: next.row + current.offset.y, cols: next.cols, rows: next.rows });

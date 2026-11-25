@@ -3,6 +3,7 @@ import type { AxisEdges, EdgeProfiles } from './edge-profile.ts';
 import { CoreError } from './errors.ts';
 import { PARAMS } from './params.ts';
 import { detectPeriods, measurePeriod, phaseOffset, refinePeriod, refineSquare, type PeriodResult, type SquareFit } from './pitch.ts';
+import type { TileBox } from './sprite.ts';
 import type { AxisFit, CellGrid, GridFit, GridNote, GridOptions, Selection } from './types.ts';
 
 /** Inputs of a fit beyond the contract (CLI). */
@@ -348,4 +349,62 @@ export function manualGridFit(width: number, height: number, edges: EdgeProfiles
   const ax = axis(x, edges.x);
   const ay = axis(y, edges.y);
   return { grid: { x, y }, cols, rows, axes: { x: ax.fit, y: ay.fit }, quality: significanceQuality(ax.result, ay.result), notes: ['manual'] };
+}
+
+/** The cells of one axis whose center lies in [from, to); when none does, the one cell whose center is nearest the middle. */
+function cropAxis(bounds: Float64Array, from: number, to: number): { first: number; count: number } {
+  const cells = bounds.length - 1;
+  let first = -1;
+  let last = -1;
+  let nearest = 0;
+  let nearestDistance = Infinity;
+  const middle = (from + to) / 2;
+  for (let i = 0; i < cells; i++) {
+    const center = (bounds[i] + bounds[i + 1]) / 2;
+    if (center >= from && center < to) {
+      if (first < 0) first = i;
+      last = i;
+    }
+    const distance = Math.abs(center - middle);
+    if (distance < nearestDistance) {
+      nearest = i;
+      nearestDistance = distance;
+    }
+  }
+  return first < 0 ? { first: nearest, count: 1 } : { first, count: last - first + 1 };
+}
+
+/**
+ * The cells of a grid that a crop keeps, as a box of cell indices: the cells whose center is inside the crop,
+ * at least 1 x 1. A null crop keeps every cell. The crop is in source pixels.
+ */
+export function cropCells(grid: CellGrid, crop: Selection | null): TileBox {
+  const cols = grid.x.length - 1;
+  const rows = grid.y.length - 1;
+  if (!crop) return { col: 0, row: 0, cols, rows };
+  const x = cropAxis(grid.x, crop.x, crop.x + crop.w);
+  const y = cropAxis(grid.y, crop.y, crop.y + crop.h);
+  return { col: x.first, row: y.first, cols: x.count, rows: y.count };
+}
+
+/** The source-pixel box of the cells that a crop keeps: the crop snapped to whole cells. */
+export function cropBounds(grid: CellGrid, crop: Selection | null): Selection {
+  const cells = cropCells(grid, crop);
+  const x = grid.x[cells.col];
+  const y = grid.y[cells.row];
+  return { x, y, w: grid.x[cells.col + cells.cols] - x, h: grid.y[cells.row + cells.rows] - y };
+}
+
+/**
+ * The fit reduced to the cells that a crop keeps (see cropCells). Pure: the bounds are copied, the axes, quality
+ * and notes stay. A null crop, or a crop that keeps every cell, gives the same fit back.
+ */
+export function cropFit(fit: GridFit, crop: Selection | null): GridFit {
+  const cells = cropCells(fit.grid, crop);
+  if (cells.cols === fit.cols && cells.rows === fit.rows) return fit;
+  const grid: CellGrid = {
+    x: fit.grid.x.slice(cells.col, cells.col + cells.cols + 1),
+    y: fit.grid.y.slice(cells.row, cells.row + cells.rows + 1),
+  };
+  return { ...fit, grid, cols: cells.cols, rows: cells.rows, notes: [...fit.notes] };
 }

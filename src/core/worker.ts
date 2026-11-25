@@ -1,4 +1,5 @@
 import { CoreError, errorCode, errorMessage } from './errors.ts';
+import { cropFit } from './grid.ts';
 import {
   AUTO_OPTIONS,
   alignSource,
@@ -21,7 +22,7 @@ import {
 } from './pipeline.ts';
 import { isPng } from './png.ts';
 import type { EngineReply, EngineRequest, SetFitItem, SetGrid, Stage, WorkerMessage } from './protocol.ts';
-import type { GridFit, RasterImage, Sprite } from './types.ts';
+import type { GridFit, RasterImage, Selection, Sprite } from './types.ts';
 
 /** The worker global, typed by hand because the DOM lib types `self` as Window. */
 interface WorkerScope {
@@ -31,7 +32,8 @@ interface WorkerScope {
 
 const scope = self as unknown as WorkerScope;
 
-interface State { source: Source; fit: GridFit; raw: Sprite | null }
+/** `raw` is the sample of `fit` reduced by `crop`. */
+interface State { source: Source; fit: GridFit; crop: Selection | null; raw: Sprite | null }
 
 let state: State | null = null;
 
@@ -153,6 +155,22 @@ function isNumberList(value: unknown): value is ArrayLike<number> {
   return value instanceof Float64Array || (Array.isArray(value) && value.every((entry) => typeof entry === 'number'));
 }
 
+function isCrop(value: unknown): value is Selection {
+  if (typeof value !== 'object' || value === null) return false;
+  const { x, y, w, h } = value as Record<string, unknown>;
+  return [x, y, w, h].every((n) => typeof n === 'number' && Number.isFinite(n)) && (w as number) > 0 && (h as number) > 0;
+}
+
+/** Keeps the crop of a request; a different crop drops the raw sample. Undefined keeps the current crop. */
+function takeCrop(current: State, crop: Selection | null | undefined): void {
+  if (crop === undefined) return;
+  if (crop !== null && !isCrop(crop)) throw new CoreError('internal', 'The crop needs a finite x, y and a positive w, h.');
+  const same = crop === null ? current.crop === null : current.crop !== null && crop.x === current.crop.x && crop.y === current.crop.y && crop.w === current.crop.w && crop.h === current.crop.h;
+  if (same) return;
+  current.crop = crop === null ? null : { x: crop.x, y: crop.y, w: crop.w, h: crop.h };
+  current.raw = null;
+}
+
 function requireState(): State {
   if (!state) throw new CoreError('no-image', 'Load an image first.');
   return state;
@@ -166,7 +184,7 @@ async function handle(request: EngineRequest): Promise<void> {
       const source = await decode(new Uint8Array(request.bytes));
       progress(id, 'fit', 0);
       const fit = fitSource(source, null, AUTO_OPTIONS);
-      state = { source, fit, raw: null };
+      state = { source, fit, crop: null, raw: null };
       const bitmap = await toBitmap(source.image);
       const profiles = { x: source.edges.x.profile.slice(), y: source.edges.y.profile.slice() };
       const reply: EngineReply = { id, ok: true, type: 'load', width: source.image.width, height: source.image.height, bitmap, fit, profiles };
@@ -177,7 +195,7 @@ async function handle(request: EngineRequest): Promise<void> {
       const current = requireState();
       progress(id, 'fit', 0);
       const fit = fitSource(current.source, request.selection, request.options);
-      state = { source: current.source, fit, raw: null };
+      state = { source: current.source, fit, crop: current.crop, raw: null };
       post({ id, ok: true, type: 'fit', fit });
       return;
     }
@@ -186,24 +204,27 @@ async function handle(request: EngineRequest): Promise<void> {
       const grid = request.grid;
       if (!grid || !isNumberList(grid.x) || !isNumberList(grid.y)) throw new CoreError('internal', 'set-grid needs x and y lists of grid lines.');
       const fit = manualFitSource(current.source, grid);
-      state = { source: current.source, fit, raw: null };
+      state = { source: current.source, fit, crop: current.crop, raw: null };
       post({ id, ok: true, type: 'fit', fit });
       return;
     }
     case 'clean': {
       const current = requireState();
+      takeCrop(current, request.crop);
+      const fit = cropFit(current.fit, current.crop);
       progress(id, 'sample', 0);
-      const raw = sampleSource(current.source, current.fit, (ratio) => progress(id, 'sample', ratio));
+      const raw = sampleSource(current.source, fit, (ratio) => progress(id, 'sample', ratio));
       current.raw = raw;
       progress(id, 'merge', 0);
       const { sprite, palette } = mergeSprite(raw, request.merge);
-      const aligned = await toBitmap(alignSource(current.source, current.fit));
+      const aligned = await toBitmap(alignSource(current.source, fit));
       post({ id, ok: true, type: 'clean', sprite, palette, aligned }, [sprite.pixels.buffer, palette.buffer, aligned]);
       return;
     }
     case 'merge': {
       const current = requireState();
-      if (!current.raw) current.raw = sampleSource(current.source, current.fit);
+      takeCrop(current, request.crop);
+      if (!current.raw) current.raw = sampleSource(current.source, cropFit(current.fit, current.crop));
       const { sprite, palette } = mergeSprite(current.raw, request.merge);
       post({ id, ok: true, type: 'merge', sprite, palette }, [sprite.pixels.buffer, palette.buffer]);
       return;

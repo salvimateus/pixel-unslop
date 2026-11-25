@@ -1,4 +1,4 @@
-import type { CellGrid, Sprite } from '../core/types.ts';
+import type { CellGrid, Selection, Sprite } from '../core/types.ts';
 import { TRANSPARENT } from '../core/color.ts';
 import { PARAMS } from '../core/params.ts';
 import { CoreError } from '../core/errors.ts';
@@ -133,6 +133,9 @@ export class Animation {
   ownStrength = Number.NaN;
   /** The grid lines that sample the frames, and the fit version of the Grade step at that time. Null before the lock. */
   grid: CellGrid | null = null;
+  /** The grid of the Grade step before its crop, and the crop: the worker takes these to rebuild the before view of a frame. */
+  fullGrid: CellGrid | null = null;
+  crop: Selection | null = null;
   sampledFitVersion = -1;
   /** Changes with the grid and the merge strength: a sample made before the change does not go in the store. */
   generation = 0;
@@ -578,13 +581,16 @@ export class Animation {
   /**
    * Locks a grid. `frames` holds the pinned frames sampled on it; the cache is cleared, and every other frame is
    * sampled on demand. The timeline stays. A grid of another tile size makes the container again on the first entry,
-   * resets every offset and drops the pixel edits: returns true then.
+   * resets every offset and drops the pixel edits: returns true then. `grid` is the cropped grid; `full` and `crop`
+   * give the grid before the crop and the crop (by default `grid` and no crop).
    */
-  setGrid(grid: CellGrid, fitVersion: number, strength: number, frames: ReadonlyMap<number, SampledFrame>): boolean {
+  setGrid(grid: CellGrid, fitVersion: number, strength: number, frames: ReadonlyMap<number, SampledFrame>, full: CellGrid = grid, crop: Selection | null = null): boolean {
     const before = this.gridSize;
     const wasLocked = this.locked;
     this.emptyStore();
     this.grid = { x: grid.x.slice(), y: grid.y.slice() };
+    this.fullGrid = { x: full.x.slice(), y: full.y.slice() };
+    this.crop = crop && { ...crop };
     this.sampledFitVersion = fitVersion;
     this.ownStrength = strength;
     this.generation++;
@@ -1254,6 +1260,8 @@ export class Animation {
     this.keyIndex = 0;
     this.ownStrength = Number.NaN;
     this.grid = null;
+    this.fullGrid = null;
+    this.crop = null;
     this.sampledFitVersion = -1;
     this.generation++;
     this.framesVersion++;

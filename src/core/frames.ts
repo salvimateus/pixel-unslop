@@ -155,7 +155,7 @@ function checkCell(cols: number, rows: number): void {
 }
 
 /** Output tile (c, r) = source tile (box.col + c - dx, box.row + r - dy); TRANSPARENT outside the source grid. */
-function windowOf(sprite: Sprite, box: TileBox, dx: number, dy: number): Sprite {
+export function windowOf(sprite: Sprite, box: TileBox, dx: number, dy: number): Sprite {
   const { cols, rows } = box;
   const pixels = new Uint32Array(cols * rows);
   const x0 = box.col - dx;

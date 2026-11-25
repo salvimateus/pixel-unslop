@@ -74,6 +74,25 @@ export const TUNING = {
     /** A line counts as moved by the flexible grid when a cell next to it is off the period by this share. */
     movedLineShare: 0.15,
   },
+  /** The crop of the Grade step. */
+  crop: {
+    /** The snapped box eases to its new cells in this time. */
+    easeMs: 100,
+    /** The outside of the box: dimmed this much in crop mode, fading in this long; lighter outside the mode. */
+    outsideDim: 0.55,
+    idleDim: 0.22,
+    dimFadeMs: 180,
+    /** The handles: their size, their hit distance, and how much a hovered handle grows and how fast, in screen pixels. */
+    handlePx: 10,
+    handleHitPx: 12,
+    handleHoverGrow: 3,
+    handleGrowMs: 90,
+    /** The flash of the outline when a crop step commits. */
+    flashMs: 280,
+    /** The pop of the size label when the size changes: its extra scale and its time. */
+    labelPop: 0.14,
+    labelPopMs: 180,
+  },
   loupe: {
     size: 176,
     magnify: 2.2,

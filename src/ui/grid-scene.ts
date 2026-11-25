@@ -1,5 +1,8 @@
+import { cropCells } from '../core/grid.ts';
+import type { TileBox } from '../core/sprite.ts';
 import type { CellGrid, GridFit, Selection } from '../core/types.ts';
 import { TUNING } from '../app/tuning.ts';
+import { crispEdges, dimOutside, drawBoxLabel, drawHandles, hitBox, strokeBox, type BoxEdges, type BoxPart } from './box-handles.ts';
 import { clamp, type Camera, type Point } from './camera.ts';
 import type { CanvasBox } from './canvas-box.ts';
 import {
@@ -8,6 +11,7 @@ import {
   contentRect,
   drawFrame,
   easeOutBack,
+  easeOutCubic,
   gridPath,
   intersect,
   progress,
@@ -104,6 +108,8 @@ export class GridScene implements Scene {
   private focus: Point | null = null;
   /** Called when the grid flashes, so the screen can play the lock sound. */
   onLock: (() => void) | null = null;
+  private cropLabel: ((cols: number, rows: number) => string) | null = null;
+  private readonly crop = new CropOverlay();
 
   constructor(bitmap: ImageBitmap, width: number, height: number) {
     this.bitmap = bitmap;
@@ -282,6 +288,165 @@ export class GridScene implements Scene {
     this.host?.invalidate();
   }
 
+  /**
+   * The crop, in source pixels, or null for the whole image. The scene shows it snapped to the cells of the grid on
+   * screen and returns those cells, or null when there is no crop to show.
+   */
+  setCrop(crop: Selection | null): TileBox | null {
+    this.crop.raw = crop;
+    this.host?.invalidate();
+    return this.cropTarget(performance.now());
+  }
+
+  /** Crop mode: the box takes its handles and the outside dims fully; out of it, a set crop shows dashed and lightly dimmed. */
+  setCropMode(on: boolean): void {
+    const crop = this.crop;
+    if (on === crop.mode) return;
+    // With no crop on screen, the dim fades in from nothing.
+    crop.dimFrom = crop.raw ? this.cropDim(performance.now()) : 0;
+    crop.mode = on;
+    crop.dimStart = this.host?.reducedMotion ? -1 : performance.now();
+    if (!on) {
+      crop.hover = null;
+      crop.active = null;
+    }
+    this.host?.invalidate();
+  }
+
+  setCropHover(part: BoxPart | null): void {
+    const crop = this.crop;
+    if (part === crop.hover) return;
+    crop.hover = part;
+    crop.hoverStart = this.host?.reducedMotion ? -1 : performance.now();
+    this.host?.invalidate();
+  }
+
+  setCropActive(part: BoxPart | null): void {
+    if (part === this.crop.active) return;
+    this.crop.active = part;
+    this.host?.invalidate();
+  }
+
+  /** The text of the crop size label, in tiles; set again when the language changes. */
+  setCropLabel(label: ((cols: number, rows: number) => string) | null): void {
+    this.cropLabel = label;
+    this.crop.text = '';
+    this.host?.invalidate();
+  }
+
+  /** The screen line above which the size label must not go, such as the bottom of an overlay; 0 for none. */
+  setCropLabelTop(top: number): void {
+    if (top === this.crop.labelTop) return;
+    this.crop.labelTop = top;
+    this.host?.invalidate();
+  }
+
+  /** A short flash of the crop outline, when a crop step commits. */
+  flashCrop(): void {
+    const host = this.host;
+    if (!host || host.reducedMotion) return;
+    this.crop.flashStart = performance.now();
+    host.invalidate();
+  }
+
+  /** The part of the crop box under a screen point, in crop mode only: a handle, the inside, or null. */
+  cropHit(sx: number, sy: number): BoxPart | null {
+    const crop = this.crop;
+    if (!crop.mode || !this.host || !this.cropTarget(performance.now())) return null;
+    this.cropScreen(this.host.camera, crop.to);
+    return hitBox(crop.screen, sx, sy, TUNING.crop.handleHitPx);
+  }
+
+  /**
+   * The snapped cells of the crop on the grid on screen, recomputed only when the crop or the grid changes. In crop
+   * mode a null crop shows every cell. A new target starts the ease from the box shown now.
+   */
+  private cropTarget(now: number): TileBox | null {
+    const crop = this.crop;
+    const grid = this.grid;
+    const raw = crop.raw;
+    if (!grid || (!raw && !crop.mode)) return null;
+    if (grid === crop.keyGrid && raw === crop.keyRaw && crop.mode === crop.keyMode) return crop.cells;
+    crop.keyGrid = grid;
+    crop.keyRaw = raw;
+    crop.keyMode = crop.mode;
+    const cells = cropCells(grid, raw);
+    const x = grid.x[cells.col];
+    const y = grid.y[cells.row];
+    const w = grid.x[cells.col + cells.cols] - x;
+    const h = grid.y[cells.row + cells.rows] - y;
+    const to = crop.to;
+    if (crop.cells === null) {
+      crop.easeStart = -1;
+    } else if (x !== to.x || y !== to.y || w !== to.w || h !== to.h) {
+      this.cropShown(now, crop.from);
+      crop.easeStart = this.host?.reducedMotion ? -1 : now;
+    }
+    if (!crop.cells || crop.cells.cols !== cells.cols || crop.cells.rows !== cells.rows) {
+      if (crop.cells) crop.popStart = this.host?.reducedMotion ? -1 : now;
+      crop.text = '';
+    }
+    to.x = x;
+    to.y = y;
+    to.w = w;
+    to.h = h;
+    crop.cells = cells;
+    return cells;
+  }
+
+  /** The box shown now, between the last box and the target, written into `out`. */
+  private cropShown(now: number, out: Selection): Selection {
+    const crop = this.crop;
+    const t = easeOutCubic(progress(now, crop.easeStart, TUNING.crop.easeMs));
+    out.x = lerp(crop.from.x, crop.to.x, t);
+    out.y = lerp(crop.from.y, crop.to.y, t);
+    out.w = lerp(crop.from.w, crop.to.w, t);
+    out.h = lerp(crop.from.h, crop.to.h, t);
+    return out;
+  }
+
+  private cropScreen(camera: Camera, box: Selection): Rect {
+    const screen = this.crop.screen;
+    screen.x = camera.panX + box.x * camera.zoom;
+    screen.y = camera.panY + box.y * camera.zoom;
+    screen.w = box.w * camera.zoom;
+    screen.h = box.h * camera.zoom;
+    return screen;
+  }
+
+  /** The dim of the outside now: it fades between the light dim and the crop-mode dim. */
+  private cropDim(now: number): number {
+    const crop = this.crop;
+    const target = crop.mode ? TUNING.crop.outsideDim : TUNING.crop.idleDim;
+    return lerp(crop.dimFrom, target, easeOutCubic(progress(now, crop.dimStart, TUNING.crop.dimFadeMs)));
+  }
+
+  private drawCrop(ctx: CanvasRenderingContext2D, camera: Camera, dpr: number, now: number): boolean {
+    const crop = this.crop;
+    const cells = this.cropTarget(now);
+    if (!cells) return false;
+    const tuning = TUNING.crop;
+    const ease = progress(now, crop.easeStart, tuning.easeMs);
+    const fade = progress(now, crop.dimStart, tuning.dimFadeMs);
+    const grow = progress(now, crop.hoverStart, tuning.handleGrowMs);
+    const flash = 1 - progress(now, crop.flashStart, tuning.flashMs);
+    const pop = progress(now, crop.popStart, tuning.labelPopMs);
+    if (flash <= 0) crop.flashStart = -1;
+
+    const rect = this.cropScreen(camera, this.cropShown(now, crop.shown));
+    const edges = crispEdges(rect, dpr, crop.edges);
+    dimOutside(ctx, viewRect(camera), edges, this.cropDim(now));
+    strokeBox(ctx, edges, !crop.mode, flash > 0 ? flash : 0);
+    if (crop.mode) drawHandles(ctx, rect, tuning.handlePx, tuning.handleHoverGrow * easeOutCubic(grow), crop.active, crop.hover);
+    const label = this.cropLabel;
+    if (label && crop.mode) {
+      if (!crop.text) crop.text = label(cells.cols, cells.rows);
+      const scale = 1 + tuning.labelPop * (1 - pop) * (1 - pop);
+      drawBoxLabel(ctx, rect, crop.text, Math.max(camera.insets.top, crop.labelTop), tuning.handlePx / 2, true, scale);
+    }
+    return ease < 1 || fade < 1 || grow < 1 || flash > 0 || pop < 1;
+  }
+
   draw(ctx: CanvasRenderingContext2D, fx: CanvasRenderingContext2D, now: number): boolean {
     const host = this.host;
     if (!host) return false;
@@ -301,6 +466,7 @@ export class GridScene implements Scene {
 
     let alive = false;
     if (clip && this.fit) alive = this.drawGrid(ctx, clip, rect, now) || alive;
+    alive = this.drawCrop(ctx, camera, dpr, now) || alive;
     alive = this.drawBoxes(ctx, camera, now) || alive;
     if (this.dragBox && this.loupeAt) this.drawLoupe(fx, this.loupeAt, false);
     else if (this.pressing && this.cellScreenSize() < TUNING.grid.minCellPx) this.drawLoupe(fx, { x: camera.viewW / 2, y: camera.viewH / 2 }, true);
@@ -579,4 +745,34 @@ function cellAt(fit: GridFit, x: number, y: number): Selection | null {
   const row = findCell(fit.grid.y, y);
   if (col < 0 || row < 0) return null;
   return { x: fit.grid.x[col], y: fit.grid.y[row], w: fit.grid.x[col + 1] - fit.grid.x[col], h: fit.grid.y[row + 1] - fit.grid.y[row] };
+}
+
+/** The state of the crop overlay; its boxes are reused, so a frame allocates nothing. */
+class CropOverlay {
+  /** The crop in source pixels, as the screen gave it; null is the whole image. */
+  raw: Selection | null = null;
+  mode = false;
+  hover: BoxPart | null = null;
+  active: BoxPart | null = null;
+  /** The snapped cells and the grid and crop they came from. */
+  cells: TileBox | null = null;
+  keyGrid: CellGrid | null = null;
+  keyRaw: Selection | null = null;
+  keyMode = false;
+  /** The ease of the snapped box, in source pixels. */
+  readonly from: Selection = { x: 0, y: 0, w: 0, h: 0 };
+  readonly to: Selection = { x: 0, y: 0, w: 0, h: 0 };
+  readonly shown: Selection = { x: 0, y: 0, w: 0, h: 0 };
+  readonly screen: Rect = { x: 0, y: 0, w: 0, h: 0 };
+  readonly edges: BoxEdges = { x: 0, y: 0, right: 0, bottom: 0 };
+  easeStart = -1;
+  dimFrom = 0;
+  dimStart = -1;
+  hoverStart = -1;
+  flashStart = -1;
+  popStart = -1;
+  /** The label text of the current size; empty when the size changed. */
+  text = '';
+  /** The label stays below this screen line (see setCropLabelTop). */
+  labelTop = 0;
 }

@@ -41,9 +41,11 @@ export interface FitInputs {
   grid: CellGrid | null;
   nudge: { x: number; y: number };
   elastic: ElasticMode;
+  /** The part of the image that the piece keeps, in source pixels, applied after the fit; null for the whole image. */
+  crop: Selection | null;
 }
 
-export const DEFAULT_FIT_INPUTS: FitInputs = { selection: null, fixedPeriod: null, grid: null, nudge: { x: 0, y: 0 }, elastic: 'auto' };
+export const DEFAULT_FIT_INPUTS: FitInputs = { selection: null, fixedPeriod: null, grid: null, nudge: { x: 0, y: 0 }, elastic: 'auto', crop: null };
 
 export type SetGridMode = 'own' | 'shared';
 

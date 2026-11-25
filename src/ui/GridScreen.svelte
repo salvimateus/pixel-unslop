@@ -1,10 +1,14 @@
 <script lang="ts">
   import { untrack } from 'svelte';
+  import { cropBounds } from '../core/grid.ts';
+  import type { TileBox } from '../core/sprite.ts';
   import type { CellGrid, GridFit, Selection } from '../core/types.ts';
+  import { track } from '../app/analytics.ts';
   import { app } from '../app/state.svelte.ts';
   import { formatDecimal, t, type TextKey } from '../app/i18n.ts';
   import * as sfx from '../app/sfx.ts';
   import { TUNING } from '../app/tuning.ts';
+  import { cursorOf, draggedSelection, type BoxPart } from './box-handles.ts';
   import { clamp } from './camera.ts';
   import { GridScene, regularBounds, type FitEffect, type GridLine } from './grid-scene.ts';
   import { addLine, cellAt, coverAxis, moveLine, pushLines, removeLine, snapToEdge, strongEdge, type GridFrame } from './grid-lines.ts';
@@ -58,8 +62,10 @@
   let lineDrag: { line: GridLine; moved: boolean; from: CellGrid } | null = null;
   /** The grid during an edit, shown at once before the worker answers. */
   let working: CellGrid | null = null;
-  let undoStack = $state<CellGrid[]>([]);
-  let redoStack = $state<CellGrid[]>([]);
+  /** One undoable step of the Grade step: the grid lines or the crop before the change. */
+  type GridStep = { kind: 'lines'; grid: CellGrid } | { kind: 'crop'; crop: Selection | null };
+  let undoStack = $state<GridStep[]>([]);
+  let redoStack = $state<GridStep[]>([]);
   let lastClick = { at: 0, x: 0, y: 0 };
   /** Ctrl + drag: the full grid follows the pointer with no size change. */
   let gridDrag: { startX: number; startY: number; from: CellGrid; nudge: { x: number; y: number }; dx: number; dy: number } | null = null;
@@ -68,12 +74,17 @@
   let notice = $state<SizeNotice | null>(null);
   let hoverInside = false;
 
+  /** "Recortar": the user marks the part of the image that the cleanup keeps. */
+  let cropMode = $state(false);
+  /** A crop drag: a new box from `anchor`, or a move or resize of the box at the press. `cells` is the snapped size now. */
+  let cropDrag: { part: BoxPart | null; anchor: { x: number; y: number }; start: Selection; startX: number; startY: number; cells: TileBox | null } | null = null;
+
   /** The Grade step of a set: the same tools, a piece list on the left and "Limpar tudo!" at the end. */
   const setMode = $derived(app.screen === 'set-grid');
   /** The Grade step of a video animation: one video frame, and "Usar esta grade em todos os frames" at the end. */
   const animMode = $derived(app.screen === 'anim-grid');
   /** The frames were already sampled with the grid on screen: the primary button only goes back to them. */
-  const animKept = $derived(animMode && app.fit !== null && app.anim.sampledWith(app.fit.grid, app.fitVersion));
+  const animKept = $derived(animMode && app.outputFit !== null && app.anim.sampledWith(app.outputFit.grid, app.fitVersion));
   const frameCount = $derived(app.anim.info?.frameCount ?? 0);
   /** The video frame of the picker; it follows the loaded frame while the user does not move it. */
   let keyValue = $state(app.anim.keyIndex);
@@ -105,6 +116,7 @@
   /** The square that the user marked: the grid keeps one cell on it. */
   const marked = $derived(app.selection !== null && !manual);
   const pieceCount = $derived(app.set.pieces.length);
+  const cropped = $derived(app.crop !== null && app.outputFit !== null);
   const stageBanner = $derived.by((): { text: string; warn: boolean } | null => {
     if (locked) return { text: t('setGrid.referenceLocked'), warn: false };
     if (weak) return { text: t('grid.weak'), warn: true };
@@ -147,9 +159,42 @@
     untrack(() => (notice = null));
   });
 
-  // A reference has no tools: "Ajustar linhas" closes when one opens.
+  // A reference has no tools: "Ajustar linhas" and "Recortar" close when one opens.
   $effect(() => {
-    if (locked) untrack(() => (adjust = false));
+    if (locked)
+      untrack(() => {
+        adjust = false;
+        cropMode = false;
+      });
+  });
+
+  // The scene shows the stored crop; a drag shows its own box until the release.
+  $effect(() => {
+    const crop = app.crop;
+    const current = scene;
+    if (!current) return;
+    untrack(() => {
+      if (!cropDrag) current.setCrop(crop);
+    });
+  });
+
+  $effect(() => {
+    scene?.setCropMode(cropMode);
+  });
+
+  // The size label of the crop keeps clear of the pills over the stage.
+  let pills: HTMLDivElement | undefined = $state();
+  let pillsHeight = $state(0);
+  $effect(() => {
+    const height = pillsHeight;
+    const element = pills;
+    scene?.setCropLabelTop(element && height > 0 ? element.offsetTop + height : 0);
+  });
+
+  // The size label is drawn on the canvas: a language change sets it again.
+  $effect(() => {
+    const size = (cols: number, rows: number) => t('grid.cropSize', { cols, rows });
+    scene?.setCropLabel(size);
   });
 
   /** Ctrl + drag starts on the image only, with a grid on screen. */
@@ -328,7 +373,7 @@
 
   /** One undoable edit: shows the grid at once and sends it to the worker. */
   async function commitGrid(next: CellGrid, previous: CellGrid): Promise<void> {
-    undoStack = [...undoStack, previous];
+    undoStack = [...undoStack, { kind: 'lines', grid: previous }];
     redoStack = [];
     await sendGrid(next);
   }
@@ -344,26 +389,138 @@
     }
   }
 
-  function undoLine(): void {
-    const previous = undoStack.at(-1);
+  /** Applies one step of a stack and returns the step that brings back the state before it, or null when it cannot apply. */
+  function applyStep(step: GridStep): GridStep | null {
+    if (step.kind === 'crop') {
+      const now: GridStep = { kind: 'crop', crop: app.crop };
+      app.setCrop(step.crop);
+      scene?.flashCrop();
+      return now;
+    }
     const now = currentGrid();
-    if (!previous || !now) return;
-    undoStack = undoStack.slice(0, -1);
-    redoStack = [...redoStack, now];
+    if (!now) return null;
     selectedLine = null;
-    sfx.play('undo');
-    void sendGrid(previous);
+    void sendGrid(step.grid);
+    return { kind: 'lines', grid: now };
   }
 
-  function redoLine(): void {
-    const next = redoStack.at(-1);
-    const now = currentGrid();
-    if (!next || !now) return;
-    redoStack = redoStack.slice(0, -1);
-    undoStack = [...undoStack, now];
-    selectedLine = null;
+  function undoStep(): void {
+    const step = undoStack.at(-1);
+    if (!step || cropDrag || lineDrag) return;
+    const back = applyStep(step);
+    if (!back) return;
+    undoStack = undoStack.slice(0, -1);
+    redoStack = [...redoStack, back];
     sfx.play('undo');
-    void sendGrid(next);
+  }
+
+  function redoStep(): void {
+    const step = redoStack.at(-1);
+    if (!step || cropDrag || lineDrag) return;
+    const back = applyStep(step);
+    if (!back) return;
+    redoStack = redoStack.slice(0, -1);
+    undoStack = [...undoStack, back];
+    sfx.play('undo');
+  }
+
+  /** One undoable crop step. A crop that changes nothing makes no step. */
+  function commitCrop(next: Selection | null, detail: 'commit' | 'reset'): void {
+    const previous = app.crop;
+    if (!app.setCrop(next)) {
+      scene?.setCrop(app.crop);
+      return;
+    }
+    undoStack = [...undoStack, { kind: 'crop', crop: previous }];
+    redoStack = [];
+    scene?.setCrop(app.crop);
+    scene?.flashCrop();
+    sfx.play(detail === 'reset' ? 'erase' : 'lock');
+    track('option_change', { kind: 'grid_crop', detail, screen: app.screen });
+  }
+
+  function resetCrop(): void {
+    if (cropDrag) return;
+    commitCrop(null, 'reset');
+  }
+
+  /** "Recortar" turns "Ajustar linhas" off, and the other way around. */
+  function toggleCrop(): void {
+    if (cropMode) cancelCropDrag();
+    cropMode = !cropMode;
+    if (cropMode && adjust) {
+      adjust = false;
+      selectedLine = null;
+      hoverLine = null;
+      marks();
+    }
+    cursor = 'default';
+    scene?.setCropHover(null);
+    sfx.play('tick');
+  }
+
+  function cancelCropDrag(): void {
+    if (!cropDrag) return;
+    cropDrag = null;
+    scene?.setCropActive(null);
+    scene?.setCrop(app.crop);
+  }
+
+  /** A press on a handle or inside the box changes the box; a press elsewhere on the image draws a new one. */
+  function onCropDown(p: StagePointer): boolean {
+    const grid = scene?.grid;
+    if (!scene || !grid) return false;
+    const hit = scene.cropHit(p.sx, p.sy);
+    // With no crop the box is the whole image: a press inside it draws a new box, and the handles still resize.
+    const part = hit === 'inside' && !app.crop ? null : hit;
+    if (!part && !insideImage(p)) return false;
+    const anchor = clampToImage(p);
+    const start = part ? cropBounds(grid, app.crop) : { x: anchor.x, y: anchor.y, w: 0, h: 0 };
+    cropDrag = { part, anchor, start, startX: p.ix, startY: p.iy, cells: null };
+    scene.setCropActive(part ?? 'se');
+    cursor = cursorOf(part ?? 'se');
+    if (part) cropDrag.cells = scene.setCrop(start);
+    return true;
+  }
+
+  function cropRect(p: StagePointer): Selection | null {
+    const drag = cropDrag;
+    if (!drag) return null;
+    if (drag.part === 'inside' && source) {
+      // A move keeps the size; the box stays inside the image.
+      const { start } = drag;
+      const x = clamp(start.x + p.ix - drag.startX, Math.min(0, source.width - start.w), Math.max(0, source.width - start.w));
+      const y = clamp(start.y + p.iy - drag.startY, Math.min(0, source.height - start.h), Math.max(0, source.height - start.h));
+      return { x, y, w: start.w, h: start.h };
+    }
+    if (drag.part) return draggedSelection(drag.start, drag.part, p.ix - drag.startX, p.iy - drag.startY, TUNING.grid.minBoxSourcePx);
+    const end = clampToImage(p);
+    return { x: Math.min(drag.anchor.x, end.x), y: Math.min(drag.anchor.y, end.y), w: Math.abs(end.x - drag.anchor.x), h: Math.abs(end.y - drag.anchor.y) };
+  }
+
+  function onCropMove(p: StagePointer): void {
+    const drag = cropDrag;
+    const rect = cropRect(p);
+    if (!drag || !rect || !scene) return;
+    // A new box shows once it is larger than a click.
+    if (!drag.part && (rect.w < TUNING.grid.minBoxSourcePx || rect.h < TUNING.grid.minBoxSourcePx)) return;
+    const cells = scene.setCrop(rect);
+    if (cells && drag.cells && (cells.cols !== drag.cells.cols || cells.rows !== drag.cells.rows)) sfx.play('tick');
+    drag.cells = cells && { ...cells };
+  }
+
+  function onCropUp(p: StagePointer): void {
+    const drag = cropDrag;
+    const rect = cropRect(p);
+    cropDrag = null;
+    scene?.setCropActive(null);
+    onHover(p);
+    if (!drag || !rect) return;
+    if (!drag.part && (rect.w < TUNING.grid.minBoxSourcePx || rect.h < TUNING.grid.minBoxSourcePx)) {
+      scene?.setCrop(app.crop);
+      return;
+    }
+    commitCrop(rect, 'commit');
   }
 
   async function restoreGrid(): Promise<void> {
@@ -458,21 +615,37 @@
     void commitGrid(next, drag.from);
   }
 
-  /** Arrow keys move the selected line, Delete removes it, Ctrl+Z and Ctrl+Y undo and redo. */
+  /**
+   * C turns "Recortar" on and off. In "Recortar" and "Ajustar linhas", Ctrl+Z and Ctrl+Y undo and redo; Esc leaves
+   * "Recortar". In "Ajustar linhas", arrow keys move the selected line and Delete removes it.
+   */
   function onAdjustKey(event: KeyboardEvent): void {
-    if (!adjust || app.confirmRequest || app.aboutOpen) return;
+    if (app.confirmRequest || app.aboutOpen) return;
     const target = event.target;
-    if (target instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+    if (target instanceof HTMLElement && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable)) return;
     const mod = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
+    if (key === 'c' && !mod && !event.altKey && !event.repeat && !locked && fit) {
+      event.preventDefault();
+      toggleCrop();
+      return;
+    }
+    if (!adjust && !cropMode) return;
     if (mod && key === 'z' && !event.shiftKey) {
       event.preventDefault();
-      undoLine();
+      undoStep();
       return;
     }
     if (mod && (key === 'y' || (key === 'z' && event.shiftKey))) {
       event.preventDefault();
-      redoLine();
+      redoStep();
+      return;
+    }
+    if (cropMode) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        toggleCrop();
+      }
       return;
     }
     const line = selectedLine;
@@ -504,6 +677,11 @@
   /** The tool shows alone in the panel, from its top; "Pronto" brings the other controls back. */
   function toggleAdjust(): void {
     adjust = !adjust;
+    if (adjust && cropMode) {
+      cancelCropDrag();
+      cropMode = false;
+      scene?.setCropHover(null);
+    }
     selectedLine = null;
     hoverLine = null;
     sfx.play('tick');
@@ -527,6 +705,14 @@
     scene?.setFocus(p && insideImage(p) ? { x: p.ix, y: p.iy } : null);
     hoverInside = !!p && insideImage(p);
     ctrlHeld = !!p && p.ctrl && hoverInside && !locked;
+    if (cropMode && scene) {
+      if (cropDrag) return;
+      const hit = p ? scene.cropHit(p.sx, p.sy) : null;
+      const part = hit === 'inside' && !app.crop ? null : hit;
+      scene.setCropHover(part);
+      cursor = part ? cursorOf(part) : 'crosshair';
+      return;
+    }
     if (!adjust || !scene) return;
     const line = p ? scene.lineAt(p.sx, p.sy) : null;
     if (line?.axis === hoverLine?.axis && line?.index === hoverLine?.index) return;
@@ -538,6 +724,7 @@
   function onDown(p: StagePointer): boolean {
     if (locked) return false;
     if (p.ctrl) return startGridDrag(p);
+    if (cropMode) return onCropDown(p);
     if (adjust) return onAdjustDown(p);
     if (!scene || !insideImage(p)) return false;
     dragStart = clampToImage(p);
@@ -548,6 +735,10 @@
   function onMove(p: StagePointer): void {
     if (gridDrag) {
       moveGridDrag(p);
+      return;
+    }
+    if (cropDrag) {
+      onCropMove(p);
       return;
     }
     if (adjust) {
@@ -563,6 +754,10 @@
   async function onUp(p: StagePointer): Promise<void> {
     if (gridDrag) {
       await endGridDrag();
+      return;
+    }
+    if (cropDrag) {
+      onCropUp(p);
       return;
     }
     if (adjust) {
@@ -697,19 +892,25 @@
         bind:this={stage}
         {scene}
         label={t('grid.stageLabel')}
-        cursor={locked ? 'grab' : ctrlHeld ? 'move' : adjust ? cursor : 'crosshair'}
+        cursor={locked ? 'grab' : ctrlHeld ? 'move' : adjust || cropMode ? cursor : 'crosshair'}
         onhover={onHover}
         onprimarydown={onDown}
         onprimarymove={onMove}
         onprimaryup={onUp}
         onviewchange={updateCell}
       >
-        {#if stageBanner}
-          <p class="stage-banner" class:is-warn={stageBanner.warn}>
-            <Icon name={locked ? 'lock' : 'info'} size={18} />
-            {stageBanner.text}
-          </p>
-        {/if}
+        <!-- Overlays, so the stage never moves when a status appears, changes or goes away. -->
+        <div class="stage-pills" bind:this={pills} bind:offsetHeight={pillsHeight}>
+          {#if stageBanner}
+            <p class="stage-banner" class:is-warn={stageBanner.warn}>
+              <Icon name={locked ? 'lock' : 'info'} size={18} />
+              {stageBanner.text}
+            </p>
+          {/if}
+          {#if cropMode}
+            <p class="tool-pill" role="status">{t('grid.cropHint')}</p>
+          {/if}
+        </div>
         {#if fit && cellPx > 0 && cellPx < TUNING.grid.minCellPx}
           <button type="button" class="zoom-hint" onclick={zoomToGrid}>
             <Icon name="zoomIn" size={18} />
@@ -744,8 +945,8 @@
             {/each}
           </ul>
           <div class="adjust-row">
-            <button type="button" class="btn btn-quiet adjust-action" title="{t('clean.undo')} (Ctrl+Z)" disabled={undoStack.length === 0} onclick={undoLine}><Icon name="undo" size={16} />{t('clean.undo')}</button>
-            <button type="button" class="btn btn-quiet adjust-action" title="{t('clean.redo')} (Ctrl+Y)" disabled={redoStack.length === 0} onclick={redoLine}><Icon name="redo" size={16} />{t('clean.redo')}</button>
+            <button type="button" class="btn btn-quiet adjust-action" title="{t('clean.undo')} (Ctrl+Z)" disabled={undoStack.length === 0} onclick={undoStep}><Icon name="undo" size={16} />{t('clean.undo')}</button>
+            <button type="button" class="btn btn-quiet adjust-action" title="{t('clean.redo')} (Ctrl+Y)" disabled={redoStack.length === 0} onclick={redoStep}><Icon name="redo" size={16} />{t('clean.redo')}</button>
           </div>
           <div class="adjust-row">
             <button type="button" class="btn btn-quiet adjust-action" title={t('grid.restore')} onclick={restoreGrid} disabled={!manual}>{t('grid.restoreShort')}</button>
@@ -921,10 +1122,24 @@
         </section>
 
         <section class="extras" aria-label={t('grid.extrasLabel')}>
-          <button type="button" class="btn btn-quiet adjust-btn" aria-pressed={adjust} onclick={toggleAdjust}>
-            <Icon name="arrows" size={18} />
-            {t('grid.adjust')}
-          </button>
+          <div class="extras-row">
+            <button type="button" class="btn btn-quiet adjust-btn" aria-pressed={adjust} onclick={toggleAdjust}>
+              <Icon name="arrows" size={18} />
+              {t('grid.adjust')}
+            </button>
+            <button type="button" class="btn btn-quiet adjust-btn" aria-pressed={cropMode} title="{t('grid.crop')} (C)" onclick={toggleCrop}>
+              <Icon name="crop" size={18} />
+              {t('grid.crop')}
+            </button>
+          </div>
+          {#if cropMode || cropped}
+            <div class="crop-state">
+              {#if cropped && app.outputFit}
+                <p class="grid-state"><Icon name="crop" size={16} />{t('grid.cropActive', { cols: app.outputFit.cols, rows: app.outputFit.rows })}</p>
+              {/if}
+              <button type="button" class="btn btn-quiet way-btn crop-reset" disabled={!cropped} onclick={resetCrop}>{t('grid.cropReset')}</button>
+            </div>
+          {/if}
 
           <details class="advanced" ontoggle={onAdvancedToggle}>
             <summary class="advanced-summary">{t('grid.advanced')}</summary>
@@ -990,22 +1205,48 @@
       min-height: 0;
     }
 
-    .stage-banner {
+    .stage-pills {
       position: absolute;
       top: var(--space-3);
-      left: 50%;
+      left: var(--space-3);
+      right: var(--space-3);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--space-2);
+      pointer-events: none;
+
+      &:not(:has(.stage-banner, .tool-pill)) {
+        display: none;
+      }
+    }
+
+    .tool-pill {
+      max-width: 100%;
+      margin: 0;
+      padding: var(--space-1) var(--space-3);
+      color: var(--text-muted);
+      font-size: 0.8125rem;
+      line-height: 1.35;
+      text-align: center;
+      background: var(--surface-1);
+      border: 2px solid var(--line);
+      border-radius: var(--radius-m);
+      box-shadow: 0 4px 0 var(--depth);
+    }
+
+    .stage-banner {
       display: flex;
       align-items: center;
       gap: var(--space-2);
-      width: max-content;
-      max-width: calc(100% - 32px);
+      max-width: 100%;
+      margin: 0;
       padding: var(--space-2) var(--space-4);
       color: var(--text);
       background: var(--surface-2);
       border: 2px solid var(--teal);
       border-radius: var(--radius-m);
       box-shadow: 0 4px 0 var(--depth);
-      translate: -50% 0;
       animation: banner-in var(--dur-pop) var(--ease-out);
 
       &.is-warn {
@@ -1492,6 +1733,18 @@
       gap: var(--space-3);
       padding-top: var(--space-3);
       border-top: 2px solid var(--line);
+    }
+
+    .extras-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-2);
+    }
+
+    .crop-state {
+      display: grid;
+      justify-items: start;
+      gap: var(--space-2);
     }
 
     .adjust-btn {

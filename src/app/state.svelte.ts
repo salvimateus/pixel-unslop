@@ -3,6 +3,8 @@ import type { CellGrid, ElasticMode, GridFit, GridOptions, Selection, Sprite } f
 import { PARAMS } from '../core/params.ts';
 import { pack, TRANSPARENT } from '../core/color.ts';
 import { matchToReference, replaceColors, type ColorCount, type ReplacedColor } from '../core/palette.ts';
+import { windowOf } from '../core/frames.ts';
+import { cropBounds, cropCells, cropFit } from '../core/grid.ts';
 import { exportSprite, referencePalette } from '../core/pipeline.ts';
 import { listPalette, type RemovedColor, type RemoveScope } from '../core/sprite.ts';
 import { isDesktop, monitorWorkArea, setDownloadFile, setInterfaceZoom, type LaunchedFile, type PngFile } from './platform.ts';
@@ -151,6 +153,13 @@ function isDefaultInputs(inputs: FitInputs): boolean {
   return inputs.selection === null && inputs.fixedPeriod === null && inputs.grid === null && inputs.nudge.x === 0 && inputs.nudge.y === 0 && inputs.elastic === 'auto';
 }
 
+/** The crop on a new fit: a crop that keeps every cell of it is the whole image. */
+function keptCrop(fit: GridFit, crop: Selection | null): Selection | null {
+  if (!crop) return null;
+  const cells = cropCells(fit.grid, crop);
+  return cells.cols === fit.cols && cells.rows === fit.rows ? null : crop;
+}
+
 /** A latest-wins merge can be superseded by a newer one; the raw tiles are needed, so ask again. */
 const RAW_ATTEMPTS = 4;
 
@@ -194,6 +203,10 @@ class AppState {
   fixedPeriod = $state.raw<{ x: number; y: number } | null>(null);
   nudge = $state.raw<{ x: number; y: number }>({ x: 0, y: 0 });
   selection = $state.raw<Selection | null>(null);
+  /** The part of the image that the cleanup keeps, in source pixels, snapped to cells; null for the whole image. */
+  crop = $state.raw<Selection | null>(null);
+  /** The fit that the cleanup samples: the grid of the Grade step reduced to the cells of the crop. */
+  outputFit = $derived(this.fit ? cropFit(this.fit, this.crop) : null);
   /** "Minha arte está esticada": the art pixel can be a rectangle, by the shape slider or a marked rectangle. */
   stretched = $state(false);
   /** Grid lines that the user placed with "Ajustar linhas"; null for the fitted grid. */
@@ -559,6 +572,7 @@ class AppState {
     this.fixedPeriod = null;
     this.nudge = { x: 0, y: 0 };
     this.selection = null;
+    this.crop = null;
     this.stretched = false;
     this.result = null;
     this.session.clear();
@@ -594,6 +608,7 @@ class AppState {
       const fit = await this.track(this.engine.setGrid(grid, { debounce: true }));
       if (!fit || this.manualGrid !== grid) return null;
       this.fit = fit;
+      this.crop = keptCrop(fit, this.crop);
       this.fitVersion++;
       this.gridRejected = false;
       return fit;
@@ -699,7 +714,33 @@ class AppState {
   }
 
   private fitInputs(): FitInputs {
-    return { selection: this.selection, fixedPeriod: this.fixedPeriod, grid: this.manualGrid, nudge: this.nudge, elastic: this.elastic };
+    return { selection: this.selection, fixedPeriod: this.fixedPeriod, grid: this.manualGrid, nudge: this.nudge, elastic: this.elastic, crop: this.crop };
+  }
+
+  /**
+   * The crop of the Grade step, in source pixels; null for the whole image. It is kept snapped to the cells of the
+   * grid, and a crop that keeps every cell is the whole image. A change is a new grid version, so the next cleanup,
+   * piece store or frame lock takes it with the confirmations of a grid change. Returns false when nothing changed.
+   */
+  setCrop(crop: Selection | null): boolean {
+    const fit = this.fit;
+    if (!fit) return false;
+    let next: Selection | null = null;
+    if (crop) {
+      const cells = cropCells(fit.grid, crop);
+      if (cells.cols !== fit.cols || cells.rows !== fit.rows) next = cropBounds(fit.grid, crop);
+    }
+    const now = this.crop;
+    if (next === now || (next && now && next.x === now.x && next.y === now.y && next.w === now.w && next.h === now.h)) return false;
+    this.crop = next;
+    this.fitVersion++;
+    return true;
+  }
+
+  /** A fit-set item reduced to the cells of a crop: the raw tiles of a cell do not depend on the other cells. */
+  private cropItem(item: { fit: GridFit; raw: Sprite }, crop: Selection | null): { fit: GridFit; raw: Sprite } {
+    const fit = cropFit(item.fit, crop);
+    return fit === item.fit ? item : { fit, raw: windowOf(item.raw, cropCells(item.fit.grid, crop), 0, 0) };
   }
 
   private async requestFit(debounce: boolean): Promise<GridFit | null> {
@@ -707,6 +748,7 @@ class AppState {
       const fit = await this.track(this.engine.fit(this.selection, gridOptions(this.fitInputs()), { debounce }));
       if (!fit) return null;
       this.fit = fit;
+      this.crop = keptCrop(fit, this.crop);
       this.fitVersion++;
       return fit;
     } catch (error) {
@@ -732,7 +774,7 @@ class AppState {
     }
     this.cleaning = true;
     try {
-      const output = await this.track(this.engine.clean({ strength: PARAMS.palette.presets[this.preset] }));
+      const output = await this.track(this.engine.clean({ strength: PARAMS.palette.presets[this.preset] }, this.crop));
       this.result?.aligned.close();
       if (this.editingId === null) {
         this.session.clear();
@@ -777,7 +819,7 @@ class AppState {
     }
     if (!this.result) return;
     try {
-      const output = await this.track(this.engine.merge({ strength: PARAMS.palette.presets[name] }, { debounce: true }));
+      const output = await this.track(this.engine.merge({ strength: PARAMS.palette.presets[name] }, { debounce: true }, this.crop));
       if (!output || !this.result) return;
       this.session.setBase(this.baseOf(output.sprite));
       this.result = { ...this.result, sprite: output.sprite, palette: output.palette };
@@ -1044,7 +1086,7 @@ class AppState {
   /** The tiles of the loaded image before the palette merge: a merge with strength 0 changes no color. */
   private async readRaw(): Promise<Sprite> {
     for (let attempt = 0; attempt < RAW_ATTEMPTS; attempt++) {
-      const reply = await this.engine.merge({ strength: 0 });
+      const reply = await this.engine.merge({ strength: 0 }, {}, this.crop);
       if (reply) return reply.sprite;
     }
     throw new EngineError('internal', 'the raw tiles did not arrive');
@@ -1225,7 +1267,9 @@ class AppState {
       this.fail(new EngineError(failed.error, failed.detail));
       return false;
     }
-    const items = result.items.filter((item): item is Extract<SetFitItem, { ok: true }> => item.ok);
+    const items = result.items
+      .filter((item): item is Extract<SetFitItem, { ok: true }> => item.ok)
+      .map((item, i) => ({ ...item, ...this.cropItem(item, pieces[i].inputs.crop) }));
     const losing = pieces.filter((piece, i) => piece.session.hasEdits && (items[i].fit.cols !== piece.fit.cols || items[i].fit.rows !== piece.fit.rows));
     if (losing.length > 0) {
       const names = losing.map((piece) => piece.name).join(', ');
@@ -1241,7 +1285,7 @@ class AppState {
       if (item.fit.cols !== piece.fit.cols || item.fit.rows !== piece.fit.rows) piece.session.clear();
       piece.fit = item.fit;
       piece.raw = item.raw;
-      piece.inputs = this.inputsFor(item.fit, next.mode);
+      piece.inputs = { ...this.inputsFor(item.fit, next.mode), crop: piece.inputs.crop };
       piece.own = item.raw;
       piece.ownStrength = Number.NaN;
       piece.session.setBase(item.raw);
@@ -1314,7 +1358,9 @@ class AppState {
       this.fail(new EngineError(failed.error, failed.detail));
       return false;
     }
-    const items = result.items.filter((item): item is Extract<SetFitItem, { ok: true }> => item.ok);
+    const items = result.items
+      .filter((item): item is Extract<SetFitItem, { ok: true }> => item.ok)
+      .map((item, i) => ({ ...item, ...this.cropItem(item, stale[i].inputs.crop) }));
     const resized = (i: number) => items[i].fit.cols !== stale[i].fit.cols || items[i].fit.rows !== stale[i].fit.rows;
     const losing = stale.filter((piece, i) => piece.session.hasEdits && resized(i));
     if (losing.length > 0) {
@@ -1326,7 +1372,7 @@ class AppState {
       piece.fit = item.fit;
       piece.raw = item.raw;
       piece.own = item.raw;
-      piece.inputs = this.inputsFor(item.fit, 'shared');
+      piece.inputs = { ...this.inputsFor(item.fit, 'shared'), crop: piece.inputs.crop };
       piece.ownStrength = Number.NaN;
       piece.session.setBase(item.raw);
     });
@@ -1442,6 +1488,7 @@ class AppState {
     this.fit = fit;
     this.fitVersion++;
     this.selection = inputs.selection;
+    this.crop = keptCrop(fit, inputs.crop);
     this.fixedPeriod = inputs.fixedPeriod;
     this.manualGrid = inputs.grid;
     this.gridRejected = false;
@@ -1469,7 +1516,7 @@ class AppState {
       const { loaded, fit } = await this.loadObject(object, object.inputs);
       let output: Awaited<ReturnType<CleanEngine['clean']>>;
       try {
-        output = await this.track(this.engine.clean({ strength: this.strength }));
+        output = await this.track(this.engine.clean({ strength: this.strength }, object.inputs.crop));
       } catch (error) {
         loaded.bitmap.close();
         throw error;
@@ -1557,13 +1604,14 @@ class AppState {
       if (close) this.closeEditor();
       return true;
     }
-    const resized = this.fit.cols !== object.fit.cols || this.fit.rows !== object.fit.rows;
+    const output = this.outputFit ?? this.fit;
+    const resized = output.cols !== object.fit.cols || output.rows !== object.fit.rows;
     if (resized && object.session.hasEdits && !(await this.confirm(t('confirm.objectGrid.title'), t('confirm.objectGrid.body'), t('confirm.objectGrid.ok')))) return false;
     const wasLoading = this.loading;
     this.loading = true;
     try {
       const raw = await this.track(this.readRaw());
-      object.fit = this.fit;
+      object.fit = output;
       object.inputs = this.fitInputs();
       object.raw = raw;
       object.own = raw;
@@ -1585,9 +1633,10 @@ class AppState {
   /** Stores the open object back in the set with its grid, raw tiles and edits. Returns false when it stays open. */
   async returnToSet(): Promise<boolean> {
     const object = this.editingObject;
-    if (!object || !this.fit) return false;
+    const output = this.outputFit;
+    if (!object || !this.fit || !output) return false;
     if (this.loading) return false;
-    const sizeChanged = !this.result || this.result.sprite.cols !== this.fit.cols || this.result.sprite.rows !== this.fit.rows;
+    const sizeChanged = !this.result || this.result.sprite.cols !== output.cols || this.result.sprite.rows !== output.rows;
     if (sizeChanged && this.session.hasEdits && !(await this.confirm(t('confirm.objectGrid.title'), t('confirm.objectGrid.body'), t('confirm.objectGrid.ok')))) return false;
     this.loading = true;
     const unchanged = this.editVersion === this.editEntryVersion && this.fitVersion === this.editEntryFitVersion && !this.set.unexported;
@@ -1603,7 +1652,7 @@ class AppState {
       const strength = this.strength;
       const raw = await this.track(this.readRaw());
       const [own] = await this.track(this.ownMerges([raw], strength));
-      object.fit = this.fit;
+      object.fit = output;
       object.inputs = this.fitInputs();
       object.raw = raw;
       object.own = own;
@@ -1635,6 +1684,7 @@ class AppState {
     this.fit = null;
     this.result = null;
     this.selection = null;
+    this.crop = null;
     this.fixedPeriod = null;
     this.nudge = { x: 0, y: 0 };
     this.elastic = 'auto';
@@ -1868,6 +1918,7 @@ class AppState {
     this.fit = fit;
     this.fitVersion++;
     this.selection = inputs.selection;
+    this.crop = keptCrop(fit, inputs.crop);
     this.fixedPeriod = inputs.fixedPeriod;
     this.manualGrid = inputs.grid;
     this.nudge = inputs.nudge;
@@ -1902,8 +1953,9 @@ class AppState {
   async lockAnimGrid(): Promise<boolean> {
     const anim = this.anim;
     const video = anim.video;
-    const fit = this.fit;
-    if (!video || !fit || this.cleaning || this.loading) return false;
+    const full = this.fit;
+    const fit = this.outputFit;
+    if (!video || !full || !fit || this.cleaning || this.loading) return false;
     if (this.gridRejected) {
       sfx.play('error');
       this.toast(t('grid.rejected'), 'error');
@@ -1930,6 +1982,7 @@ class AppState {
     const resized = anim.locked && (fit.cols !== size.cols || fit.rows !== size.rows);
     if (resized && anim.hasFrameEdits && !(await this.confirm(t('confirm.animFrameGrid.title'), t('confirm.animFrameGrid.body'), t('confirm.animFrameGrid.ok')))) return false;
     const grid: CellGrid = { x: fit.grid.x.slice(), y: fit.grid.y.slice() };
+    const crop = this.crop;
     const fitVersion = this.fitVersion;
     const strength = this.strength;
     let cancelled = false;
@@ -1953,7 +2006,7 @@ class AppState {
         else if (cancelled) this.toast(t('toast.framesCancelled'), 'info');
         return false;
       }
-      if (anim.setGrid(grid, fitVersion, strength, frames)) this.toast(t('toast.containerReset'), 'info');
+      if (anim.setGrid(grid, fitVersion, strength, frames, full.grid, crop)) this.toast(t('toast.containerReset'), 'info');
       trackEvent('clean_run', { kind: 'anim', detail: this.preset, width: fit.cols, height: fit.rows, count: total });
       sfx.play('sweep');
       this.screen = 'anim-frames';
@@ -2214,10 +2267,11 @@ class AppState {
         let output: Awaited<ReturnType<CleanEngine['clean']>>;
         try {
           if (!open(id, video)) throw new BeforeSkipped();
-          const manual = await this.engine.setGrid(grid);
+          // The worker takes the grid before the crop: a cropped grid is not a valid grid of the whole frame.
+          const manual = await this.engine.setGrid(anim.fullGrid ?? grid);
           if (!manual) throw new EngineError('internal', 'the grid of the frame did not arrive');
           fit = manual;
-          output = await this.engine.clean({ strength: this.strength });
+          output = await this.engine.clean({ strength: this.strength }, anim.crop);
         } catch (error) {
           loaded.bitmap.close();
           if (error instanceof BeforeSkipped) continue;

@@ -108,17 +108,19 @@ export class CleanEngine {
     return reply ? expect(reply, 'fit').fit : null;
   }
 
-  async clean(merge: MergeOptions): Promise<CleanResult> {
+  /** `crop` reduces the fit to the cells inside it, and stays for later merges; leave it out to keep the last one. */
+  async clean(merge: MergeOptions, crop?: Selection | null): Promise<CleanResult> {
     this.flushDebounced('fit');
     this.dropDebounced('merge');
     this.latest.merge = this.nextId;
-    const reply = await this.request({ type: 'clean', merge });
+    const reply = await this.request(crop === undefined ? { type: 'clean', merge } : { type: 'clean', merge, crop: crop && { ...crop } });
     const { sprite, palette, aligned } = expect(reply, 'clean');
     return { sprite, palette, aligned };
   }
 
-  async merge(merge: MergeOptions, call: CallOptions = {}): Promise<MergeResult | null> {
-    const reply = await this.requestLatest('merge', { type: 'merge', merge }, call);
+  /** `crop` works as in `clean`. */
+  async merge(merge: MergeOptions, call: CallOptions = {}, crop?: Selection | null): Promise<MergeResult | null> {
+    const reply = await this.requestLatest('merge', crop === undefined ? { type: 'merge', merge } : { type: 'merge', merge, crop: crop && { ...crop } }, call);
     if (!reply) return null;
     const { sprite, palette } = expect(reply, 'merge');
     return { sprite, palette };
