@@ -1,7 +1,7 @@
 import { TRANSPARENT, blue, green, pack, red, toOklab } from './color.ts';
 import { PARAMS } from './params.ts';
 import type { MergeOptions } from './protocol.ts';
-import { listPalette } from './sprite.ts';
+import { colorTest, listPalette } from './sprite.ts';
 import type { Sprite } from './types.ts';
 
 export interface ColorCount { color: number; count: number }
@@ -153,6 +153,45 @@ export function clusterColors(entries: ColorCount[], options: MergeOptions, refi
   if (maxColors > 0 && clusters.length > maxColors) reduce(clusters, maxColors);
   for (const cluster of clusters) for (const m of cluster.members) map.set(m.color, cluster.color);
   return map;
+}
+
+/**
+ * One entry of the replacement map: every color within `tolerance` (OKLab, the rule of "Remove color") of `from`
+ * becomes `to`. A `to` of TRANSPARENT erases those tiles everywhere.
+ */
+export interface ReplacedColor {
+  from: number;
+  to: number;
+  tolerance: number;
+}
+
+/**
+ * The colors that `replaced` changes, each to its final color. The entries apply in order, so a→b then b→c gives
+ * a→c. TRANSPARENT never matches a source; a color that comes back to itself is left out.
+ */
+export function replacementMap(colors: Iterable<number>, replaced: readonly ReplacedColor[]): Map<number, number> {
+  const map = new Map<number, number>();
+  if (replaced.length === 0) return map;
+  const tests = replaced.map((entry) => colorTest([{ color: entry.from, tolerance: entry.tolerance }]));
+  for (const color of colors) {
+    if (color === TRANSPARENT) continue;
+    let current = color;
+    for (let i = 0; i < replaced.length && current !== TRANSPARENT; i++) if (tests[i]?.(current)) current = replaced[i].to;
+    if (current !== color) map.set(color, current);
+  }
+  return map;
+}
+
+/**
+ * The sprites with the replacement map applied: one map over the colors of all of them, so a color never goes to two
+ * targets. A sprite that does not change stays the same object.
+ */
+export function replaceColors(sprites: readonly Sprite[], replaced: readonly ReplacedColor[]): Sprite[] {
+  if (replaced.length === 0) return [...sprites];
+  const palettes = sprites.map((sprite) => listPalette(sprite.pixels));
+  const map = replacementMap(new Set(palettes.flatMap((palette) => palette.map((entry) => entry.color))), replaced);
+  if (map.size === 0) return [...sprites];
+  return sprites.map((sprite, i) => (palettes[i].some((entry) => map.has(entry.color)) ? applyColorMap(sprite, map) : sprite));
 }
 
 export function applyColorMap(sprite: Sprite, map: Map<number, number>): Sprite {

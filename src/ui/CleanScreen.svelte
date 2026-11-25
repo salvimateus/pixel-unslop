@@ -1,14 +1,13 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { TRANSPARENT } from '../core/color.ts';
-  import { borderBackground, floodRegion, holdsTile, indicesOfColor, lineTiles, listPalette, removalAt, type Removal } from '../core/sprite.ts';
+  import { borderBackground, floodRegion, lineTiles, listPalette } from '../core/sprite.ts';
   import { track } from '../app/analytics.ts';
-  import { clampTolerance, type RemovalPick } from '../app/animation.svelte.ts';
+  import type { ListVariant, ReplacedColor } from '../app/color-list.svelte.ts';
   import { opaqueBox } from '../app/image-set.svelte.ts';
   import { app, type BrushTool, type Tool } from '../app/state.svelte.ts';
   import { t, type TextKey } from '../app/i18n.ts';
   import * as sfx from '../app/sfx.ts';
-  import { readStored, writeStored } from '../app/storage.ts';
   import { TUNING } from '../app/tuning.ts';
   import type { Tile } from './camera.ts';
   import { CleanScene, type CompareLabels, type HoverMark, type PreviewBackground } from './clean-scene.ts';
@@ -20,10 +19,12 @@
   import PalettePanel from './PalettePanel.svelte';
   import ProgressPill from './ProgressPill.svelte';
   import RemoveColors from './RemoveColors.svelte';
+  import ReplaceColors from './ReplaceColors.svelte';
+  import { changedTiles, historyToast, removedToast, replacedToast } from './list-feedback.ts';
   import Stage from './Stage.svelte';
   import PanelSplitter from './PanelSplitter.svelte';
   import ToleranceSlider from './ToleranceSlider.svelte';
-  import { bakePickFlash, bakePickMask, bakeSprite, PICKER_CURSOR, STAGE_COLORS, type StagePointer } from './stage-renderer.ts';
+  import { bakePickFlash, bakePickMask, bakeReplaceMask, bakeSprite, PICKER_CURSOR, STALE_MASK, STAGE_COLORS, type StagePointer } from './stage-renderer.ts';
 
   interface ToolInfo {
     id: Tool;
@@ -39,9 +40,8 @@
     { id: 'bucket', icon: 'bucket', label: 'clean.tool.bucket', key: 'G' },
     { id: 'picker', icon: 'picker', label: 'clean.tool.picker', key: 'I' },
     { id: 'remove', icon: 'colorErase', label: 'clean.tool.remove', key: 'R' },
+    { id: 'replace', icon: 'swap', label: 'clean.tool.replace', key: 'C' },
   ];
-  /** The tolerance of "Remove color" on a single image or a set piece; the animation keeps its own. */
-  const TOLERANCE_KEY = 'removeTolerance';
   const BACKGROUNDS: ReadonlyArray<{ id: PreviewBackground; label: TextKey }> = [
     { id: 'checker', label: 'clean.bg.checker' },
     { id: 'dark', label: 'clean.bg.dark' },
@@ -74,15 +74,15 @@
   const frameMode = app.screen === 'anim-edit';
   /** The onion ghost of the previous entry, in the frame editor only. */
   let onion = $state(false);
-  let singleTolerance = $state(storedTolerance());
-  /** The OKLab tolerance of the "Remove color" tool: in the frame editor, the one of the animation. */
-  const tolerance = $derived(frameMode ? app.anim.colorTolerance : singleTolerance);
-  /** What the shown mask of "Remove color" was made from, so a hover on the same color bakes nothing. */
-  let maskKey = '';
+  /** The lists of this journey: the animation in the frame editor, the set in the piece editor, else the single image. */
+  const lists = $derived(app.cleanLists);
+  const variant = $derived<ListVariant>(frameMode ? 'frames' : app.editingId !== null ? 'set' : 'image');
+  /** The OKLab tolerance of the next pick of the active list tool. */
+  const tolerance = $derived(app.tool === 'replace' ? lists.replaced.tolerance : lists.removed.tolerance);
+  /** What the shown mask of a list tool was made from, so a hover on the same color bakes nothing. */
+  let maskKey = STALE_MASK;
   /** The pointer is on a spot that does not reach the border: a click there erases the color inside the drawing too. */
   let pickInside = $state(false);
-  /** The last picks of one color and tolerance on one image: the hover asks again on each pointer move. */
-  let removalCache: { key: string; border?: Removal; all?: Removal } | null = null;
 
   const result = $derived(app.result);
   /** The frame editor shows a stand-in before view until the worker loads the real one: the compare waits. */
@@ -107,20 +107,9 @@
     return result ? opaqueBox(app.session.composed()) : null;
   });
   const trimmed = $derived(!frameMode && exportBox !== null && result !== null && (exportBox.cols !== result.sprite.cols || exportBox.rows !== result.sprite.rows));
-  const canUndo = $derived.by(() => {
-    void app.editVersion;
-    return app.session.canUndo;
-  });
-  const canRedo = $derived.by(() => {
-    void app.editVersion;
-    return app.session.canRedo;
-  });
-  const cursor = $derived(overSplit ? 'ew-resize' : app.tool === 'view' ? 'grab' : app.tool === 'picker' ? 'copy' : app.tool === 'remove' ? PICKER_CURSOR : 'crosshair');
-
-  function storedTolerance(): number {
-    const text = readStored(TOLERANCE_KEY);
-    return text === null ? TUNING.clean.removeTolerance : clampTolerance(Number(text));
-  }
+  const canUndo = $derived(app.history.canUndo);
+  const canRedo = $derived(app.history.canRedo);
+  const cursor = $derived(overSplit ? 'ew-resize' : app.tool === 'view' ? 'grab' : app.tool === 'picker' ? 'copy' : app.tool === 'remove' || app.tool === 'replace' ? PICKER_CURSOR : 'crosshair');
 
   function compareLabels(): CompareLabels {
     return { before: t('clean.before'), after: t('clean.after') };
@@ -216,6 +205,7 @@
       case 'eraser':
         return { kind: 'erase' };
       case 'picker':
+      case 'replace':
         return { kind: 'pick' };
       case 'remove':
         return { kind: 'remove' };
@@ -293,6 +283,7 @@
     const region = floodRegion(composed, start);
     const changed = app.session.apply(region.indices, app.ink);
     if (changed.length === 0) return;
+    app.pixelStep();
     scene.startWave(region.indices, region.distance, app.session.composed().pixels);
     scene.ripple(tile);
     sfx.play('fill');
@@ -326,6 +317,9 @@
         return false;
       case 'remove':
         if (tile) removeColorAt(tile);
+        return false;
+      case 'replace':
+        if (tile) replaceColorAt(tile, p.shift);
         return false;
       case 'pencil':
       case 'eraser': {
@@ -367,7 +361,7 @@
     const finished = stroke;
     stroke = null;
     if (!finished || finished.indices.length === 0) return;
-    app.session.apply(Int32Array.from(finished.indices), finished.color);
+    if (app.session.apply(Int32Array.from(finished.indices), finished.color).length > 0) app.pixelStep();
     edited();
   }
 
@@ -388,112 +382,74 @@
     updateMask();
   }
 
-  /** "Remove color": the tiles that a click on the square under the pointer erases, over the sprite. */
+  function indexOf(tile: Tile): number {
+    return tile.row * app.session.composed().cols + tile.col;
+  }
+
+  /** The tiles that a click of a list tool on the square under the pointer changes, over the sprite. */
   function updateMask(): void {
     if (!scene) return;
-    const tile = app.tool === 'remove' ? lastTile : null;
-    if (frameMode) {
-      updateFrameMask(tile);
+    const composed = app.session.composed();
+    if (app.tool === 'replace') {
+      pickInside = false;
+      const color = lastTile ? app.listColorAt(indexOf(lastTile)) : null;
+      const pending = lists.replaced.pending;
+      const key = `replace|${color}|${tolerance}|${pending.map((entry) => entry.color).join(',')}|${app.editVersion}|${app.baseVersion}`;
+      if (key === maskKey) return;
+      maskKey = key;
+      const hover = color !== null ? app.replaceTilesOf(color, tolerance) : new Int32Array(0);
+      const held = app.pendingReplaceTiles();
+      scene.setMask(hover.length > 0 || held.length > 0 ? bakeReplaceMask(composed.cols, composed.rows, held, hover) : null);
       return;
     }
-    const composed = app.session.composed();
-    const removal = tile ? removalOn(tile) : null;
-    pickInside = removal?.scope === 'all';
-    const key = removal ? `${removal.scope}|${removalCache?.key}` : '';
-    if (key === maskKey) return;
-    maskKey = key;
-    scene.setMask(removal ? bakePickMask(composed.cols, composed.rows, removal.cleared, removal.kept, removal.scope) : null);
-  }
-
-  /** What a "Remove color" click on one square of the image erases; null on a transparent square. */
-  function removalOn(tile: Tile): Removal | null {
-    const composed = app.session.composed();
-    const index = tile.row * composed.cols + tile.col;
-    const color = composed.pixels[index];
-    if (color === TRANSPARENT) return null;
-    const key = `${color}|${tolerance}|${app.editVersion}|${app.baseVersion}`;
-    if (removalCache?.key !== key) removalCache = { key };
-    const cache = removalCache;
-    const known = cache.border ?? cache.all;
-    const scope = known ? (holdsTile(known.reach, index) ? 'border' : 'all') : null;
-    const cached = scope ? cache[scope] : undefined;
-    if (cached) return cached;
-    const removal = removalAt(composed, [], color, tolerance, index);
-    cache[removal.scope] = removal;
-    return removal;
-  }
-
-  /** The frame editor shows the full grid of its entry, so a square is already a grid tile of the animation pick. */
-  function framePick(tile: Tile | null): RemovalPick | null {
-    const id = app.editingFrameId;
-    const cols = app.session.composed().cols;
-    return tile && id !== null ? app.anim.pickAt(id, tile.row * cols + tile.col) : null;
-  }
-
-  function updateFrameMask(tile: Tile | null): void {
-    if (!scene) return;
-    const found = framePick(tile);
+    const found = app.tool === 'remove' && lastTile ? app.removalPickAt(indexOf(lastTile)) : null;
     const pick = found && found.action !== 'listed' ? found : null;
     pickInside = pick?.scope === 'all';
-    const key = pick ? `${pick.color}|${pick.scope}|${tolerance}|${app.editVersion}|${app.baseVersion}` : '';
+    const key = pick ? `remove|${pick.color}|${pick.scope}|${tolerance}|${app.editVersion}|${app.baseVersion}` : '';
     if (key === maskKey) return;
     maskKey = key;
-    const composed = app.session.composed();
     scene.setMask(pick ? bakePickMask(composed.cols, composed.rows, pick.cleared, pick.kept, pick.scope) : null);
   }
 
-  // The mask follows the tolerance slider while the pointer rests.
+  // The mask follows the tolerance slider and the pending group while the pointer rests.
   $effect(() => {
     void tolerance;
+    void lists.replaced.pending;
     untrack(updateMask);
   });
 
   function setTolerance(value: number, commit: boolean): void {
-    if (frameMode) {
-      app.anim.setColorTolerance(value, commit);
-    } else {
-      singleTolerance = clampTolerance(value);
-      if (commit) writeStored(TOLERANCE_KEY, String(singleTolerance));
-    }
+    if (app.tool === 'replace') lists.replaced.setTolerance(value, commit);
+    else lists.removed.setTolerance(value, commit);
     updateMask();
   }
 
-  /** The animation built its frames again: the open frame shows its new base. */
+  /** A list changed: the image shows its new base (in the frame editor, the animation built its frames again). */
   function refreshFrame(): void {
     app.baseVersion++;
     app.editVersion++;
-    maskKey = '';
+    maskKey = STALE_MASK;
+    untrack(updateMask);
+  }
+
+  /** The juice of a list change: the tiles that went fall as shards, and a flash marks every changed tile and the kept ones. */
+  function showListChange(before: Uint32Array, kept: ArrayLike<number> = []): void {
+    if (!scene) return;
+    const after = app.session.composed();
+    const changed = changedTiles(before, after.pixels);
+    scene.writeTiles(changed, after.pixels);
+    const gone = changed.filter((index) => after.pixels[index] === TRANSPARENT);
+    if (gone.length > 0) scene.shatter(gone, before);
+    if (changed.length > 0 || kept.length > 0) scene.flashMask(bakePickFlash(after.cols, after.rows, changed, kept));
+    maskKey = STALE_MASK;
   }
 
   /**
    * "Remove color": the clicked color goes where it joins the border, or everywhere from a spot that does not (see
-   * removalAt). On one image this is one edit; in the frame editor the color joins the list of the animation, so
-   * every frame loses it.
+   * removalAt). The color joins the list of the journey, so a set piece or a frame changes all the set or the animation.
    */
   function removeColorAt(tile: Tile): void {
-    if (!scene) return;
-    const composed = app.session.composed();
-    const color = composed.pixels[tile.row * composed.cols + tile.col];
-    if (color === TRANSPARENT) {
-      sfx.play('tick');
-      return;
-    }
-    if (frameMode) {
-      removeColorInFrames(tile);
-      return;
-    }
-    const removal = removalOn(tile);
-    const count = removal ? eraseTiles(removal.cleared, removal.kept) : 0;
-    if (!removal || count === 0) return;
-    if (app.ink === color && !composedHas(color)) app.ink = TRANSPARENT;
-    track('option_change', { kind: 'remove_color', detail: tolerance, count });
-    app.toast(removal.scope === 'all' ? t('toast.colorDeletedInside', { count }) : t('toast.colorDeleted', { count }), 'success');
-    updateMask();
-  }
-
-  function removeColorInFrames(tile: Tile): void {
-    if (!scene) return;
-    const pick = framePick(tile);
+    const pick = app.removalPickAt(indexOf(tile));
     if (!pick) {
       sfx.play('tick');
       return;
@@ -503,54 +459,96 @@
       return;
     }
     const before = app.session.composed().pixels;
-    const frames = app.anim.addRemovedColor(pick.color, pick.scope);
-    if (frames === 0) {
+    const count = app.addRemovedColor(pick.color, pick.scope);
+    if (count === 0) {
       app.toast(t('toast.colorNotInFrames'), 'info');
       return;
     }
-    const after = app.session.composed();
-    const changed: number[] = [];
-    for (let i = 0; i < after.pixels.length; i++) if (after.pixels[i] !== before[i]) changed.push(i);
-    scene.writeTiles(changed, after.pixels);
-    scene.shatter(changed, before);
-    if (changed.length > 0 || pick.kept.length > 0) scene.flashMask(bakePickFlash(after.cols, after.rows, changed, pick.kept));
+    if (app.ink === pick.color && !composedHas(pick.color)) app.ink = TRANSPARENT;
+    showListChange(before, pick.kept);
     sfx.play('erase');
-    refreshFrame();
-    if (pick.scope === 'all') app.toast(frames === 1 ? t('toast.colorRemovedInsideFrame') : t('toast.colorRemovedInsideFrames', { count: frames }), 'success');
-    else app.toast(frames === 1 ? t('toast.colorRemovedFrame') : t('toast.colorRemovedFrames', { count: frames }), 'success');
+    app.toast(removedToast(variant, count, pick.scope), 'success');
+    updateMask();
+  }
+
+  /** The replacement picker: a click picks a source and opens the target chooser; Shift+click adds it to the group only. */
+  function replaceColorAt(tile: Tile, group: boolean): void {
+    const color = app.listColorAt(indexOf(tile));
+    if (color === null) {
+      sfx.play('tick');
+      return;
+    }
+    if (group) lists.replaced.hold(color);
+    else lists.replaced.pick(color);
+    sfx.play('tick');
+    maskKey = STALE_MASK;
+    updateMask();
+  }
+
+  /** Adds replacement entries and shows them; `to` of TRANSPARENT erases. */
+  function applyReplacement(entries: readonly ReplacedColor[]): void {
+    if (entries.length === 0) return;
+    const before = app.session.composed().pixels;
+    const count = app.addReplacedColors(entries);
+    if (count === 0) {
+      app.toast(t('toast.colorNotReplaced'), 'info');
+      return;
+    }
+    const from = new Set(entries.map((entry) => entry.from));
+    if (from.has(app.listColorOf(app.ink)) && !composedHas(app.ink)) app.ink = entries[entries.length - 1].to;
+    showListChange(before);
+    sfx.play(entries[0].to === TRANSPARENT ? 'erase' : 'fill');
+    app.toast(replacedToast(variant, count, entries.every((entry) => entry.to === TRANSPARENT)), 'success');
+    updateMask();
+  }
+
+  /** The target chooser of the replacement picker: one entry per pending source. */
+  function chooseTarget(to: number): void {
+    const entries = lists.replaced.pendingEntries(to);
+    lists.replaced.cancel();
+    applyReplacement(entries);
+  }
+
+  /** One step back or forward on the history of the screen: a pixel step or a list step. */
+  function replay(way: 'undo' | 'redo'): void {
+    if (!scene) return;
+    const before = app.session.composed().pixels;
+    const done = app.replayClean(way);
+    if (!done) return;
+    sfx.play('undo');
+    if (done.kind === 'pixels') {
+      scene.writeTiles(done.changed, app.session.composed().pixels);
+      edited();
+      return;
+    }
+    if (done.kind !== 'lists') return;
+    showListChange(before);
+    app.toast(historyToast(done.action, way), 'info');
     updateMask();
   }
 
   function undo(): void {
-    const changed = app.session.undo();
-    if (!changed || !scene) return;
-    scene.writeTiles(changed, app.session.composed().pixels);
-    sfx.play('undo');
-    edited();
+    replay('undo');
   }
 
   function redo(): void {
-    const changed = app.session.redo();
-    if (!changed || !scene) return;
-    scene.writeTiles(changed, app.session.composed().pixels);
-    sfx.play('undo');
-    edited();
+    replay('redo');
   }
 
   function composedHas(color: number): boolean {
     return app.session.composed().pixels.includes(color);
   }
 
-  /** Erases tiles with the falling-shards effect; with `kept`, a flash on them and on the kept tiles. Returns how many tiles changed. */
-  function eraseTiles(indices: Int32Array, kept?: ArrayLike<number>): number {
+  /** Erases tiles, as one pixel step, with the falling-shards effect. Returns how many tiles changed. */
+  function eraseTiles(indices: Int32Array): number {
     if (!scene) return 0;
     const before = app.session.composed().pixels;
     const changed = app.session.apply(indices, TRANSPARENT);
     if (changed.length === 0) return 0;
+    app.pixelStep();
     const composed = app.session.composed();
     scene.writeTiles(changed, composed.pixels);
     scene.shatter(changed, before);
-    if (kept) scene.flashMask(bakePickFlash(composed.cols, composed.rows, changed, kept));
     sfx.play('erase');
     edited();
     return changed.length;
@@ -565,21 +563,23 @@
     app.toast(t('toast.bgRemoved'), 'success');
   }
 
+  /** "Erase this color": the color joins the removed colors of the journey everywhere, at tolerance 0. */
   function deleteColor(color: number): void {
-    const count = eraseTiles(indicesOfColor(app.session.composed().pixels, color));
-    if (count > 0) app.toast(t('toast.colorDeleted', { count }), 'success');
-    if (app.ink === color) app.ink = TRANSPARENT;
+    const before = app.session.composed().pixels;
+    const count = app.addRemovedColor(app.listColorOf(color), 'all', 0);
+    if (count === 0) {
+      app.toast(t('toast.colorNotInFrames'), 'info');
+      return;
+    }
+    if (app.ink === color && !composedHas(color)) app.ink = TRANSPARENT;
+    showListChange(before);
+    sfx.play('erase');
+    app.toast(removedToast(variant, count, 'all'), 'success');
   }
 
+  /** "Replace this color everywhere": one entry of the replacement map of the journey, at tolerance 0. */
   function swapColor(from: number, to: number): void {
-    if (!scene) return;
-    const changed = app.session.swapColor(from, to);
-    if (changed.length === 0) return;
-    scene.writeTiles(changed, app.session.composed().pixels);
-    if (app.ink === from) app.ink = to;
-    sfx.play('fill');
-    app.toast(t('toast.colorSwapped', { count: changed.length }), 'success');
-    edited();
+    applyReplacement([{ from: app.listColorOf(from), to, tolerance: 0 }]);
   }
 
   function selectColor(color: number): void {
@@ -611,7 +611,11 @@
       event.preventDefault();
       if (app.editingId === null && !frameMode) app.exportOpen = true;
     } else if (event.key === 'Escape') {
-      palettePanel?.cancelSwap();
+      if (!palettePanel?.cancelSwap() && lists.replaced.cancel()) {
+        sfx.play('tick');
+        maskKey = STALE_MASK;
+        updateMask();
+      }
     } else if (frameMode && !mod && !event.altKey && !isEditable(event.target) && (event.key === ',' || event.key === '.' || key === 'o')) {
       event.preventDefault();
       if (key === 'o') {
@@ -693,15 +697,12 @@
       </div>
       <span class="toolbar-sep" aria-hidden="true"></span>
       <div class="toolbar-group toolbar-brush">
-        {#if app.tool === 'remove'}
-          <ToleranceSlider id="remove-tolerance" value={tolerance} compact onchange={setTolerance} />
+        {#if app.tool === 'remove' || app.tool === 'replace'}
+          <ToleranceSlider id="tool-tolerance" value={tolerance} compact hint={app.tool === 'replace' ? t('replaceColor.toleranceHint') : undefined} onchange={setTolerance} />
         {:else}
           <BrushSize tool={app.tool === 'pencil' || app.tool === 'eraser' ? app.tool : null} onsize={changeBrush} />
         {/if}
       </div>
-      {#if app.tool === 'remove' && !frameMode}
-        <p class="remove-hint" class:is-warn={pickInside} role="status">{pickInside ? t('removeColor.imageInsideHint') : t('removeColor.imageHint')}</p>
-      {/if}
       <div class="toolbar-group toolbar-end">
         <span class="toolbar-label" id="bg-label">{t('clean.background')}</span>
         <div class="segmented bg-choice" role="group" aria-labelledby="bg-label" aria-describedby={hasTransparency ? undefined : 'bg-hint'} title={hasTransparency ? undefined : t('clean.bgOpaque')}>
@@ -710,9 +711,6 @@
           {/each}
         </div>
       </div>
-      {#if !hasTransparency}
-        <p class="toolbar-hint" id="bg-hint">{t('clean.bgOpaque')}</p>
-      {/if}
     </div>
 
     <div class="clean-stage">
@@ -728,6 +726,17 @@
           onaltclick={(p) => pickAt(tileOf(p))}
           onhover={onHover}
         >
+          <!-- Overlays, so the stage never moves when a status appears, changes or goes away. The tool status comes first. -->
+          <div class="stage-pills">
+            {#if app.tool === 'remove' && !frameMode}
+              <p class="tool-pill" class:is-warn={pickInside} role="status">{pickInside ? t(variant === 'set' ? 'removeColor.setInsideHint' : 'removeColor.imageInsideHint') : t('removeColor.imageHint')}</p>
+            {:else if app.tool === 'replace'}
+              <p class="tool-pill" role="status">{t('replaceColor.pickingHint')}</p>
+            {/if}
+            {#if !hasTransparency}
+              <p class="tool-pill" id="bg-hint">{t('clean.bgOpaque')}</p>
+            {/if}
+          </div>
           <label class="compare" class:is-waiting={beforeWaiting}>
             <span class="compare-end">{t('clean.before')}</span>
             <input id="compare-split" name="compare-split" class="compare-range" type="range" min="0" max="100" step="1" value={splitPercent} aria-label={t('clean.compare')} disabled={beforeWaiting} oninput={onCompareInput} />
@@ -772,9 +781,17 @@
         {t('clean.removeBg')}
       </button>
 
-      {#if frameMode}
-        <RemoveColors picking={app.tool === 'remove'} inside={pickInside} ontogglepick={() => selectTool(app.tool === 'remove' ? 'pencil' : 'remove')} onchange={refreshFrame} />
-      {/if}
+      <RemoveColors list={lists.removed} {variant} picking={app.tool === 'remove'} inside={pickInside} ontogglepick={() => selectTool(app.tool === 'remove' ? 'pencil' : 'remove')} onchange={refreshFrame} />
+
+      <ReplaceColors
+        list={lists.replaced}
+        {variant}
+        picking={app.tool === 'replace'}
+        ontogglepick={() => selectTool(app.tool === 'replace' ? 'pencil' : 'replace')}
+        colors={palette}
+        onchoose={chooseTarget}
+        onchange={refreshFrame}
+      />
 
       {#if !frameMode}
         <CleanupPresets hint={t('cleanup.hint')} />
@@ -979,26 +996,38 @@
       min-width: 0;
     }
 
-    .toolbar-hint {
-      flex-basis: 100%;
-      margin-top: -2px;
-      color: var(--text-muted);
-      font-size: 0.75rem;
-      text-align: right;
+    .stage-pills {
+      position: absolute;
+      top: var(--space-3);
+      left: var(--space-3);
+      right: var(--space-3);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--space-2);
+      pointer-events: none;
+
+      &:not(:has(.tool-pill)) {
+        display: none;
+      }
     }
 
-    .remove-hint {
-      order: 1;
-      flex-basis: 100%;
+    .tool-pill {
+      max-width: 100%;
       margin: 0;
+      padding: var(--space-1) var(--space-3);
       color: var(--text-muted);
-      font-size: 0.75rem;
-      line-height: 1.4;
+      font-size: 0.8125rem;
+      line-height: 1.35;
+      text-align: center;
+      background: var(--surface-1);
+      border: 2px solid var(--line);
+      border-radius: var(--radius-m);
+      box-shadow: 0 4px 0 var(--depth);
 
       &.is-warn {
-        padding-left: var(--space-2);
         color: var(--text);
-        border-left: 3px solid var(--yellow);
+        border-color: var(--yellow);
       }
     }
 
@@ -1016,16 +1045,6 @@
     @container (width < 560px) {
       .toolbar-label {
         display: none;
-      }
-
-      /* A narrow toolbar keeps the reason of the disabled background buttons for screen readers and the tooltip. */
-      .toolbar-hint {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        overflow: hidden;
-        clip-path: inset(50%);
-        white-space: nowrap;
       }
     }
 

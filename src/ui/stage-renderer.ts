@@ -172,6 +172,9 @@ export function bakeSprite(sprite: Sprite, tint?: { color: string; strength: num
   return canvas;
 }
 
+/** A hover mask key that no real key equals: after a reset, the next mask update always applies its result. */
+export const STALE_MASK = '\u0000stale';
+
 /** The dropper as a CSS cursor, with its tip as the hot spot: a light line on a dark line, for light and dark art. */
 export const PICKER_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
   '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke-linecap="square"><path d="M14 4l6 6M12.5 6.5l5 5M15 9L6 18H4v-2l9-9" stroke="#000" stroke-width="4"/><path d="M14 4l6 6M12.5 6.5l5 5M15 9L6 18H4v-2l9-9" stroke="#fff" stroke-width="2"/></svg>',
@@ -223,6 +226,17 @@ export function bakePickMask(cols: number, rows: number, cleared: ArrayLike<numb
   return bakeLayers(cols, rows, [
     { indices: kept, color: STAGE_COLORS.teal, alpha: protectMaskAlpha / removeMaskAlpha },
     { indices: cleared, color: scope === 'all' ? STAGE_COLORS.yellow : STAGE_COLORS.danger },
+  ]);
+}
+
+/**
+ * The hover preview of a replacement pick, drawn at `TUNING.clean.removeMaskAlpha`: the tiles of the pending sources
+ * in teal, and the tiles that a click adds in yellow.
+ */
+export function bakeReplaceMask(cols: number, rows: number, pending: ArrayLike<number>, hover: ArrayLike<number>): HTMLCanvasElement {
+  return bakeLayers(cols, rows, [
+    { indices: pending, color: STAGE_COLORS.teal },
+    { indices: hover, color: STAGE_COLORS.yellow },
   ]);
 }
 

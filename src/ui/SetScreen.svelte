@@ -1,5 +1,8 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
+  import { TRANSPARENT } from '../core/color.ts';
+  import { combinedColors } from '../core/palette.ts';
+  import type { Sprite } from '../core/types.ts';
   import { snapHeights } from '../app/image-set.svelte.ts';
   import { app } from '../app/state.svelte.ts';
   import { t, type TextKey } from '../app/i18n.ts';
@@ -16,7 +19,10 @@
   import { SetScene, type SetLabels } from './set-scene.ts';
   import Stage from './Stage.svelte';
   import PanelSplitter from './PanelSplitter.svelte';
-  import type { StagePointer } from './stage-renderer.ts';
+  import RemoveColors from './RemoveColors.svelte';
+  import ReplaceColors from './ReplaceColors.svelte';
+  import { changedTiles, historyToast, removedToast, replacedToast } from './list-feedback.ts';
+  import { bakePickFlash, bakePickMask, bakeReplaceMask, PICKER_CURSOR, STALE_MASK, type StagePointer } from './stage-renderer.ts';
 
   const BACKGROUNDS: ReadonlyArray<{ id: PreviewBackground; label: TextKey }> = [
     { id: 'checker', label: 'clean.bg.checker' },
@@ -44,6 +50,13 @@
   let lastPress: { id: number | null; at: number } = { id: null, at: 0 };
   /** A press on the body of an object: a move along the ground line once the pointer passes the threshold. */
   let move: { id: number; startSx: number; startIx: number; startX: number; moving: boolean } | null = null;
+  /** The list picker of the board: a press picks the color under the pointer, and pieces neither select nor move. */
+  let picker = $state<'remove' | 'replace' | null>(null);
+  /** The last pointer over the board while a picker is on, and what the masks were made from. */
+  let pickPointer: StagePointer | null = null;
+  let maskKey = STALE_MASK;
+  /** The pointer is on a spot that does not reach the border: a click there erases the color inside the drawing too. */
+  let pickInside = $state(false);
 
   function sceneLabels(): SetLabels {
     return { height: (h) => t('set.pieceHeight', { h }), empty: t('set.pieceEmpty'), reference: t('set.reference') };
@@ -69,6 +82,17 @@
     void app.set.version;
     return app.set.palette();
   });
+  /** The top hint while a picker is on: the same text as the picker hint of its panel. */
+  const pickerHint = $derived.by(() => {
+    if (picker === 'remove') return pickInside ? t('removeColor.setInsideHint') : t('removeColor.pickingHint');
+    if (picker === 'replace') return app.set.replaced.pending.length > 0 && !app.set.replaced.choosing ? t('replaceColor.groupHint') : t('replaceColor.pickingHint');
+    return null;
+  });
+  /** The swatches of the target chooser: the colors of every piece on the board. */
+  const boardColors = $derived.by(() => {
+    void app.set.version;
+    return combinedColors(app.set.pieces.map((object) => object.cleared).filter((sprite): sprite is Sprite => sprite !== null));
+  });
 
   /** A committed change of the set lays the scene out again; new objects frame the view again. */
   $effect(() => {
@@ -77,6 +101,8 @@
       if (version === lastVersion) return;
       lastVersion = version;
       const { added, anchor } = scene.refresh(drag?.id ?? app.set.selectedId);
+      maskKey = STALE_MASK;
+      updateMasks();
       if (!stage) return;
       stage.syncContent(anchor ?? undefined);
       if (added.length > 0) stage.fitView();
@@ -105,7 +131,157 @@
     zoom = scene.zoom;
   }
 
+  /** The piece under a screen point and the tile of its full grid there, for a picker. */
+  function pieceUnder(p: StagePointer | null): { id: number; tile: number } | null {
+    if (!p) return null;
+    const id = scene.hitObject(p.sx, p.sy);
+    const object = id === null ? null : app.set.find(id);
+    if (!object || object.reference || id === null) return null;
+    const at = scene.pointIn(id, p.sx, p.sy);
+    const tile = at ? app.set.tileAt(id, at.fx, at.fy) : -1;
+    return tile >= 0 ? { id, tile } : null;
+  }
+
+  /** The hover previews of the picker: what a press erases or recolors, and the pending group of the replacement map. */
+  function updateMasks(): void {
+    const under = picker ? pieceUnder(pickPointer) : null;
+    const list = app.set.replaced;
+    const pending = list.pending.map((entry) => entry.color).join(',');
+    const key = picker ? `${picker}|${under?.id}|${under?.tile}|${app.set.removed.tolerance}|${list.tolerance}|${pending}|${app.set.version}` : '';
+    if (key === maskKey) return;
+    maskKey = key;
+    const masks = new Map<number, HTMLCanvasElement>();
+    pickInside = false;
+    if (picker === 'remove' && under) {
+      const pick = app.set.pickAt(under.id, under.tile);
+      const prepared = app.set.find(under.id)?.prepared;
+      if (pick && pick.action !== 'listed' && prepared) {
+        pickInside = pick.scope === 'all';
+        masks.set(under.id, bakePickMask(prepared.cols, prepared.rows, app.set.toPrepared(under.id, pick.cleared), app.set.toPrepared(under.id, pick.kept), pick.scope));
+      }
+    } else if (picker === 'replace') {
+      const color = under ? app.set.colorAt(under.id, under.tile) : null;
+      for (const object of app.set.pieces) {
+        if (!object.prepared || object.hidden) continue;
+        const held = list.pending.length > 0 ? app.set.toPrepared(object.id, app.set.pendingTiles(object.id)) : new Int32Array(0);
+        const hover = color !== null ? app.set.toPrepared(object.id, app.set.replaceTiles(object.id, color, list.tolerance)) : new Int32Array(0);
+        if (held.length > 0 || hover.length > 0) masks.set(object.id, bakeReplaceMask(object.prepared.cols, object.prepared.rows, held, hover));
+      }
+    }
+    scene.setMasks(masks);
+  }
+
+  // The masks follow the tolerance sliders and the pending group while the pointer rests.
+  $effect(() => {
+    void app.set.removed.tolerance;
+    void app.set.replaced.tolerance;
+    void app.set.replaced.pending;
+    untrack(updateMasks);
+  });
+
+  function setPicker(next: 'remove' | 'replace' | null): void {
+    if (next === picker) return;
+    picker = next;
+    sfx.play('tick');
+    if (!next) pickPointer = null;
+    cursor = next ? PICKER_CURSOR : 'default';
+    updateMasks();
+  }
+
+  function togglePicker(kind: 'remove' | 'replace'): void {
+    setPicker(picker === kind ? null : kind);
+  }
+
+  /** The full-grid sprites of the pieces now, to flash what a list change touches. */
+  function boardNow(): Map<number, Uint32Array> {
+    return new Map(app.set.pieces.flatMap((object) => (object.cleared ? [[object.id, object.cleared.pixels] as const] : [])));
+  }
+
+  /** A flash on every piece tile that changed since `before`, and shards where tiles went. */
+  function flashChange(before: Map<number, Uint32Array>, kept?: { id: number; tiles: ArrayLike<number> }): void {
+    const flashes = new Map<number, HTMLCanvasElement>();
+    for (const object of app.set.pieces) {
+      const old = before.get(object.id);
+      if (!old || !object.cleared || !object.prepared) continue;
+      const changed = app.set.toPrepared(object.id, changedTiles(old, object.cleared.pixels));
+      const keep = kept?.id === object.id ? app.set.toPrepared(object.id, kept.tiles) : [];
+      if (changed.length > 0 || keep.length > 0) flashes.set(object.id, bakePickFlash(object.prepared.cols, object.prepared.rows, changed, keep));
+    }
+    scene.flash(flashes);
+  }
+
+  function removePick(p: StagePointer): void {
+    const under = pieceUnder(p);
+    const pick = under ? app.set.pickAt(under.id, under.tile) : null;
+    if (!under || !pick) {
+      sfx.play('tick');
+      return;
+    }
+    if (pick.action === 'listed') {
+      app.toast(t('toast.colorAlreadyRemoved'), 'info');
+      return;
+    }
+    const before = boardNow();
+    const pieces = app.set.addRemovedColor(pick.color, pick.scope);
+    if (pieces === 0) {
+      app.toast(t('toast.colorNotInFrames'), 'info');
+      return;
+    }
+    flashChange(before, { id: under.id, tiles: pick.kept });
+    sfx.play('erase');
+    app.toast(removedToast('set', pieces, pick.scope), 'success');
+  }
+
+  function replacePick(p: StagePointer): void {
+    const under = pieceUnder(p);
+    const color = under ? app.set.colorAt(under.id, under.tile) : null;
+    if (color === null) {
+      sfx.play('tick');
+      return;
+    }
+    if (p.shift) app.set.replaced.hold(color);
+    else app.set.replaced.pick(color);
+    sfx.play('tick');
+    maskKey = STALE_MASK;
+    updateMasks();
+  }
+
+  /** The target chooser: one entry per pending source, in every piece. */
+  function chooseTarget(to: number): void {
+    const list = app.set.replaced;
+    const entries = list.pendingEntries(to);
+    list.cancel();
+    if (entries.length === 0) return;
+    const before = boardNow();
+    const pieces = app.set.addReplacedColors(entries);
+    if (pieces === 0) {
+      app.toast(t('toast.colorNotReplaced'), 'info');
+      return;
+    }
+    flashChange(before);
+    sfx.play(to === TRANSPARENT ? 'erase' : 'fill');
+    app.toast(replacedToast('set', pieces, to === TRANSPARENT), 'success');
+  }
+
+  /** One step of the history of the board: a list step. */
+  function replay(way: 'undo' | 'redo'): void {
+    const before = boardNow();
+    const done = way === 'undo' ? app.set.history.undo() : app.set.history.redo();
+    if (!done) return;
+    sfx.play('undo');
+    flashChange(before);
+    if (done.kind === 'lists') app.toast(historyToast(done.action, way), 'info');
+  }
+
   function onDown(p: StagePointer): boolean | 'pan' {
+    if (picker) {
+      // A picker never selects, moves or resizes a piece; the empty board still pans.
+      if (scene.hitObject(p.sx, p.sy) === null) return 'pan';
+      pickPointer = p;
+      if (picker === 'remove') removePick(p);
+      else replacePick(p);
+      return false;
+    }
     const warn = scene.hitWarning(p.sx, p.sy);
     if (warn !== null) {
       void app.openSetGrid(warn);
@@ -226,6 +402,13 @@
   }
 
   function onHover(p: StagePointer | null): void {
+    if (picker) {
+      pickPointer = p;
+      scene.setHover(p ? scene.hitObject(p.sx, p.sy) : null, false);
+      cursor = PICKER_CURSOR;
+      updateMasks();
+      return;
+    }
     if (!p) {
       scene.setHover(null, false);
       cursor = 'default';
@@ -284,7 +467,27 @@
       openExport();
       return;
     }
+    if (mod && !event.altKey && !isEditable(event.target) && (event.key.toLowerCase() === 'z' || event.key.toLowerCase() === 'y')) {
+      event.preventDefault();
+      replay(event.key.toLowerCase() === 'y' || event.shiftKey ? 'redo' : 'undo');
+      return;
+    }
     if (mod || event.altKey || isEditable(event.target)) return;
+    if (event.key.toLowerCase() === 'r' || event.key.toLowerCase() === 'c') {
+      event.preventDefault();
+      if (!event.repeat) togglePicker(event.key.toLowerCase() === 'r' ? 'remove' : 'replace');
+      return;
+    }
+    if (event.key === 'Escape' && (picker || app.set.replaced.pending.length > 0)) {
+      event.preventDefault();
+      // Esc first drops the pending group of the replacement picker, then leaves the picker.
+      if (app.set.replaced.cancel()) {
+        sfx.play('tick');
+        maskKey = STALE_MASK;
+        updateMasks();
+      } else setPicker(null);
+      return;
+    }
     const object = app.set.selected;
     if (!object) return;
     if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && !object.reference) {
@@ -345,11 +548,13 @@
       onviewchange={updateZoom}
     >
       <div class="stage-top">
-      <div class="stage-tip" class:is-add={app.set.objects.length < 2}>
-        <Icon name={original ? 'compare' : app.set.objects.length < 2 ? 'plus' : 'arrows'} size={16} />
+      <div class="stage-tip" class:is-add={app.set.objects.length < 2 && !pickerHint} role={pickerHint ? 'status' : undefined}>
+        <Icon name={original ? 'compare' : pickerHint ? (picker === 'remove' ? 'colorErase' : 'swap') : app.set.objects.length < 2 ? 'plus' : 'arrows'} size={16} />
         <p class="stage-tip-text">
           {#if original}
             <span class="stage-tip-main">{t('set.originalShown')}</span>
+          {:else if pickerHint}
+            <span class="stage-tip-main">{pickerHint}</span>
           {:else if app.set.objects.length < 2}
             {t('set.addMoreTip')}
           {:else}
@@ -372,6 +577,12 @@
       </div>
       <div class="stage-tools">
         <div class="stage-zoom">
+        <button type="button" class="icon-btn" aria-label={t('clean.undo')} title="{t('clean.undo')} (Ctrl+Z)" aria-keyshortcuts="Control+Z" disabled={!app.set.history.canUndo} onclick={() => replay('undo')}>
+          <Icon name="undo" />
+        </button>
+        <button type="button" class="icon-btn" aria-label={t('clean.redo')} title="{t('clean.redo')} (Ctrl+Y)" aria-keyshortcuts="Control+Y Control+Shift+Z" disabled={!app.set.history.canRedo} onclick={() => replay('redo')}>
+          <Icon name="redo" />
+        </button>
         <button type="button" class="icon-btn" aria-label={t('clean.zoomOut')} title={t('clean.zoomOut')} onclick={() => stage?.zoomBy(1 / TUNING.zoom.buttonStep)}>
           <Icon name="zoomOut" />
         </button>
@@ -431,6 +642,11 @@
 
       <div class="set-piece">
         <SetPieceControls onstep={stepHeight} />
+      </div>
+
+      <div class="set-lists">
+        <RemoveColors list={app.set.removed} variant="set" picking={picker === 'remove'} inside={pickInside} ontogglepick={() => togglePicker('remove')} />
+        <ReplaceColors list={app.set.replaced} variant="set" picking={picker === 'replace'} ontogglepick={() => togglePicker('replace')} colors={boardColors} onchoose={chooseTarget} />
       </div>
     </div>
 
@@ -643,6 +859,13 @@
       padding: 0 var(--space-5) var(--space-3);
     }
 
+    .set-lists {
+      display: grid;
+      gap: var(--space-4);
+      padding: var(--space-3) var(--space-5);
+      border-top: 2px solid var(--line);
+    }
+
     .set-footer {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
@@ -741,6 +964,10 @@
       .set-piece {
         padding-inline: var(--space-4);
         padding-bottom: var(--space-2);
+      }
+
+      .set-lists {
+        padding-inline: var(--space-4);
       }
 
       .set-footer {

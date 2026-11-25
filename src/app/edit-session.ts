@@ -1,5 +1,4 @@
 import type { Sprite } from '../core/types.ts';
-import { indicesOfColor } from '../core/sprite.ts';
 
 const HISTORY_LIMIT = 200;
 
@@ -96,6 +95,11 @@ export class EditSession {
     return step.indices;
   }
 
+  /** Forgets the redo steps: another kind of step came after an undo. */
+  dropRedo(): void {
+    this.redoStack = [];
+  }
+
   /** Returns the indices that changed, or null when there is nothing to undo. */
   undo(): Int32Array | null {
     const step = this.undoStack.pop();
@@ -114,12 +118,6 @@ export class EditSession {
     this.redo_(step);
     this.undoStack.push(step);
     return step.indices;
-  }
-
-  /** Replaces one color with another in the whole composed sprite, as one undo step. */
-  swapColor(from: number, to: number): Int32Array {
-    if (from === to) return new Int32Array(0);
-    return this.apply(indicesOfColor(this.composed().pixels, from), to);
   }
 
   /** Composed pixel = overlay where the mask is set, else base. The result is cached until the next change. */

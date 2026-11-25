@@ -84,6 +84,11 @@ export class SetScene implements Scene {
   private originalFrom = 0;
   private originalStart = -1;
   private disposed = false;
+  /** The hover previews of a list picker, by piece: one tile per tile of its trimmed sprite, over its box. */
+  private masks = new Map<number, HTMLCanvasElement>();
+  /** The flashes of a list change, by piece, and when they started. */
+  private flashes = new Map<number, HTMLCanvasElement>();
+  private flashStart = -1;
 
   constructor(set: ImageSet, labels: SetLabels) {
     this.set = set;
@@ -231,6 +236,32 @@ export class SetScene implements Scene {
     this.host.invalidate();
   }
 
+  /** The hover previews of a list picker, by piece, drawn at `TUNING.clean.removeMaskAlpha`; an empty map clears them. */
+  setMasks(masks: Map<number, HTMLCanvasElement>): void {
+    if (masks.size === 0 && this.masks.size === 0) return;
+    this.masks = masks;
+    this.host?.invalidate();
+  }
+
+  /** One flash over some pieces after a list change, as after a pick. None with reduced motion. */
+  flash(flashes: Map<number, HTMLCanvasElement>): void {
+    if (!this.host || this.host.reducedMotion || flashes.size === 0) return;
+    this.flashes = flashes;
+    this.flashStart = performance.now();
+    this.host.invalidate();
+  }
+
+  /** Where a screen point falls in the box of a piece, as fractions 0..1; null outside it. */
+  pointIn(id: number, sx: number, sy: number): { fx: number; fy: number } | null {
+    const host = this.host;
+    const index = this.ids.indexOf(id);
+    const rect = host && index >= 0 ? this.screenRects(host.camera)[index] : undefined;
+    if (!rect || rect.w <= 0 || rect.h <= 0) return null;
+    const fx = (sx - rect.x) / rect.w;
+    const fy = (sy - rect.y) / rect.h;
+    return fx >= 0 && fx < 1 && fy >= 0 && fy < 1 ? { fx, fy } : null;
+  }
+
   boxOf(id: number): SetBox | null {
     const index = this.ids.indexOf(id);
     return index < 0 ? null : (this.live.boxes[index] ?? null);
@@ -290,6 +321,10 @@ export class SetScene implements Scene {
     ctx.imageSmoothingEnabled = false;
     alive = this.stepOriginal(now) || alive;
     for (const i of order) if (!objects[i].hidden) alive = this.drawObject(ctx, objects[i], rects[i], groundY, now, this.overlapAlpha(i, rects)) || alive;
+    if (this.flashStart >= 0 && progress(now, this.flashStart, TUNING.clean.popMs * 1.5) >= 1) {
+      this.flashes = new Map();
+      this.flashStart = -1;
+    }
 
     if (zoom >= TUNING.set.gridMinCellPx) {
       const path = gridPath(this.boundsX, this.boundsY, camera, clip, dpr);
@@ -416,6 +451,20 @@ export class SetScene implements Scene {
       if (mix < 1) {
         ctx.globalAlpha = base * (1 - mix);
         ctx.drawImage(canvas, rect.x, rect.y, rect.w, rect.h);
+        const mask = this.masks.get(object.id);
+        if (mask) {
+          ctx.globalAlpha = base * (1 - mix) * TUNING.clean.removeMaskAlpha;
+          ctx.drawImage(mask, rect.x, rect.y, rect.w, rect.h);
+        }
+        const flash = this.flashes.get(object.id);
+        if (flash && this.flashStart >= 0) {
+          const t = progress(now, this.flashStart, TUNING.clean.popMs * 1.5);
+          if (t < 1) {
+            alive = true;
+            ctx.globalAlpha = base * (1 - mix) * (1 - easeOutCubic(t));
+            ctx.drawImage(flash, rect.x, rect.y, rect.w, rect.h);
+          }
+        }
       }
       if (mix > 0) {
         ctx.globalAlpha = base * mix;

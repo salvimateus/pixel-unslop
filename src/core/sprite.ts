@@ -126,8 +126,17 @@ export interface RemovedColor {
   scope: RemoveScope;
 }
 
-/** The color test of some entries, with one distance test per distinct color; null when no entry is given. */
-function colorTest(entries: readonly RemovedColor[]): ((color: number) => boolean) | null {
+/** A color with an OKLab tolerance: the matching rule of "Remove color" and of the replacement map. */
+export interface ColorNear {
+  color: number;
+  tolerance: number;
+}
+
+/**
+ * The color test of some entries: a color matches an entry when it is the same color, or when its OKLab distance
+ * is at most the tolerance of the entry. One distance test per distinct color; null when no entry is given.
+ */
+export function colorTest(entries: readonly ColorNear[]): ((color: number) => boolean) | null {
   if (entries.length === 0) return null;
   const exact = new Set(entries.map((entry) => entry.color));
   const labs = entries.flatMap((entry) => {
@@ -145,6 +154,25 @@ function colorTest(entries: readonly RemovedColor[]): ((color: number) => boolea
     verdict.set(color, hit);
     return hit;
   };
+}
+
+/** Sorted tiles whose color matches `color` within `tolerance`. TRANSPARENT never matches. */
+export function tilesNear(sprite: Sprite, color: number, tolerance: number): Int32Array {
+  const { pixels } = sprite;
+  if (color === TRANSPARENT) return new Int32Array(0);
+  const test = colorTest([{ color, tolerance }]);
+  const out: number[] = [];
+  let last = TRANSPARENT;
+  let lastHit = false;
+  for (let i = 0; i < pixels.length; i++) {
+    const value = pixels[i];
+    if (value !== last) {
+      last = value;
+      lastHit = value !== TRANSPARENT && (test?.(value) ?? false);
+    }
+    if (lastHit) out.push(i);
+  }
+  return Int32Array.from(out);
 }
 
 /** Tile states of removedMatches. A tile that is not one of these blocks the border flood. */
@@ -241,22 +269,8 @@ export function removalAt(
   const before = removedMatches(sprite, [...list, ...extra]);
   const border = removedMatches(sprite, [...others, { color, tolerance, scope: 'border' }, ...extra]);
   if (options.forceBorder || holdsTile(border, tile)) {
-    const test = colorTest([{ color, tolerance, scope: 'border' }]);
-    const { pixels } = sprite;
-    const kept: number[] = [];
-    let last = TRANSPARENT;
-    let lastHit = false;
-    for (let i = 0, j = 0; i < pixels.length; i++) {
-      const value = pixels[i];
-      if (value !== last) {
-        last = value;
-        lastHit = value !== TRANSPARENT && (test?.(value) ?? false);
-      }
-      if (!lastHit) continue;
-      while (j < border.length && border[j] < i) j++;
-      if (j >= border.length || border[j] !== i) kept.push(i);
-    }
-    return { scope: 'border', cleared: newTiles(border, before), kept: Int32Array.from(kept), reach: border };
+    const kept = newTiles(tilesNear(sprite, color, tolerance), border);
+    return { scope: 'border', cleared: newTiles(border, before), kept, reach: border };
   }
   const all = removedMatches(sprite, [...others, { color, tolerance, scope: 'all' }, ...extra]);
   return { scope: 'all', cleared: newTiles(all, before), kept: new Int32Array(0), reach: border };

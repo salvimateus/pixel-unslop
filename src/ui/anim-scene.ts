@@ -199,6 +199,14 @@ export class AnimScene implements Scene {
     this.host?.invalidate();
   }
 
+  /** One flash over the shown frame, as after a pick. None with reduced motion. */
+  flash(canvas: HTMLCanvasElement): void {
+    const host = this.host;
+    if (!host || host.reducedMotion) return;
+    this.maskFlash = { canvas, start: performance.now() };
+    host.invalidate();
+  }
+
   /** Erased tiles of the shown frame: they fall as particles in their old color and flash once. None with reduced motion. */
   shatter(indices: ArrayLike<number>, oldPixels: Uint32Array, flash: HTMLCanvasElement | null): void {
     const host = this.host;

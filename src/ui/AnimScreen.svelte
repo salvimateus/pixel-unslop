@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte';
-  import { CELL_MODES, type AnimFrame, type RemovalPick } from '../app/animation.svelte.ts';
+  import { CELL_MODES, type AnimFrame } from '../app/animation.svelte.ts';
+  import type { RemovalPick } from '../app/color-list.svelte.ts';
   import { app, prefersReducedMotion } from '../app/state.svelte.ts';
   import { t, type TextKey } from '../app/i18n.ts';
   import * as sfx from '../app/sfx.ts';
@@ -16,9 +17,11 @@
   import KeyText from './KeyText.svelte';
   import ProgressPill from './ProgressPill.svelte';
   import RemoveColors from './RemoveColors.svelte';
+  import ReplaceColors from './ReplaceColors.svelte';
+  import { changedTiles, historyToast, removedToast, replacedToast } from './list-feedback.ts';
   import { spriteThumb } from './sprite-thumb.ts';
   import Stage from './Stage.svelte';
-  import { bakePickFlash, bakePickMask, PICKER_CURSOR, type StagePointer } from './stage-renderer.ts';
+  import { bakePickFlash, bakePickMask, bakeReplaceMask, PICKER_CURSOR, STALE_MASK, type StagePointer } from './stage-renderer.ts';
   import PanelSplitter from './PanelSplitter.svelte';
   import ToggleSwitch from './ToggleSwitch.svelte';
 
@@ -35,7 +38,7 @@
     feet: { label: 'animPlay.cellFeet', hint: 'animPlay.cellFeetHint' },
   };
 
-  type LegendKeys = 'space' | 'arrows' | 'brackets' | 'o' | 'delete' | 'altArrows' | 'd' | 'e' | 'r' | 'ctrlS';
+  type LegendKeys = 'space' | 'arrows' | 'brackets' | 'o' | 'delete' | 'altArrows' | 'd' | 'e' | 'r' | 'c' | 'ctrlZ' | 'ctrlS';
 
   const LEGEND: ReadonlyArray<{ keys: LegendKeys; text: TextKey }> = [
     { keys: 'space', text: 'animPlay.keyPlay' },
@@ -47,6 +50,8 @@
     { keys: 'd', text: 'animPlay.keyDuplicate' },
     { keys: 'e', text: 'animEdit.open' },
     { keys: 'r', text: 'animPlay.keyRemoveColor' },
+    { keys: 'c', text: 'animPlay.keyReplaceColor' },
+    { keys: 'ctrlZ', text: 'animPlay.keyUndo' },
     { keys: 'ctrlS', text: 'animPlay.keyExport' },
   ];
 
@@ -67,11 +72,12 @@
   let lastVersion = untrack(() => app.anim.version);
   /** A held bracket key changes the fps without storing it; the key release stores it. */
   let fpsKeyHeld = false;
-  /** "Remove color": a click on the stage adds the color under the pointer to the removed colors. */
-  let picking = $state(false);
+  /** The picker of the stage: a click adds the color under the pointer to the removed colors or to the replacement map. */
+  let picker = $state<'remove' | 'replace' | null>(null);
+  const picking = $derived(picker === 'remove');
   /** The last pointer over the stage while picking, and what its mask was made from. */
   let pickPointer: StagePointer | null = null;
-  let maskKey = '';
+  let maskKey = STALE_MASK;
   /** The pointer is on a spot that does not reach the border: a click there erases the color inside the drawing too. */
   let pickInside = $state(false);
 
@@ -107,6 +113,12 @@
   const referenceSprite = $derived.by(() => {
     void app.anim.framesVersion;
     return app.anim.displayFrame(app.anim.referenceIndex);
+  });
+
+  /** The swatches of the target chooser: the colors of every frame. */
+  const paletteColors = $derived.by(() => {
+    void app.anim.version;
+    return app.anim.paletteColors();
   });
 
   const referenceInTimeline = $derived(app.anim.timeline.some((frame) => frame.index === app.anim.referenceIndex));
@@ -226,16 +238,19 @@
     else showEntry(id);
   }
 
-  function setPicking(on: boolean): void {
-    if (on === picking) return;
-    picking = on;
+  function setPicker(next: 'remove' | 'replace' | null): void {
+    if (next === picker) return;
+    picker = next;
     sfx.play('tick');
     // The color under the pointer must stay still while the user aims.
-    if (on) setPlaying(false);
-    else {
-      pickPointer = null;
-      updateMask();
-    }
+    if (next) setPlaying(false);
+    else pickPointer = null;
+    maskKey = STALE_MASK;
+    updateMask();
+  }
+
+  function togglePicker(kind: 'remove' | 'replace'): void {
+    setPicker(picker === kind ? null : kind);
   }
 
   /** The tile of the shown frame under the pointer, as an index, or -1. */
@@ -256,13 +271,45 @@
     return pick ? { id: entry.id, pick } : null;
   }
 
+  /** The shown entry and the grid tile under `p`, or null. */
+  function gridUnder(p: StagePointer | null): { id: number; grid: number } | null {
+    const entry = app.anim.timeline[scene.index];
+    const tile = entry ? tileAt(p) : -1;
+    const grid = tile >= 0 ? app.anim.gridTile(entry.id, tile) : -1;
+    return grid >= 0 ? { id: entry.id, grid } : null;
+  }
+
+  /** The replacement picker: the tiles that a click recolors and the ones of the pending group, over the shown frame. */
+  function updateReplaceMask(): void {
+    const frame = app.anim.built.frames[scene.index];
+    const entry = app.anim.timeline[scene.index];
+    const list = app.anim.replaced;
+    const under = frame ? gridUnder(pickPointer) : null;
+    const color = under ? app.anim.colorAt(under.id, under.grid) : null;
+    const key = `replace|${color}|${list.tolerance}|${list.pending.map((pending) => pending.color).join(',')}|${app.anim.version}|${scene.index}`;
+    if (key === maskKey) return;
+    maskKey = key;
+    if (!frame || !entry) {
+      scene.setMask(null, scene.index);
+      return;
+    }
+    const hover = under && color !== null ? app.anim.toCell(under.id, app.anim.replaceTiles(under.id, color, list.tolerance)) : new Int32Array(0);
+    const held = app.anim.toCell(entry.id, app.anim.pendingTiles(entry.id));
+    scene.setMask(hover.length > 0 || held.length > 0 ? bakeReplaceMask(frame.cols, frame.rows, held, hover) : null, scene.index);
+  }
+
   /** The tiles of the shown frame that a click erases and the ones that stay, over the frame. */
   function updateMask(): void {
+    pickInside = false;
+    if (picker === 'replace') {
+      updateReplaceMask();
+      return;
+    }
     const frame = app.anim.built.frames[scene.index];
     const under = picking && frame ? pickUnder(pickPointer) : null;
     const pick = under && under.pick.action !== 'listed' ? under.pick : null;
     pickInside = pick?.scope === 'all';
-    const key = under && pick ? `${pick.color}|${pick.scope}|${app.anim.colorTolerance}|${app.anim.version}|${scene.index}` : '';
+    const key = under && pick ? `${pick.color}|${pick.scope}|${app.anim.removed.tolerance}|${app.anim.version}|${scene.index}` : '';
     if (key === maskKey) return;
     maskKey = key;
     if (!under || !pick || !frame) {
@@ -274,21 +321,85 @@
     scene.setMask(bakePickMask(frame.cols, frame.rows, cleared, kept, pick.scope), scene.index);
   }
 
-  // The mask follows the tolerance slider while the pointer rests.
+  // The mask follows the tolerance sliders and the pending group while the pointer rests.
   $effect(() => {
-    void app.anim.colorTolerance;
+    void app.anim.removed.tolerance;
+    void app.anim.replaced.tolerance;
+    void app.anim.replaced.pending;
     untrack(updateMask);
   });
 
   function onStageHover(p: StagePointer | null): void {
-    if (!picking) return;
+    if (!picker) return;
     pickPointer = p;
     updateMask();
   }
 
+  /** The replacement picker: a click picks a source and opens the target chooser; Shift+click adds it to the group only. */
+  function replacePick(p: StagePointer): void {
+    const under = gridUnder(p);
+    const color = under ? app.anim.colorAt(under.id, under.grid) : null;
+    if (color === null) {
+      sfx.play('tick');
+      return;
+    }
+    if (p.shift) app.anim.replaced.hold(color);
+    else app.anim.replaced.pick(color);
+    sfx.play('tick');
+    maskKey = STALE_MASK;
+    updateMask();
+  }
+
+  /** A flash on the tiles of the shown frame that changed since `before`. */
+  function flashChange(before: Uint32Array | undefined): void {
+    const frame = app.anim.built.frames[scene.index];
+    if (!before || !frame || frame.pixels.length !== before.length) return;
+    const changed = changedTiles(before, frame.pixels);
+    if (changed.length > 0) scene.flash(bakePickFlash(frame.cols, frame.rows, changed, []));
+  }
+
+  /** The target chooser: one entry per pending source, in every frame. */
+  function chooseTarget(to: number): void {
+    const list = app.anim.replaced;
+    const entries = list.pendingEntries(to);
+    list.cancel();
+    if (entries.length === 0) return;
+    const before = app.anim.built.frames[scene.index]?.pixels;
+    const frames = app.anim.addReplacedColors(entries);
+    if (frames === 0) {
+      app.toast(t('toast.colorNotReplaced'), 'info');
+      return;
+    }
+    syncSource();
+    flashChange(before);
+    sfx.play(to === TRANSPARENT ? 'erase' : 'fill');
+    app.toast(replacedToast('frames', frames, to === TRANSPARENT), 'success');
+    maskKey = STALE_MASK;
+    updateMask();
+  }
+
+  /** One step of the history of the animation: a list step, the container or an offset. */
+  function replay(way: 'undo' | 'redo'): void {
+    const before = app.anim.built.frames[scene.index]?.pixels;
+    const done = way === 'undo' ? app.anim.undo() : app.anim.redo();
+    if (!done) return;
+    sfx.play('undo');
+    syncSource();
+    if (done.kind === 'lists') {
+      flashChange(before);
+      app.toast(historyToast(done.action, way), 'info');
+    }
+    maskKey = STALE_MASK;
+    updateMask();
+  }
+
   function onStageDown(p: StagePointer): boolean | void {
-    if (!picking) return;
+    if (!picker) return;
     pickPointer = p;
+    if (picker === 'replace') {
+      replacePick(p);
+      return false;
+    }
     const frame = app.anim.built.frames[scene.index];
     const under = frame ? pickUnder(p) : null;
     if (!frame || !under) {
@@ -310,8 +421,7 @@
     }
     scene.shatter(cleared, frame.pixels, bakePickFlash(frame.cols, frame.rows, cleared, kept));
     sfx.play('erase');
-    if (pick.scope === 'all') app.toast(frames === 1 ? t('toast.colorRemovedInsideFrame') : t('toast.colorRemovedInsideFrames', { count: frames }), 'success');
-    else app.toast(frames === 1 ? t('toast.colorRemovedFrame') : t('toast.colorRemovedFrames', { count: frames }), 'success');
+    app.toast(removedToast('frames', frames, pick.scope), 'success');
     return false;
   }
 
@@ -339,9 +449,13 @@
     if (app.animExportOpen || app.confirmRequest || app.aboutOpen) return;
     const mod = event.ctrlKey || event.metaKey;
     if (mod) {
-      if (event.key.toLowerCase() === 's' && !event.altKey) {
+      const key = event.key.toLowerCase();
+      if (key === 's' && !event.altKey) {
         event.preventDefault();
         openExport();
+      } else if (!isEditable(event.target) && (key === 'z' || key === 'y')) {
+        event.preventDefault();
+        replay(key === 'y' || event.shiftKey ? 'redo' : 'undo');
       }
       return;
     }
@@ -385,12 +499,17 @@
     } else if (key.toLowerCase() === 'e' && selected !== null) {
       event.preventDefault();
       if (!event.repeat) void app.editAnimFrame(selected);
-    } else if (key.toLowerCase() === 'r') {
+    } else if (key.toLowerCase() === 'r' || key.toLowerCase() === 'c') {
       event.preventDefault();
-      if (!event.repeat) setPicking(!picking);
-    } else if (key === 'Escape' && picking) {
+      if (!event.repeat) togglePicker(key.toLowerCase() === 'r' ? 'remove' : 'replace');
+    } else if (key === 'Escape' && (picker || app.anim.replaced.pending.length > 0)) {
       event.preventDefault();
-      setPicking(false);
+      // Esc first drops the pending group of the replacement picker, then stops the picker.
+      if (app.anim.replaced.cancel()) {
+        sfx.play('tick');
+        maskKey = STALE_MASK;
+        updateMask();
+      } else setPicker(null);
     }
   }
 
@@ -415,12 +534,18 @@
         {scene}
         {insets}
         label={t('anim.stageLabel')}
-        cursor={picking ? PICKER_CURSOR : 'default'}
+        cursor={picker ? PICKER_CURSOR : 'default'}
         onprimarydown={onStageDown}
         onhover={onStageHover}
       >
         <div class="stage-top" bind:offsetHeight={overlayTop}>
           <div class="stage-zoom">
+            <button type="button" class="icon-btn" aria-label={t('clean.undo')} title="{t('clean.undo')} (Ctrl+Z)" aria-keyshortcuts="Control+Z" disabled={!app.anim.canUndo} onclick={() => replay('undo')}>
+              <Icon name="undo" />
+            </button>
+            <button type="button" class="icon-btn" aria-label={t('clean.redo')} title="{t('clean.redo')} (Ctrl+Y)" aria-keyshortcuts="Control+Y Control+Shift+Z" disabled={!app.anim.canRedo} onclick={() => replay('redo')}>
+              <Icon name="redo" />
+            </button>
             <button type="button" class="icon-btn" aria-label={t('clean.zoomOut')} title={t('clean.zoomOut')} onclick={() => stage?.zoomBy(1 / TUNING.zoom.buttonStep)}>
               <Icon name="zoomOut" />
             </button>
@@ -547,7 +672,11 @@
       </div>
 
       <div class="anim-section">
-        <RemoveColors {picking} inside={pickInside} ontogglepick={() => setPicking(!picking)} />
+        <RemoveColors list={app.anim.removed} variant="frames" {picking} inside={pickInside} ontogglepick={() => togglePicker('remove')} />
+      </div>
+
+      <div class="anim-section">
+        <ReplaceColors list={app.anim.replaced} variant="frames" picking={picker === 'replace'} ontogglepick={() => togglePicker('replace')} colors={paletteColors} onchoose={chooseTarget} />
       </div>
 
       <section class="anim-section field" aria-labelledby="anim-cell-title">
@@ -579,6 +708,8 @@
                   <span class="keycap-group"><kbd class="keycap">Alt</kbd><kbd class="keycap">←</kbd><kbd class="keycap">→</kbd></span>
                 {:else if item.keys === 'ctrlS'}
                   <span class="keycap-group"><kbd class="keycap">Ctrl</kbd><kbd class="keycap">S</kbd></span>
+                {:else if item.keys === 'ctrlZ'}
+                  <span class="keycap-group"><kbd class="keycap">Ctrl</kbd><kbd class="keycap">Z</kbd></span>
                 {:else if item.keys === 'delete'}
                   <kbd class="keycap">Delete</kbd>
                 {:else}

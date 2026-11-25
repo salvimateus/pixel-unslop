@@ -2,15 +2,17 @@ import type { SetFitItem, SetGrid, Stage } from '../core/protocol.ts';
 import type { CellGrid, ElasticMode, GridFit, GridOptions, Selection, Sprite } from '../core/types.ts';
 import { PARAMS } from '../core/params.ts';
 import { pack, TRANSPARENT } from '../core/color.ts';
-import { matchToReference, type ColorCount } from '../core/palette.ts';
+import { matchToReference, replaceColors, type ColorCount, type ReplacedColor } from '../core/palette.ts';
 import { exportSprite, referencePalette } from '../core/pipeline.ts';
-import { listPalette } from '../core/sprite.ts';
+import { listPalette, type RemovedColor, type RemoveScope } from '../core/sprite.ts';
 import { isDesktop, monitorWorkArea, setDownloadFile, setInterfaceZoom, type LaunchedFile, type PngFile } from './platform.ts';
 import { defaultZoom, nextZoom, snapZoom, storeZoom, storedZoom, type ZoomMove } from './zoom.ts';
 import type { Camera } from '../ui/camera.ts';
 import type { PreviewBackground } from '../ui/clean-scene.ts';
 import { formatOf, track as trackEvent } from './analytics.ts';
+import { RemovedColorList, ReplacedColorList, type ListPreview, type RemovalPick } from './color-list.svelte.ts';
 import { EditSession } from './edit-session.ts';
+import { UndoTimeline, type ListAction, type Replay } from './undo-timeline.svelte.ts';
 import { CleanEngine, EngineError, type FitSetResult, type LoadResult } from './engine.ts';
 import { DEFAULT_FIT_INPUTS, ImageSet, pixelSizeOf, type FitInputs, type SetGridMode, type SetGridState, type SetObject, type SetObjectInit } from './image-set.svelte.ts';
 import { Animation, pinnedLimit, type AnimFrame, type SampledFrame } from './animation.svelte.ts';
@@ -38,7 +40,7 @@ export interface Progress {
   done?: number;
   total?: number;
 }
-export type Tool = 'view' | 'pencil' | 'eraser' | 'bucket' | 'picker' | 'remove';
+export type Tool = 'view' | 'pencil' | 'eraser' | 'bucket' | 'picker' | 'remove' | 'replace';
 /** The tools with a brush size. */
 export type BrushTool = 'pencil' | 'eraser';
 export interface BrushSizes {
@@ -152,6 +154,14 @@ function isDefaultInputs(inputs: FitInputs): boolean {
 /** A latest-wins merge can be superseded by a newer one; the raw tiles are needed, so ask again. */
 const RAW_ATTEMPTS = 4;
 
+/** The tiles that change from `before` to `after` and hold no pixel edit (`shown` shows `before` there). */
+function uneditedChanges(before: Sprite, after: Sprite, shown: Sprite): number {
+  if (before.pixels.length !== after.pixels.length || shown.pixels.length !== before.pixels.length) return 0;
+  let count = 0;
+  for (let i = 0; i < before.pixels.length; i++) if (before.pixels[i] !== after.pixels[i] && shown.pixels[i] === before.pixels[i]) count++;
+  return count;
+}
+
 class AppState {
   readonly engine = new CleanEngine();
   readonly set = new ImageSet();
@@ -196,6 +206,17 @@ class AppState {
   colorReference = $state.raw<ColorReference | null>(null);
   /** The palette of the reference at one merge strength; a new reference or strength computes it again. */
   private referenceColors: { sprite: Sprite; strength: number; colors: ColorCount[] } | null = null;
+  /** The colors that "Remove color" erases from the single image. The key keeps the tolerance of the old single image tool. */
+  readonly removed = new RemovedColorList('removeTolerance', 'remove_color');
+  /** The replacement map of the single image. */
+  readonly replaced = new ReplacedColorList('replaceTolerance', 'replace_color');
+  /**
+   * The sprites of the last base of the Clean screen (single image or set piece): `base` went to the session, `stage`
+   * and `prepared` are the sprite before and after the removed colors, in the colors of the lists, for the picks.
+   */
+  private lists: ListPreview | null = null;
+  /** The undo history of the Clean screen: the pixel steps of the open image and the list steps made there. */
+  readonly history = new UndoTimeline();
   /** Changes when the base sprite changes (clean, merge): the stage rewrites the whole sprite layer. */
   baseVersion = $state(0);
   /** Changes on every edit: the palette and the undo buttons read it. */
@@ -262,6 +283,22 @@ class AppState {
     this.engine.onProgress((stage, ratio) => {
       this.progress = { stage, ratio };
     });
+    this.history.reset(this.singleSession);
+    this.removed.onchange = () => this.rebase();
+    this.replaced.onchange = () => this.rebase();
+    this.removed.onstep = (action, run) => this.history.record(this, action, run);
+    this.replaced.onstep = (action, run) => this.history.record(this, action, run);
+    // In the piece editor the set is out of sight: the piece shows the change, and the set builds when the piece goes back.
+    const setLists = () => (this.editingId !== null && this.result ? this.rebase() : this.set.rebuild(this.strength));
+    this.set.removed.onchange = setLists;
+    this.set.replaced.onchange = setLists;
+    // The editors keep their list steps in the history of the Clean screen; the boards keep theirs in their own.
+    const setStep = (action: ListAction, run: () => void) => (this.editingId !== null && this.result ? this.history : this.set.history).record(this.set, action, run);
+    this.set.removed.onstep = setStep;
+    this.set.replaced.onstep = setStep;
+    const animStep = (action: ListAction, run: () => void) => (this.editingFrameId !== null ? this.history : this.anim.history).record(this.anim, action, run);
+    this.anim.removed.onstep = animStep;
+    this.anim.replaced.onstep = animStep;
   }
 
   get busy(): boolean {
@@ -525,6 +562,10 @@ class AppState {
     this.stretched = false;
     this.result = null;
     this.session.clear();
+    this.removed.reset();
+    this.replaced.reset();
+    this.lists = null;
+    this.history.reset(this.session);
     this.baseVersion++;
     this.editVersion++;
     this.exportOpen = false;
@@ -693,7 +734,10 @@ class AppState {
     try {
       const output = await this.track(this.engine.clean({ strength: PARAMS.palette.presets[this.preset] }));
       this.result?.aligned.close();
-      if (this.editingId === null) this.session.clear();
+      if (this.editingId === null) {
+        this.session.clear();
+        this.history.reset(this.session);
+      }
       const base = this.baseOf(output.sprite);
       this.session.setBase(base);
       this.result = { ...output, fitVersion: this.fitVersion };
@@ -798,11 +842,24 @@ class AppState {
     this.rebase();
   }
 
-  /** The base of the single image: the merged sprite, painted with the reference colors when the reference is on. */
+  /**
+   * The base of the Clean screen. Single image: the merged sprite, painted with the reference colors when the reference
+   * is on, then the replacement map, then the removed colors. Set piece: its own merge with the lists of the set.
+   */
   private baseOf(sprite: Sprite): Sprite {
+    const preview = this.previewOf(sprite);
+    this.lists = preview;
+    return preview.base;
+  }
+
+  /** The lists of the open image over `sprite`, with other entries to test a change before it is made. */
+  private previewOf(sprite: Sprite, replaced?: readonly ReplacedColor[], removed?: readonly RemovedColor[]): ListPreview {
+    if (this.editingId !== null) return this.set.previewOf(sprite, replaced, removed);
     const reference = this.colorReference;
-    if (!reference || !reference.on || this.editingId !== null) return sprite;
-    return matchToReference(sprite, this.paletteOfReference(reference));
+    const referenced = reference?.on ? matchToReference(sprite, this.paletteOfReference(reference)) : sprite;
+    const [stage] = replaceColors([referenced], replaced ?? this.replaced.entries);
+    const prepared = RemovedColorList.erase(stage, removed ?? this.removed.entries);
+    return { base: prepared, stage, prepared, extra: [] };
   }
 
   private paletteOfReference(reference: { sprite: Sprite; flat: boolean }): ColorCount[] {
@@ -814,14 +871,130 @@ class AppState {
     return colors;
   }
 
-  /** The reference changed: the single image takes its new base at once, with its edits. */
+  /** The reference or a list changed: the image of the Clean screen takes its new base at once, with its edits. */
   private rebase(): void {
-    if (!this.result || this.editingId !== null) return;
+    if (!this.result || this.editingFrameId !== null) return;
     const before = this.session.composed();
     this.session.setBase(this.baseOf(this.result.sprite));
     this.followInk(before.pixels, this.session.composed().pixels);
     this.baseVersion++;
     this.editVersion++;
+  }
+
+  /** The lists that the Clean screen edits: the animation in the frame editor, the set in the piece editor, else the single image. */
+  get cleanLists(): { removed: RemovedColorList; replaced: ReplacedColorList } {
+    if (this.editingFrameId !== null) return this.anim;
+    if (this.editingId !== null) return this.set;
+    return this;
+  }
+
+  /** The pick sprites of the Clean screen (single image or set piece), with the shown sprite in the colors of the lists. */
+  private pickStage(): (ListPreview & { shown: Sprite; stamp: string }) | null {
+    const lists = this.lists;
+    if (!lists || !this.result || this.editingFrameId !== null) return null;
+    const composed = this.session.composed();
+    if (composed.pixels.length !== lists.prepared.pixels.length) return null;
+    let shown = composed;
+    if (lists.base !== lists.prepared) {
+      // A piece: its edits show over the set colors of its base.
+      const pixels = lists.prepared.pixels.slice();
+      for (let i = 0; i < pixels.length; i++) if (composed.pixels[i] !== lists.base.pixels[i]) pixels[i] = composed.pixels[i];
+      shown = { cols: composed.cols, rows: composed.rows, pixels };
+    }
+    return { ...lists, shown, stamp: `${this.baseVersion}|${this.editVersion}` };
+  }
+
+  /** What a "Remove color" click on one tile of the Clean screen does (see `RemovedColorList.pickAt`). Call it from an event handler. */
+  removalPickAt(tile: number): RemovalPick | null {
+    if (this.editingFrameId !== null) return this.anim.pickAt(this.editingFrameId, tile);
+    const stage = this.pickStage();
+    if (!stage) return null;
+    return this.cleanLists.removed.pickAt(stage.stage, stage.prepared, stage.shown, tile, stage.stamp, () => stage.extra);
+  }
+
+  /** A color of the palette of the Clean screen in the colors of the lists: a set piece shows its own colors, the set lists hold set colors. */
+  listColorOf(color: number): number {
+    return this.editingFrameId === null && this.editingId !== null ? this.set.setColorOf(color) : color;
+  }
+
+  /** The color of one tile of the Clean screen, in the colors of the lists; null for TRANSPARENT. */
+  listColorAt(tile: number): number | null {
+    if (this.editingFrameId !== null) return this.anim.colorAt(this.editingFrameId, tile);
+    const color = this.pickStage()?.shown.pixels[tile];
+    return color === undefined || color === TRANSPARENT ? null : color;
+  }
+
+  /** The tiles of the Clean screen that a replacement of `color` at `tolerance` recolors; edited tiles stay out. */
+  replaceTilesOf(color: number, tolerance: number): Int32Array {
+    if (this.editingFrameId !== null) return this.anim.replaceTiles(this.editingFrameId, color, tolerance);
+    const stage = this.pickStage();
+    return stage ? this.cleanLists.replaced.tilesOf(stage.prepared, stage.shown, color, tolerance, stage.stamp) : new Int32Array(0);
+  }
+
+  /** The tiles of the Clean screen that the pending sources of the replacement map cover. */
+  pendingReplaceTiles(): Int32Array {
+    if (this.editingFrameId !== null) return this.anim.pendingTiles(this.editingFrameId);
+    const stage = this.pickStage();
+    return stage ? this.cleanLists.replaced.pendingTiles(stage.prepared, stage.shown) : new Int32Array(0);
+  }
+
+  /**
+   * Adds a color to the removed colors of the Clean screen (see `RemovedColorList.withColor`), at the tolerance of the
+   * next pick or at `tolerance`. Returns how many frames change in the frame editor, else how many tiles of the open
+   * image change; with 0 the list does not change.
+   */
+  addRemovedColor(color: number, scope: RemoveScope, tolerance?: number): number {
+    if (this.editingFrameId !== null) return this.afterFrameLists(this.anim.addRemovedColor(color, scope, tolerance));
+    const list = this.cleanLists.removed;
+    const change = list.withColor(color, scope, tolerance);
+    const stage = change ? this.pickStage() : null;
+    if (!change || !stage || !this.result) return 0;
+    const count = uneditedChanges(stage.prepared, this.previewOf(this.result.sprite, undefined, change.next).prepared, stage.shown);
+    if (count === 0) return 0;
+    list.commit(change.next, change.action);
+    this.rebase();
+    return count;
+  }
+
+  /**
+   * Adds replacement entries to the map of the Clean screen (see `ReplacedColorList.merged`). Returns how many frames
+   * change in the frame editor, else how many tiles of the open image change; with 0 the list does not change.
+   */
+  addReplacedColors(added: readonly ReplacedColor[]): number {
+    if (this.editingFrameId !== null) return this.afterFrameLists(this.anim.addReplacedColors(added));
+    const list = this.cleanLists.replaced;
+    const stage = this.pickStage();
+    if (added.length === 0 || !stage || !this.result) return 0;
+    const next = list.merged(added);
+    const count = uneditedChanges(stage.prepared, this.previewOf(this.result.sprite, next).prepared, stage.shown);
+    if (count === 0) return 0;
+    list.commit(next, 'add');
+    this.rebase();
+    return count;
+  }
+
+  /** A pixel step of the open image that `session.apply` made: it joins the history of the Clean screen. */
+  pixelStep(): void {
+    this.history.pushPixels(this.session);
+  }
+
+  /**
+   * One undo or redo of the Clean screen: a pixel step or a list step. A list step builds the open image again (in the
+   * frame editor, every frame). Null when nothing changed.
+   */
+  replayClean(way: 'undo' | 'redo'): Replay | null {
+    const replay = way === 'undo' ? this.history.undo() : this.history.redo();
+    if (replay?.kind === 'lists' && this.editingFrameId !== null) this.afterFrameLists(1);
+    return replay;
+  }
+
+  /** A list change of the frame editor: the open frame shows its new base. */
+  private afterFrameLists(frames: number): number {
+    if (frames > 0) {
+      this.baseVersion++;
+      this.editVersion++;
+    }
+    return frames;
   }
 
   /** The ink follows the recolor: it takes the new color of the first tile that had it. A custom ink stays. */
@@ -1174,6 +1347,7 @@ class AppState {
   async cleanSet(): Promise<void> {
     if (this.loading || this.cleaning || !this.set.active) return;
     if (!(await this.storeGridObject(false))) return;
+    this.dropPiecePreview();
     this.cleaning = true;
     try {
       if (!(await this.syncSharedGrid())) return;
@@ -1278,6 +1452,7 @@ class AppState {
     this.nudge = inputs.nudge;
     this.elastic = inputs.elastic;
     this.session = object.session;
+    this.history.reset(object.session);
     this.result = null;
     this.editingId = object.id;
     this.editEntryVersion = this.editVersion;
@@ -1300,7 +1475,7 @@ class AppState {
         throw error;
       }
       this.takeObject(object, loaded, fit, object.inputs);
-      this.session.setBase(output.sprite);
+      this.session.setBase(this.baseOf(output.sprite));
       this.result = { ...output, fitVersion: this.fitVersion };
       this.exportedEditVersion = -1;
       this.baseVersion++;
@@ -1451,8 +1626,9 @@ class AppState {
     return true;
   }
 
-  /** Closes the open set object without a worker call; its session keeps the edits made so far. */
+  /** Closes the open set object without a worker call; its session keeps the edits made so far over its own merge. */
   private closeEditor(): void {
+    this.dropPiecePreview();
     this.source?.bitmap.close();
     this.result?.aligned.close();
     this.source = null;
@@ -1465,10 +1641,23 @@ class AppState {
     this.manualGrid = null;
     this.profiles = null;
     this.session = this.singleSession;
+    this.history.reset(this.singleSession);
     this.editingId = null;
     this.baseVersion++;
     this.editVersion++;
     this.exportOpen = false;
+  }
+
+  /**
+   * The piece editor shows the lists of the set over the own merge of the piece. The set build applies them itself,
+   * so the session of the piece goes back to its own merge first, with its edits.
+   */
+  private dropPiecePreview(): void {
+    const sprite = this.result?.sprite;
+    if (this.editingId === null || !sprite || !this.session.hasBase) return;
+    const base = this.session.composed();
+    if (base.cols === sprite.cols && base.rows === sprite.rows) this.session.setBase(sprite);
+    this.lists = null;
   }
 
   /** The single image goes away when a set starts. */
@@ -1479,6 +1668,10 @@ class AppState {
     this.fit = null;
     this.result = null;
     this.singleSession.clear();
+    this.removed.reset();
+    this.replaced.reset();
+    this.lists = null;
+    this.history.reset(this.singleSession);
     this.baseVersion++;
     this.editVersion++;
     this.exportOpen = false;
@@ -1977,6 +2170,7 @@ class AppState {
   private takeAnimFrame(id: number, session: EditSession, before: ImageBitmap): void {
     const entering = this.screen !== 'anim-edit';
     this.result?.aligned.close();
+    if (this.session !== session) this.history.reset(session);
     this.session = session;
     this.result = { sprite: session.composed(), palette: new Uint32Array(0), aligned: before, fitVersion: this.fitVersion };
     this.frameBeforeReady = false;
@@ -2065,6 +2259,7 @@ class AppState {
     this.result = null;
     this.profiles = null;
     this.session = this.singleSession;
+    this.history.reset(this.singleSession);
     this.editingFrameId = null;
     this.frameBeforeReady = false;
     this.baseVersion++;

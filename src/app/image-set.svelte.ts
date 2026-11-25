@@ -1,21 +1,29 @@
 import type { CellGrid, ElasticMode, GridFit, Selection, Sprite } from '../core/types.ts';
-import { applyColorMap, combinedColors, matchColors, unifyPalettes } from '../core/palette.ts';
+import { TRANSPARENT } from '../core/color.ts';
+import { applyColorMap, combinedColors, matchColors, replaceColors, replacementMap, unifyPalettes, type ReplacedColor } from '../core/palette.ts';
 import {
   borderBackground,
+  borderColors,
   eraseTiles,
+  holdsTile,
   heightLimit,
   heightStep,
   holdsScenery,
   listPalette,
   opaqueBox,
+  removedMatches,
   resampledSize,
   resampleSprite,
   trimOrNull,
   wholeHeights,
+  type RemovedColor,
+  type RemoveScope,
   type TileBox,
 } from '../core/sprite.ts';
 import { clamp } from '../ui/camera.ts';
+import { RemovedColorList, ReplacedColorList, type ListPreview, type RemovalPick } from './color-list.svelte.ts';
 import { EditSession } from './edit-session.ts';
+import { UndoTimeline } from './undo-timeline.svelte.ts';
 import { formatDecimal } from './i18n.ts';
 import { readStored, writeStored } from './storage.ts';
 import { TUNING } from './tuning.ts';
@@ -72,7 +80,11 @@ export interface SetObject {
   ownStrength: number;
   readonly session: EditSession;
   size: SetSize;
-  /** After the shared palette, the background erase and the trim. Null when no opaque tile is left. */
+  /** After the shared palette, the reference colors, the replacement map and the background erase, before the removed colors: what a removal pick floods. Null for a reference. */
+  staged: Sprite | null;
+  /** `staged` after the removed colors, before the trim: what the board shows, on the full grid. Null for a reference. */
+  cleared: Sprite | null;
+  /** After the shared palette, the replacement map, the background erase, the removed colors and the trim. Null when no opaque tile is left. */
   prepared: Sprite | null;
   /** The tiles of `fit` that `prepared` holds, so "Ver original" shows the matching part of the source image. */
   trim: TileBox | null;
@@ -227,6 +239,29 @@ export function pixelSizeOf(fit: GridFit): { x: number; y: number } {
   return { x: Math.round(fit.axes.x.period * 100) / 100, y: Math.round(fit.axes.y.period * 100) / 100 };
 }
 
+/** The color of each tile of `to` by the color of the same tile of `from`; the first tile of a color wins. */
+function pairColors(from: readonly Sprite[], to: readonly Sprite[]): Map<number, number> {
+  const map = new Map<number, number>();
+  from.forEach((sprite, i) => {
+    const target = to[i];
+    if (!target || target.pixels.length !== sprite.pixels.length) return;
+    let last = -1;
+    for (let p = 0; p < sprite.pixels.length; p++) {
+      const color = sprite.pixels[p];
+      if (color === last) continue;
+      last = color;
+      if (!map.has(color)) map.set(color, target.pixels[p]);
+    }
+  });
+  return map;
+}
+
+function samePixels(a: Sprite, b: Sprite): boolean {
+  if (a.pixels.length !== b.pixels.length) return false;
+  for (let i = 0; i < a.pixels.length; i++) if (a.pixels[i] !== b.pixels[i]) return false;
+  return true;
+}
+
 function tiles(dims: Dims): number {
   return dims.cols * dims.rows;
 }
@@ -252,7 +287,30 @@ export class ImageSet {
   detected = $state.raw<{ x: number; y: number } | null>(null);
   /** Maps every normal piece to the colors of the references. */
   referenceColors = $state(false);
+  /** The colors that "Remove color" erases from every piece, after the replacement map and the background erase. */
+  readonly removed = new RemovedColorList('setRemoveTolerance', 'set_remove_color');
+  /** The replacement map of every piece, after the reference colors. */
+  readonly replaced = new ReplacedColorList('setReplaceTolerance', 'set_replace_color');
+  /**
+   * The set color of each color of the composed pieces, after the shared palette and the reference colors: the lists
+   * hold set colors, so the piece editor reads its own colors through this map.
+   */
+  private colorMap = new Map<number, number>();
+  /** The live pieces of the last build before the replacement map, in build order. */
+  private listInputs: Sprite[] = [];
+  /** The merge strength of the last build: a change of a list builds again at it. */
+  private strength = 0;
   private nextId = 1;
+
+  /** The undo history of the set board: the list steps made there. */
+  readonly history = new UndoTimeline();
+
+  constructor() {
+    this.removed.onchange = () => this.rebuild(this.strength);
+    this.replaced.onchange = () => this.rebuild(this.strength);
+    this.removed.onstep = (action, run) => this.history.record(this, action, run);
+    this.replaced.onstep = (action, run) => this.history.record(this, action, run);
+  }
 
   get active(): boolean {
     return this.objects.length > 0;
@@ -299,6 +357,8 @@ export class ImageSet {
         ownStrength: init.ownStrength,
         session,
         size: { kind: 'whole', step: 1 },
+        staged: null,
+        cleared: null,
         prepared: null,
         trim: null,
         height: 0,
@@ -333,6 +393,11 @@ export class ImageSet {
     this.grid = { mode: 'own', period: null, typed: false };
     this.detected = null;
     this.referenceColors = false;
+    this.removed.reset();
+    this.replaced.reset();
+    this.history.reset();
+    this.colorMap = new Map();
+    this.listInputs = [];
     this.version++;
     this.exportedVersion = this.version;
   }
@@ -357,11 +422,14 @@ export class ImageSet {
 
   /**
    * The set stage. Normal pieces: shared palette of the composed sprites, the optional map to the reference
-   * colors, background erase, trim, resize. References: their own tiles, as they are.
+   * colors, the replacement map, background erase, the removed colors, trim, resize. References: their own tiles, as
+   * they are. The pixel edits of a piece are in its composed sprite, so the set steps run over them.
    */
   rebuild(strength: number): void {
+    this.strength = strength;
     const live = this.objects.filter((object) => !object.reference && object.session.hasBase);
-    const unified = live.length > 0 ? unifyPalettes(live.map((object) => object.session.composed()), { strength }) : [];
+    const composed = live.map((object) => object.session.composed());
+    const unified = live.length > 0 ? unifyPalettes(composed, { strength }) : [];
     const references = this.objects.filter((object) => object.reference);
     const referenceEntries = this.referenceColors ? combinedColors(references.map((object) => object.raw)) : [];
     // One map for the whole set, so one color never goes to two reference colors.
@@ -379,22 +447,151 @@ export class ImageSet {
       object.step = 1;
       object.stale = false;
       object.backgroundKept = false;
+      object.staged = null;
+      object.cleared = null;
     }
+    const referenced = toReference ? unified.map((sprite) => applyColorMap(sprite, toReference)) : unified;
+    this.colorMap = pairColors(composed, referenced);
+    this.listInputs = referenced;
+    const recolored = replaceColors(referenced, this.replaced.entries);
     live.forEach((object, i) => {
-      let sprite = unified[i];
-      if (toReference) sprite = applyColorMap(sprite, toReference);
+      let sprite = recolored[i];
       object.backgroundKept = false;
       if (this.eraseBackground) {
         const background = borderBackground(sprite);
         if (background.length > 0) sprite = eraseTiles(sprite, background);
         object.backgroundKept = holdsScenery(sprite, background.length > 0);
       }
+      object.staged = sprite;
+      sprite = RemovedColorList.erase(sprite, this.removed.entries);
+      object.cleared = sprite;
       object.prepared = trimOrNull(sprite);
       object.trim = object.prepared ? opaqueBox(sprite) : null;
       this.applySize(object);
     });
     this.relayout();
     this.version++;
+  }
+
+  /**
+   * Adds a color at the current tolerance and with `scope` to the colors that every piece loses (see
+   * `RemovedColorList.withColor`). Returns how many pieces lose tiles; with 0 the list does not change.
+   */
+  addRemovedColor(color: number, scope: RemoveScope, tolerance?: number): number {
+    const change = this.removed.withColor(color, scope, tolerance);
+    if (!change) return 0;
+    const pieces = this.pieces.filter((object) => {
+      if (!object.staged || !object.cleared) return false;
+      return removedMatches(object.staged, change.next).length > removedMatches(object.staged, this.removed.entries).length;
+    }).length;
+    if (pieces === 0) return 0;
+    this.removed.commit(change.next, change.action);
+    this.rebuild(this.strength);
+    return pieces;
+  }
+
+  /** Adds replacement entries (see `ReplacedColorList.merged`) to every piece. Returns how many pieces change color; with 0 the list does not change. */
+  addReplacedColors(added: readonly ReplacedColor[]): number {
+    if (added.length === 0) return 0;
+    const next = this.replaced.merged(added);
+    const sprites = this.listInputs;
+    const before = replaceColors(sprites, this.replaced.entries);
+    const after = replaceColors(sprites, next);
+    const pieces = after.filter((sprite, i) => sprite !== before[i] && !samePixels(sprite, before[i])).length;
+    if (pieces === 0) return 0;
+    this.replaced.commit(next, 'add');
+    this.rebuild(this.strength);
+    return pieces;
+  }
+
+  /** The set color of a color of a composed piece, after the shared palette and the reference colors; a color that the last build did not see stays. */
+  setColorOf(color: number): number {
+    return this.colorMap.get(color) ?? color;
+  }
+
+  /** The tile of the full grid of a piece under a point of its box, as fractions 0..1 of the box; -1 outside its tiles. */
+  tileAt(id: number, fx: number, fy: number): number {
+    const object = this.find(id);
+    const { prepared, trim, cleared } = object ?? {};
+    if (!prepared || !trim || !cleared || !(fx >= 0 && fx < 1 && fy >= 0 && fy < 1)) return -1;
+    const col = trim.col + Math.floor(fx * prepared.cols);
+    const row = trim.row + Math.floor(fy * prepared.rows);
+    return row * cleared.cols + col;
+  }
+
+  /** Tiles of the full grid of a piece as tiles of its trimmed `prepared` sprite; a tile outside the trim is left out. */
+  toPrepared(id: number, tiles: ArrayLike<number>): Int32Array {
+    const object = this.find(id);
+    const { prepared, trim, cleared } = object ?? {};
+    if (!prepared || !trim || !cleared) return new Int32Array(0);
+    const out = new Int32Array(tiles.length);
+    let n = 0;
+    for (let i = 0; i < tiles.length; i++) {
+      const c = (tiles[i] % cleared.cols) - trim.col;
+      const r = Math.floor(tiles[i] / cleared.cols) - trim.row;
+      if (c >= 0 && r >= 0 && c < trim.cols && r < trim.rows) out[n++] = r * trim.cols + c;
+    }
+    return out.slice(0, n);
+  }
+
+  /** The background colors that the removal flood of a piece passes, as exact 'border' entries; none when the erase is off. */
+  private backgroundEntries(sprite: Sprite): RemovedColor[] {
+    return this.eraseBackground ? borderColors(sprite).map((color): RemovedColor => ({ color, tolerance: 0, scope: 'border' })) : [];
+  }
+
+  /** What a "Remove color" click on one full-grid tile of a piece on the board does (see `RemovedColorList.pickAt`). */
+  pickAt(id: number, tile: number): RemovalPick | null {
+    const object = this.find(id);
+    if (!object?.staged || !object.cleared) return null;
+    return this.removed.pickAt(object.staged, object.cleared, object.cleared, tile, `${this.version}|${id}`);
+  }
+
+  /** The shown color of one full-grid tile of a piece on the board; null for TRANSPARENT or outside. */
+  colorAt(id: number, tile: number): number | null {
+    const color = this.find(id)?.cleared?.pixels[tile];
+    return color === undefined || color === TRANSPARENT ? null : color;
+  }
+
+  /** The full-grid tiles of a piece that a replacement of `color` at `tolerance` recolors. */
+  replaceTiles(id: number, color: number, tolerance: number): Int32Array {
+    const cleared = this.find(id)?.cleared;
+    return cleared ? this.replaced.tilesOf(cleared, cleared, color, tolerance, `${this.version}|${id}`) : new Int32Array(0);
+  }
+
+  /** The full-grid tiles of a piece that the pending sources of the replacement map cover. */
+  pendingTiles(id: number): Int32Array {
+    const cleared = this.find(id)?.cleared;
+    return cleared ? this.replaced.pendingTiles(cleared, cleared) : new Int32Array(0);
+  }
+
+  /**
+   * The lists of the set over the own merge of one piece, for the piece editor. `base` is in the colors of the piece
+   * (its edits go over it); `stage` (before the removed colors) and `prepared` (after them) are in set colors, for
+   * the picks. The background erase of the set is left out; its colors only open the removal flood (`extra`). Other
+   * entries test a change before it is made.
+   */
+  previewOf(own: Sprite, replaced: readonly ReplacedColor[] = this.replaced.entries, removed: readonly RemovedColor[] = this.removed.entries): ListPreview {
+    const toSet = this.colorMap;
+    const mapped = toSet.size > 0 ? applyColorMap(own, toSet) : own;
+    const ownColors = listPalette(own.pixels).map((entry) => entry.color);
+    const recolor = replacementMap(
+      ownColors.map((color) => toSet.get(color) ?? color),
+      replaced,
+    );
+    const ownMap = new Map<number, number>();
+    for (const color of ownColors) {
+      const target = recolor.get(toSet.get(color) ?? color);
+      if (target !== undefined) ownMap.set(color, target);
+    }
+    const stage = recolor.size > 0 ? applyColorMap(mapped, recolor) : mapped;
+    const recolored = ownMap.size > 0 ? applyColorMap(own, ownMap) : own;
+    const extra = this.backgroundEntries(stage);
+    if (removed.length === 0) return { base: recolored, stage, prepared: stage, extra };
+    const background = extra.length > 0 ? removedMatches(stage, extra) : new Int32Array(0);
+    const all = removedMatches(stage, [...removed, ...extra]);
+    const tiles = background.length > 0 ? all.filter((tile) => !holdsTile(background, tile)) : all;
+    if (tiles.length === 0) return { base: recolored, stage, prepared: stage, extra };
+    return { base: eraseTiles(recolored, tiles), stage, prepared: eraseTiles(stage, tiles), extra };
   }
 
   /** A size from the panel or the keyboard: calculated at once. */

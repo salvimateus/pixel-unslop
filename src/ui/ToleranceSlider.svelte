@@ -20,9 +20,13 @@
     onchange: (value: number, commit: boolean) => void;
     /** In a toolbar: the label hides when the container is narrow. */
     compact?: boolean;
+    /** What a higher value does; the text of "Remove color" by default. */
+    hint?: string;
   }
 
-  let { id, value, onchange, compact = false }: Props = $props();
+  let { id, value, onchange, compact = false, hint }: Props = $props();
+
+  const hintText = $derived(hint ?? t('removeColor.toleranceHint'));
 
   const max = toleranceSteps(TUNING.clean.removeToleranceMax);
   const steps = $derived(toleranceSteps(value));
@@ -32,7 +36,7 @@
   }
 </script>
 
-<div class="tolerance" class:is-compact={compact} title={t('removeColor.toleranceHint')}>
+<div class="tolerance" class:is-compact={compact} title={hintText}>
   <label class="tolerance-label" for={id}>{t('removeColor.tolerance')}</label>
   <input
     {id}
@@ -48,7 +52,7 @@
     onchange={(event) => onchange(read(event), true)}
   />
   <span class="tolerance-value" aria-hidden="true">{steps}</span>
-  <span class="visually-hidden" id="{id}-hint">{t('removeColor.toleranceHint')}</span>
+  <span class="visually-hidden" id="{id}-hint">{hintText}</span>
 </div>
 
 <style>

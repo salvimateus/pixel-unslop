@@ -3,10 +3,13 @@ import { TRANSPARENT } from '../core/color.ts';
 import { PARAMS } from '../core/params.ts';
 import { CoreError } from '../core/errors.ts';
 import { clearFrames, placeFrames, unifyFrames, type BuiltFrames, type CellMode, type FrameOffset, type PreparedFrames, type RemovedColor, type RemoveScope } from '../core/frames.ts';
+import { replaceColors, type ReplacedColor } from '../core/palette.ts';
 import { combinedColors } from '../core/palette.ts';
-import { borderBackground, borderColors, eraseTiles, holdsTile, listPalette, opaqueBox, removalAt, type Removal, type TileBox } from '../core/sprite.ts';
+import { borderBackground, borderColors, eraseTiles, listPalette, opaqueBox, type TileBox } from '../core/sprite.ts';
 import { track } from './analytics.ts';
+import { RemovedColorList, ReplacedColorList, type RemovalPick } from './color-list.svelte.ts';
 import { EditSession } from './edit-session.ts';
+import { UndoTimeline, type Replay } from './undo-timeline.svelte.ts';
 import { readStored, writeStored } from './storage.ts';
 import { TUNING } from './tuning.ts';
 import type { VideoInfo, VideoSource } from './video.ts';
@@ -52,20 +55,6 @@ const EMPTY_BUILD: BuiltFrames = { frames: [], cell: { cols: 0, rows: 0 }, kept:
 const NO_TILES = new Int32Array(0);
 const EMPTY_PREPARED: PreparedFrames = { frames: [], kept: [], cleared: [] };
 const ZERO: FrameOffset = { x: 0, y: 0 };
-const UNDO_LIMIT = 100;
-
-/**
- * What a "Remove color" click on one tile of a frame does, in grid tiles of that frame: 'add' a new color, 'widen' a
- * listed 'border' color to 'all', or nothing for a color that is 'listed' already. `cleared` and `kept` leave out the
- * tiles with a pixel edit.
- */
-export interface RemovalPick {
-  color: number;
-  scope: RemoveScope;
-  action: 'add' | 'widen' | 'listed';
-  cleared: Int32Array;
-  kept: Int32Array;
-}
 
 /** The container and the offsets at one moment, for undo and redo. */
 interface PlaceSnapshot {
@@ -73,12 +62,11 @@ interface PlaceSnapshot {
   offsets: ReadonlyMap<number, FrameOffset>;
 }
 
-/** The tiles that hold no pixel edit: where the edited frame shows the prepared frame. */
-function unedited(tiles: Int32Array, shown: Sprite, prepared: Sprite): Int32Array {
-  const out = new Int32Array(tiles.length);
-  let n = 0;
-  for (let i = 0; i < tiles.length; i++) if (shown.pixels[tiles[i]] === prepared.pixels[tiles[i]]) out[n++] = tiles[i];
-  return n === tiles.length ? tiles : out.slice(0, n);
+function samePixels(a: Sprite | undefined, b: Sprite | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.pixels.length !== b.pixels.length) return false;
+  for (let i = 0; i < a.pixels.length; i++) if (a.pixels[i] !== b.pixels[i]) return false;
+  return true;
 }
 
 function sameOffset(a: FrameOffset, b: FrameOffset): boolean {
@@ -105,18 +93,6 @@ function storedCell(): CellMode {
 /** The distinct video frames that `PARAMS.limits.maxTimelineTiles` holds at this many raw plus own tiles per frame. */
 export function pinnedLimit(tilesPerFrame: number): number {
   return tilesPerFrame > 0 ? Math.floor(PARAMS.limits.maxTimelineTiles / tilesPerFrame) : 0;
-}
-
-const TOLERANCE_KEY = 'animRemoveTolerance';
-
-/** A tolerance of "Remove color", inside the range of the slider. */
-export function clampTolerance(value: number): number {
-  return Number.isFinite(value) ? Math.min(TUNING.clean.removeToleranceMax, Math.max(0, value)) : TUNING.clean.removeTolerance;
-}
-
-function storedTolerance(key: string): number {
-  const text = readStored(key);
-  return text === null ? TUNING.clean.removeTolerance : clampTolerance(Number(text));
 }
 
 function clampFps(fps: number): number {
@@ -175,9 +151,9 @@ export class Animation {
   referenceColors = $state(false);
   eraseBackground = $state(readStored('animErase') !== 'off');
   /** The colors that "Remove color" erases from every frame, in the order of the picks, each with the tolerance of its pick. */
-  removedColors = $state.raw<readonly RemovedColor[]>([]);
-  /** The OKLab tolerance of the next pick. A removed color keeps the tolerance of its own pick. */
-  colorTolerance = $state(storedTolerance(TOLERANCE_KEY));
+  readonly removed = new RemovedColorList('animRemoveTolerance', 'anim_remove_color');
+  /** The replacement map of every frame. It runs after the reference colors and before the removal. */
+  readonly replaced = new ReplacedColorList('animReplaceTolerance', 'anim_replace_color');
   cell = $state<CellMode>(storedCell());
   fps = $state(storedNumber('animFps', TUNING.anim.minFps, TUNING.anim.maxFps, TUNING.anim.defaultFps));
   onion = $state(readStored('animOnion') === 'on');
@@ -192,9 +168,11 @@ export class Animation {
    * moves its content under it, through its offset. It can reach past the grid.
    */
   container = $state.raw<TileBox | null>(null);
-  /** Undo and redo of the container and the offsets. */
-  canUndo = $state(false);
-  canRedo = $state(false);
+  /**
+   * The undo history of the animation screens: the container, the offsets and the list steps made out of the frame
+   * editor, in one order.
+   */
+  readonly history = new UndoTimeline();
 
   /** The output frames of the timeline: same size, one palette. */
   built = $state.raw<BuiltFrames>(EMPTY_BUILD);
@@ -215,15 +193,15 @@ export class Animation {
   /** The one palette and the reference colors of the live timeline frames: the slow part, made again only when its inputs change. */
   private unified: Sprite[] = [];
   private unifiedKey = '';
-  /** The unified frames after the erase and the removed colors, made again when those change or the unified frames change. */
+  /** The unified frames after the replacement map: the frames that the removal and its picks read. */
+  private recolored: Sprite[] = [];
+  /** The recolored frames after the erase and the removed colors, made again when those change or the unified frames change. */
   private prepared: PreparedFrames = EMPTY_PREPARED;
   private clearKey = '';
   /** Changes with each new `prepared`, so a cached pick knows its stage. */
   private preparedVersion = 0;
-  /** The last picks of one frame, color and tolerance: the hover asks again on each pointer move. */
-  private pickCache: { key: string; border?: Removal; all?: Removal } | null = null;
-  private undoStack: PlaceSnapshot[] = [];
-  private redoStack: PlaceSnapshot[] = [];
+  /** The user changed the container or an offset since the history started. */
+  private placeEdited = false;
   /** The state before the edit in progress (a drag), or null. */
   private editStart: PlaceSnapshot | null = null;
   /** The pixel edits of each timeline entry, by entry id, over its prepared frame. */
@@ -231,6 +209,21 @@ export class Animation {
   /** Changes on each pixel edit of an entry: the badges and thumbnails read it. */
   frameEditsVersion = $state(0);
   private paletteCache: { version: number; colors: Array<{ color: number; count: number }> } | null = null;
+
+  constructor() {
+    this.removed.onchange = () => this.changed();
+    this.replaced.onchange = () => this.changed();
+    this.removed.onstep = (action, run) => this.history.record(this, action, run);
+    this.replaced.onstep = (action, run) => this.history.record(this, action, run);
+  }
+
+  get canUndo(): boolean {
+    return this.history.canUndo;
+  }
+
+  get canRedo(): boolean {
+    return this.history.canRedo;
+  }
 
   get active(): boolean {
     return this.info !== null;
@@ -851,72 +844,88 @@ export class Animation {
     this.changed();
   }
 
-  /** The color is in the list of "Remove color", at any tolerance. */
-  hasRemovedColor(color: number): boolean {
-    return this.removedColors.some((entry) => entry.color === color);
-  }
-
   /**
-   * Adds a color, at the current tolerance and with `scope`, to the colors that every frame loses; a color in the list
-   * with 'border' and a new scope of 'all' widens to 'all' at its own tolerance. Returns how many timeline frames lose
-   * tiles; with 0 (no frame changes, the color is in the list with that scope, or it is TRANSPARENT) the list does
+   * Adds a color, at the tolerance of the next pick or at `tolerance` and with `scope`, to the colors that every
+   * frame loses (see `RemovedColorList.withColor`). Returns how many timeline frames lose tiles; with 0 the list does
    * not change.
    */
-  addRemovedColor(color: number, scope: RemoveScope): number {
-    if (color === TRANSPARENT) return 0;
-    const listed = this.removedColors.find((entry) => entry.color === color);
-    if (listed && (listed.scope === 'all' || scope === 'border')) return 0;
+  addRemovedColor(color: number, scope: RemoveScope, tolerance?: number): number {
+    const change = this.removed.withColor(color, scope, tolerance);
+    if (!change) return 0;
     if (!this.stageCurrent()) this.rebuild();
-    const next: RemovedColor[] = listed
-      ? this.removedColors.map((entry) => (entry === listed ? { ...entry, scope: 'all' } : entry))
-      : [...this.removedColors, { color, tolerance: this.colorTolerance, scope }];
-    const prepared = clearFrames(this.unified, { eraseBackground: this.eraseBackground, removeColors: next });
+    const prepared = clearFrames(this.recolored, { eraseBackground: this.eraseBackground, removeColors: change.next });
     const before = this.prepared.cleared;
     const frames = prepared.cleared.filter((count, at) => count > (before[at] ?? 0)).length;
     if (frames === 0) return 0;
-    this.removedColors = next;
+    this.removed.commit(change.next, change.action);
     this.setPrepared(prepared, this.clearKeyOf());
-    track('option_change', { kind: 'anim_remove_color', detail: listed ? 'widen' : 'add', count: this.removedColors.length });
     this.editVersion++;
     this.place();
     return frames;
   }
 
   /**
-   * What a "Remove color" click on `gridTile` of the entry `id` does, with the same flood as the build: the unified
-   * frame of the entry, the list and the erase colors. The color is the shown one, with the edits; an edited tile
-   * forces 'border'. Null for a TRANSPARENT tile, a tile outside the grid, an unknown entry or a stage that is not
-   * built yet. Call it from an event handler: it caches, so it must not run in a derived.
+   * Adds replacement entries (see `ReplacedColorList.merged`) to every frame. Returns how many timeline frames change
+   * color; with 0 the list does not change.
    */
-  pickAt(id: number, gridTile: number): RemovalPick | null {
+  addReplacedColors(added: readonly ReplacedColor[]): number {
+    if (added.length === 0) return 0;
+    if (!this.stageCurrent()) this.rebuild();
+    const next = this.replaced.merged(added);
+    const recolored = replaceColors(this.unified, next);
+    const frames = recolored.filter((frame, at) => !samePixels(frame, this.recolored[at])).length;
+    if (frames === 0) return 0;
+    this.replaced.commit(next, 'add');
+    this.editVersion++;
+    this.rebuild();
+    return frames;
+  }
+
+  /** The stage names of one entry for the pick caches: a new build or a pixel edit makes a new stage. */
+  private stampOf(at: number): string {
+    return `${this.preparedVersion}|${at}|${this.frameEditsVersion}`;
+  }
+
+  /** The recolored, the prepared and the shown frame of an entry; null for an unknown entry or a stage that is not built yet. */
+  private stageOf(id: number): { at: number; recolored: Sprite; prepared: Sprite; shown: Sprite } | null {
     if (!this.stageCurrent()) return null;
     const timeline = this.liveTimeline();
     const at = timeline.findIndex((frame) => frame.id === id);
-    const unified = this.unified[at];
+    const recolored = this.recolored[at];
     const prepared = this.prepared.frames[at];
-    if (at < 0 || !unified || !prepared || !Number.isInteger(gridTile) || gridTile < 0 || gridTile >= unified.pixels.length) return null;
-    const shown = this.frameAt(at, timeline) ?? prepared;
-    const color = shown.pixels[gridTile];
-    if (color === TRANSPARENT) return null;
-    const listed = this.removedColors.find((entry) => entry.color === color);
-    if (listed?.scope === 'all') return { color, scope: 'all', action: 'listed', cleared: NO_TILES, kept: NO_TILES };
-    const tolerance = listed?.tolerance ?? this.colorTolerance;
-    const edited = shown !== prepared && shown.pixels[gridTile] !== prepared.pixels[gridTile];
-    const key = `${this.preparedVersion}|${at}|${this.frameEditsVersion}|${color}|${tolerance}`;
-    if (this.pickCache?.key !== key) this.pickCache = { key };
-    const cache = this.pickCache;
-    const known = cache.border ?? cache.all;
-    const scope: RemoveScope | null = known ? (edited || holdsTile(known.reach, gridTile) ? 'border' : 'all') : null;
-    let removal = scope ? cache[scope] : undefined;
-    if (!removal) {
-      const extra = this.eraseBackground ? borderColors(unified).map((background): RemovedColor => ({ color: background, tolerance: 0, scope: 'border' })) : [];
-      const found = removalAt(unified, this.removedColors, color, tolerance, gridTile, { extra, forceBorder: edited });
-      removal = shown === prepared ? found : { ...found, cleared: unedited(found.cleared, shown, prepared), kept: unedited(found.kept, shown, prepared) };
-      cache[removal.scope] = removal;
-    }
-    const action = !listed ? 'add' : removal.scope === 'all' ? 'widen' : 'listed';
-    if (action === 'listed') return { color, scope: removal.scope, action, cleared: NO_TILES, kept: NO_TILES };
-    return { color, scope: removal.scope, action, cleared: removal.cleared, kept: removal.kept };
+    if (at < 0 || !recolored || !prepared) return null;
+    return { at, recolored, prepared, shown: this.frameAt(at, timeline) ?? prepared };
+  }
+
+  /**
+   * What a "Remove color" click on `gridTile` of the entry `id` does, with the same flood as the build: the recolored
+   * frame of the entry, the list and the erase colors (see `RemovedColorList.pickAt`). Null for a TRANSPARENT tile, a
+   * tile outside the grid, an unknown entry or a stage that is not built yet. Call it from an event handler.
+   */
+  pickAt(id: number, gridTile: number): RemovalPick | null {
+    const stage = this.stageOf(id);
+    if (!stage) return null;
+    const extra = (): RemovedColor[] => (this.eraseBackground ? borderColors(stage.recolored).map((color): RemovedColor => ({ color, tolerance: 0, scope: 'border' })) : []);
+    return this.removed.pickAt(stage.recolored, stage.prepared, stage.shown, gridTile, this.stampOf(stage.at), extra);
+  }
+
+  /** The shown color of `gridTile` of the entry `id`, or null for a TRANSPARENT tile or an unknown place. */
+  colorAt(id: number, gridTile: number): number | null {
+    const stage = this.stageOf(id);
+    const color = stage && Number.isInteger(gridTile) && gridTile >= 0 ? stage.shown.pixels[gridTile] : undefined;
+    return color === undefined || color === TRANSPARENT ? null : color;
+  }
+
+  /** The grid tiles of the entry `id` that a replacement of `color` at `tolerance` recolors; edited tiles stay out. */
+  replaceTiles(id: number, color: number, tolerance: number): Int32Array {
+    const stage = this.stageOf(id);
+    return stage ? this.replaced.tilesOf(stage.prepared, stage.shown, color, tolerance, this.stampOf(stage.at)) : NO_TILES;
+  }
+
+  /** The grid tiles of the entry `id` that the pending sources of the replacement map cover. */
+  pendingTiles(id: number): Int32Array {
+    const stage = this.stageOf(id);
+    return stage ? this.replaced.pendingTiles(stage.prepared, stage.shown) : NO_TILES;
   }
 
   /** The grid tile of the entry `id` under one tile of its output cell; -1 outside the grid, for an unknown entry or a stale build. */
@@ -956,31 +965,6 @@ export class Animation {
     return { origin, cell: this.built.cell, grid: { cols: prepared.cols, rows: prepared.rows } };
   }
 
-  restoreRemovedColor(color: number): void {
-    if (!this.hasRemovedColor(color)) return;
-    this.removedColors = this.removedColors.filter((entry) => entry.color !== color);
-    track('option_change', { kind: 'anim_remove_color', detail: 'restore', count: this.removedColors.length });
-    this.changed();
-  }
-
-  clearRemovedColors(): void {
-    if (this.removedColors.length === 0) return;
-    this.removedColors = [];
-    track('option_change', { kind: 'anim_remove_color', detail: 'clear', count: 0 });
-    this.changed();
-  }
-
-  /**
-   * The tolerance of the next picks. It builds nothing: each removed color keeps the tolerance of its pick, until the
-   * user restores it and picks it again. `commit` (the end of a slider drag) stores it.
-   */
-  setColorTolerance(value: number, commit = true): void {
-    this.colorTolerance = clampTolerance(value);
-    if (!commit) return;
-    writeStored(TOLERANCE_KEY, String(this.colorTolerance));
-    track('option_change', { kind: 'anim_remove_color', detail: 'tolerance', count: this.removedColors.length });
-  }
-
   setCell(mode: CellMode): void {
     if (mode === this.cell) return;
     this.cell = mode;
@@ -1000,10 +984,12 @@ export class Animation {
     const start = this.editStart;
     this.editStart = null;
     if (!start || this.sameAsNow(start)) return false;
-    this.undoStack.push(start);
-    if (this.undoStack.length > UNDO_LIMIT) this.undoStack.shift();
-    this.redoStack = [];
-    this.syncHistory();
+    const end = this.snapshot();
+    this.history.pushOther(
+      () => this.restore(start),
+      () => this.restore(end),
+    );
+    this.placeEdited = true;
     return true;
   }
 
@@ -1032,23 +1018,13 @@ export class Animation {
     this.place();
   }
 
-  /** One step of undo of the container and the offsets. */
-  undo(): boolean {
-    const step = this.undoStack.pop();
-    if (!step) return false;
-    this.redoStack.push(this.snapshot());
-    this.restore(step);
-    this.syncHistory();
-    return true;
+  /** One step of the history: the container, the offsets or a list. Null when nothing was undone. */
+  undo(): Replay | null {
+    return this.history.undo();
   }
 
-  redo(): boolean {
-    const step = this.redoStack.pop();
-    if (!step) return false;
-    this.undoStack.push(this.snapshot());
-    this.restore(step);
-    this.syncHistory();
-    return true;
+  redo(): Replay | null {
+    return this.history.redo();
   }
 
   private snapshot(): PlaceSnapshot {
@@ -1073,16 +1049,10 @@ export class Animation {
     this.place();
   }
 
-  private syncHistory(): void {
-    this.canUndo = this.undoStack.length > 0;
-    this.canRedo = this.redoStack.length > 0;
-  }
-
   private clearHistory(): void {
-    this.undoStack = [];
-    this.redoStack = [];
+    this.history.reset();
+    this.placeEdited = false;
     this.editStart = null;
-    this.syncHistory();
   }
 
   /**
@@ -1103,7 +1073,7 @@ export class Animation {
     const first = this.timeline[0];
     if (!this.containerWaits || !first || !this.store.has(first.index)) return;
     this.containerWaits = false;
-    if (this.canUndo) return;
+    if (this.placeEdited) return;
     this.container = this.initialContainer(this.prepared.frames[0]);
     this.place();
   }
@@ -1187,8 +1157,9 @@ export class Animation {
     }
     const clearKey = this.clearKeyOf();
     if (clearKey !== this.clearKey) {
-      const removed = this.removedColors.length > 0 ? this.removedColors : null;
-      this.setPrepared(this.unified.length === 0 ? EMPTY_PREPARED : clearFrames(this.unified, { eraseBackground: this.eraseBackground, removeColors: removed }), clearKey);
+      const removed = this.removed.entries.length > 0 ? this.removed.entries : null;
+      this.recolored = replaceColors(this.unified, this.replaced.entries);
+      this.setPrepared(this.unified.length === 0 ? EMPTY_PREPARED : clearFrames(this.recolored, { eraseBackground: this.eraseBackground, removeColors: removed }), clearKey);
     }
     this.place();
   }
@@ -1200,9 +1171,9 @@ export class Animation {
     return `${this.framesVersion}|${strength}|${reference}|${timeline.map((frame) => frame.index).join(',')}`;
   }
 
-  /** What the cleared frames are made from, over the unified frames: the erase and the removed colors. */
+  /** What the recolored and the cleared frames are made from, over the unified frames: the map, the erase and the removed colors. */
   private clearKeyOf(): string {
-    return `${this.eraseBackground}|${this.removedColors.map((entry) => `${entry.color}@${entry.tolerance}@${entry.scope}`).join(',')}`;
+    return `${this.replaced.key}|${this.eraseBackground}|${this.removed.key}`;
   }
 
   /** The unified and the cleared frames follow the live timeline and the options. */
@@ -1215,7 +1186,6 @@ export class Animation {
     this.prepared = prepared;
     this.clearKey = clearKey;
     this.preparedVersion++;
-    this.pickCache = null;
     this.liveTimeline().forEach((frame, at) => {
       const base = prepared.frames[at];
       if (base) this.sessions.get(frame.id)?.setBase(base);
@@ -1293,7 +1263,8 @@ export class Animation {
     this.referenceIndex = 0;
     this.referenceChosen = false;
     this.referenceColors = false;
-    this.removedColors = [];
+    this.removed.reset();
+    this.replaced.reset();
     this.loopCheck = false;
     this.container = null;
     this.containerWaits = false;
@@ -1303,10 +1274,10 @@ export class Animation {
     this.paletteCache = null;
     this.unified = [];
     this.unifiedKey = '';
+    this.recolored = [];
     this.prepared = EMPTY_PREPARED;
     this.clearKey = '';
     this.preparedVersion++;
-    this.pickCache = null;
     this.built = EMPTY_BUILD;
     this.version++;
     this.editVersion++;
