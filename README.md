@@ -144,6 +144,10 @@ Two tools are for special cases:
 - "Adjust lines" moves single grid lines. A drag of a line pushes the next lines, and they keep their sizes. A drag of the first line moves the full grid. Hold Alt to move one line only. A line snaps to the edges of the drawing, and Shift moves it freely. A double click removes a line, or splits a large square. Every edit keeps a valid grid, and Ctrl+Z undoes it.
 - "Advanced" has three controls. "Move the full grid" has four arrow buttons. Use them when the squares have the correct size but sit a little off the pixels of the art. "Flexible grid" lets each grid line follow the real edge of each row and column, because AI art often has squares of different sizes in one image. On Auto, it turns on when the art pixel is 4 px or larger and the grid is not weak. The teal lines show where it moved a line. "My art is stretched" is for art whose small squares look like rectangles, as a picture squeezed on a TV. Turn it on and move the "Pixel shape" slider until the grid covers each rectangle, or mark one rectangle on the image. The size control keeps the size, and "Square" makes the pixel square again.
 
+To clean only a part of the image, click "Crop" or push C. Drag a box over the part to keep. The box snaps to whole grid squares. Drag inside the box to move it, and drag its handles to change its size. Push Esc to stop, and click "Use the whole image" to remove the crop.
+
+The app cleans only the cropped part. Thus the background removal sees the new border, and the palette holds only the colors of that part. The Crop tool is on the Grid step of each journey: one image, a set and a video.
+
 Then select the "Color cleanup" level (Off, Light, Normal or Strong) and click "Clean!". You can change the level later.
 
 <img src="docs/images/pixel-unslop-grid-screen.png" width="900" alt="Set the pixel size of an AI sprite: grid lines on the source image, and a panel with the title Set the size of 1 pixel, a large pixel size value with minus and plus buttons, a slider, a zoomed detail of the art with the grid, 40 by 32 pixels and three stars">
@@ -155,14 +159,18 @@ The program shows the clean sprite. To compare it with the source, move the divi
 - To correct small defects, use the Pencil (B), the Eraser (E), the Bucket (G) and the Dropper (I).
 - To paint or erase more pixels at a time, set the brush size of the Pencil or the Eraser, from 1 to 32 squares. Use the "Size" control in the toolbar, or push `[` and `]`. Each tool keeps its own size. The outline under the pointer shows the exact squares that a click changes.
 - To pick the color below the cursor, click the right mouse button. This works in all tools.
-- To replace a color in all the sprite, right-click it in the color list. You can also click the "..." button. You can also erase the color there.
+- To replace a color, select "Replace color" (C) and click the color on the sprite. Then select its new color: a palette swatch, "Other color" for a free color, or "Transparent" to erase the color.
+- To replace several colors with one color, Shift+click each color to add it to the group. Then select the new color one time: it replaces all the colors of the group.
+- Each replacement shows as a chip, with its own tolerance. To undo one replacement only, delete its chip.
+- To replace or erase a color from the color list, right-click the color, or click its "..." button. Then click "Replace this color everywhere" or "Erase this color". These actions also add a chip.
 - To make the background transparent, click "Remove background". This changes the background that touches the border.
 - To erase a background color, select "Remove color" (R) and click the color. Near shades go too: set how near with "Tolerance". The click erases the color only where it connects to the border of the sprite, through the background or through transparent areas. The drawing keeps the same color. Before the click, red shows the squares that go and teal shows the squares of that color that stay. Use it for the halo of a chroma key.
+- Each removed color shows as a chip. Click a chip to bring its color back. The chips stay when you change the "Color cleanup" level.
 - To erase background inside the drawing, such as between an arm and the body, click a spot of it that does not touch the border. The preview is yellow, and the click erases that color everywhere in the sprite, in the drawing too. To erase only some pixels, use the Eraser: it erases any pixel.
 - When the sprite has an empty border, a faint dashed box shows the part that the export writes.
 - To paint the sprite with the colors of another image, use "Reference colors" and click "Choose a reference". The reference can be a clean sprite or AI pixel art. First the app corrects the lightness difference between the two images. Then each color changes to the nearest color of the reference. Your manual corrections stay. Turn off the "Use the colors of" switch to get the original colors back.
 - You can change the "Color cleanup" level at any time. Your manual corrections stay.
-- To undo, push Ctrl+Z. To redo, push Ctrl+Y.
+- To undo the last action, push Ctrl+Z. The action can be a pixel edit or a color pick. To redo, push Ctrl+Y or Ctrl+Shift+Z. Each screen has one undo history.
 
 <img src="docs/images/pixel-unslop-clean-and-edit-screen.png" width="900" alt="Clean pixel art editor: the tools on the left with the brush size of the pencil and the eraser, the Size control in the toolbar, a 3 by 3 brush outline on the sprite, the sprite in the middle with a divider between the blurred AI source and the flat result and a dashed box around the part that the export writes, and the color palette on the right">
 
@@ -197,6 +205,8 @@ The set mode has the same three steps as one image: "Drop", "Grid" and "Set".
 11. Click "Edit pixels", double-click the piece, or push Enter to correct the pixels of one sprite with the pencil, the eraser, the bucket and the dropper. Click "Back to the set" to go back with your edits. To change the grid of a piece, click "Back to the grid" in the Set step. If no grid changes, the Grid step shows "Back to the set" in place of "Clean all!", and your edits, sizes, places and hidden pieces stay. A grid change that drops the edits of a piece asks first, and the other pieces keep their edits.
 12. Click "Export set" and select the files with the checkboxes. To change the name of a file, click the pencil next to it. Two files cannot have the same name. On the desktop app, you get one PNG for each sprite in a folder. In a browser, you get one PNG, or one ZIP file that holds all the selected PNG files. Each PNG has the true resolution, and all of them share one palette. A resize never adds a new color.
 
+To erase or replace a color in the set, use "Remove color" (R) or "Replace color" (C). They work in the Set step and in the piece editor, as for one image. One pick applies to all the pieces. Each color shows as a chip, and Ctrl+Z undoes the last pick.
+
 You can enlarge a small piece up to 4x. Each pixel then becomes a block of 2, 3 or 4 pixels. You can send this blocky PNG to a generative AI to get more detail, and then clean the new image here again. In the command line tool, give the height with `--height file.png=N`:
 
 ```sh
@@ -228,6 +238,8 @@ In the desktop app, you can also open the video from Explorer with "Open with" >
 ### 2. Set the grid on one frame
 
 The Grid step shows one frame of the video. Move the "Video frame" slider to a sharp frame. Then set the size of 1 pixel with the same tools as for one image. The grid that you lock here applies to all the frames. Click "Use the grid" to go to the Frames screen. The app reads each frame of the video when you show it or add it, so you can use any frame of the video, also near the end.
+
+To clean only a part of the video, click "Crop" or push C, as for one image. One crop applies to all the frames. A cropped video fits more frames in the frame limit. The crop is different from the container of the Frames screen: the container sets the output cell of the animation after the cleanup.
 
 ### 3. Pick the frames
 
@@ -279,10 +291,11 @@ A video from an AI tool can have stray pixels or a watermark. You can correct ea
 - Select a frame in the timeline. Click "Edit frame", push E, or double-click the frame.
 - Use the pencil, the eraser, the bucket and the dropper, as on the Clean screen. The palette shows the colors of all the frames.
 - "Remove color" (R) erases the clicked color in all the frames, not only in this frame, with the same border rule as on the Animation screen. The Eraser erases any pixel of this frame only.
+- "Replace color" (C) replaces the clicked color in all the frames. The "..." menu of a color in the palette ("Replace this color everywhere", "Erase this color") also changes all the frames, not only this frame. Each of these actions adds a chip.
 - Push "," and "." to go to the previous or the next frame. Push O to show the previous frame over this one.
 - Click "Back to the animation" to go back to the screen that you came from.
 
-Each frame keeps its own edits, with its own undo. A pencil mark shows on each edited frame in the timeline. The edits stay when you change the container, the alignment, the colors or the background removal. "Duplicate" copies the edits of the frame. A new grid with another size removes the edits, and Pixel Unslop asks you first.
+Each frame keeps its own pixel edits, with their own undo history. In the frame editor, Ctrl+Z also undoes the color picks that you make there, and these picks change all the frames. When you close the editor, the picks leave the history, but their chips stay on the Animation screen. A pencil mark shows on each edited frame in the timeline. The edits stay when you change the container, the alignment, the colors or the background removal. "Duplicate" copies the edits of the frame. A new grid with another size removes the edits, and Pixel Unslop asks you first.
 
 ### 5. Tune and export the animation
 
@@ -294,7 +307,9 @@ The Animation screen plays the frames in a loop.
 - The "Color cleanup" level applies to all the frames. All the frames share one palette.
 - Turn on "Use only the colors of one frame" to give all the frames the colors of the reference frame.
 - Turn on "Remove the frame backgrounds" to make the background transparent.
-- If the background leaves a halo or stays inside the drawing, click "Pick a color" under "Remove color", or push R. Then click each color to erase on the frame. The color goes from all the frames, with its near shades. Set how near with "Tolerance". In each frame, the color goes only where it connects to the frame border, through the background or through transparent areas, so the character keeps the same color in its eyes or its clothes. Before the click, red shows the squares that go and teal shows the squares of that color that stay. To erase background inside the drawing, such as between an arm and the body, click a spot of it that does not touch the border: the preview is yellow, the hint warns you, and the color goes everywhere, in the character too. Its chip then shows "inside". A later click on such a spot of a color that is in the list also takes it inside the drawing. The tolerance applies only to the next colors that you pick. Each removed color keeps its own tolerance, and its chip shows it when it is not the current value. To use a new tolerance on a color, click × on it and pick it again. Click × on a color to bring it back, or click "Clear". Push Esc to stop.
+- If the background leaves a halo or stays inside the drawing, click "Pick a color" under "Remove color", or push R. Then click each color to erase on the frame. The color goes from all the frames, with its near shades. Set how near with "Tolerance". In each frame, the color goes only where it connects to the frame border, through the background or through transparent areas, so the character keeps the same color in its eyes or its clothes. Before the click, red shows the squares that go and teal shows the squares of that color that stay. To erase background inside the drawing, such as between an arm and the body, click a spot of it that does not touch the border: the preview is yellow, the hint warns you, and the color goes everywhere, in the character too. Its chip then shows "inside". A later click on such a spot of a color that is in the list also takes it inside the drawing. The tolerance applies only to the next colors that you pick. Each removed color is a chip. It keeps its own tolerance, and the chip shows it when it is not the current value. To use a new tolerance on a color, click its chip and pick the color again. Click a chip to bring its color back, or click "Clear". Push Esc to stop.
+- To replace a color in all the frames, push C, or use "Replace color". It works as on the Clean screen of one image: Shift+click adds more colors to a group, and each replacement is a chip.
+- The color chips stay when you change the "Color cleanup" level. Push Ctrl+Z to undo the last action, and Ctrl+Y or Ctrl+Shift+Z to redo it.
 - Under "Frame size", select the size of each frame:
   - "Container": the container that you set on the first frame, with the alignment of each frame.
   - "Crop": the smallest box that holds all the frames. The motion stays exact.
@@ -328,7 +343,10 @@ The export dialog shows the frame size, the number of columns and the number of 
 - One flat color for each tile, with no blur.
 - Pixel art cleanup of the colors in four levels, in the OKLab color space. The merge agrees with what the eye sees.
 - Pencil, eraser, bucket fill and dropper, with undo and redo. The pencil and the eraser have a brush size from 1 to 32 squares.
-- Replace a color in all the sprite, erase a color, or remove the background with one click.
+- A crop on the Grid step that snaps to whole grid squares, so the app cleans only the part that you keep.
+- "Remove color" and "Replace color" in each journey, with a tolerance and a list of chips. One pick applies to all the pieces of a set or all the frames of a video.
+- Replace a group of colors with one palette color, a free color or transparency. Remove the background with one click.
+- One undo history for each screen, for pixel edits and color picks.
 - Reference colors: paint a sprite with the colors of another image, after the correction of the lightness difference between the two images.
 - A comparison of the source and the result, on a checker, dark or light background.
 - PNG export at the true resolution: always 1 image pixel for each art pixel.
@@ -489,7 +507,7 @@ To build only the CLI for Linux or WSL, run `npm run build:cli`. This command wr
 - The desktop app needs Windows 10 or 11 with the Microsoft Edge WebView2 runtime. Windows 11 has it.
 - The video journey opens only the videos that your browser can decode. The desktop app uses WebView2, which decodes the same formats as Microsoft Edge. MP4 with H.264 works everywhere. HEVC (H.265) and some MOV files can fail. If a video does not open, export it again as MP4 (H.264).
 - The frame timing is exact for MP4 and MOV files. For WebM files, the app estimates the fps.
-- The limit applies to the frames that you add, not to the length of the video: you can use any frame of a long video. A timeline holds at most 600 frames. With a fine grid, the limit is lower: for example, about 160 different frames on a grid of 512 by 288 pixels. When you reach the limit, a message tells you how many frames fit with this grid.
+- The limit applies to the frames that you add, not to the length of the video: you can use any frame of a long video. A timeline holds at most 600 frames. With a fine grid, the limit is lower: for example, about 160 different frames on a grid of 512 by 288 pixels. When you reach the limit, a message tells you how many frames fit with this grid. To fit more frames, crop the video on the Grid step.
 - The command line tool has no command for video. Use the app for the video journey.
 
 ## Frequently asked questions
