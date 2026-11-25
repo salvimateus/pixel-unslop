@@ -16,6 +16,7 @@
   import AnimTimeline from './AnimTimeline.svelte';
   import type { PreviewBackground } from './clean-scene.ts';
   import { holdRepeat } from './hold-repeat.ts';
+  import { historyToast } from './list-feedback.ts';
   import Icon from './Icon.svelte';
   import KeyText from './KeyText.svelte';
   import LoopMeter from './LoopMeter.svelte';
@@ -573,14 +574,28 @@
     cursor = cursorOf(part);
   }
 
-  function undo(): void {
+  /**
+   * One step of the history of the animation. A list step of the Animation screen gets its own feedback; the frames
+   * built from the lists (the loop preview) follow `anim.version`.
+   */
+  function replay(way: 'undo' | 'redo'): void {
     if (drag) return;
-    if (anim.undo()) sfx.play('tick');
+    const done = way === 'undo' ? anim.undo() : anim.redo();
+    if (!done) return;
+    if (done.kind !== 'lists') {
+      sfx.play('tick');
+      return;
+    }
+    sfx.play('undo');
+    app.toast(historyToast(done.action, way), 'info');
+  }
+
+  function undo(): void {
+    replay('undo');
   }
 
   function redo(): void {
-    if (drag) return;
-    if (anim.redo()) sfx.play('tick');
+    replay('redo');
   }
 
   function goToFirst(): void {

@@ -14,6 +14,7 @@
   import type { PreviewBackground } from './clean-scene.ts';
   import Icon from './Icon.svelte';
   import KeyText from './KeyText.svelte';
+  import { historyToast } from './list-feedback.ts';
   import LoopPreview from './LoopPreview.svelte';
   import LoopSeam from './LoopSeam.svelte';
   import ProgressPill from './ProgressPill.svelte';
@@ -161,16 +162,22 @@
     if (applyOffset({ x: 0, y: 0 })) sfx.play('erase');
   }
 
-  function undo(): void {
-    if (drag || !anim.undo()) return;
+  /** One step of the history of the animation. The stage follows `anim.version`, so a list step shows its colors at once. */
+  function replay(way: 'undo' | 'redo'): void {
+    if (drag) return;
+    const done = way === 'undo' ? anim.undo() : anim.redo();
+    if (!done) return;
     sfx.play('undo');
+    if (done.kind === 'lists') app.toast(historyToast(done.action, way), 'info');
     wasAligned = isAligned();
   }
 
+  function undo(): void {
+    replay('undo');
+  }
+
   function redo(): void {
-    if (drag || !anim.redo()) return;
-    sfx.play('undo');
-    wasAligned = isAligned();
+    replay('redo');
   }
 
   function onPrimaryDown(p: StagePointer): boolean {
